@@ -13,8 +13,14 @@ export function savePairingCode(code: string, expiresInMinutes: number = 60): vo
   const expiresAt = now + expiresInMinutes * 60 * 1000;
 
   db.run(
-    `INSERT OR REPLACE INTO pairing (id, code, created_at, expires_at, used, paired_user_id) 
-     VALUES (1, ?, ?, ?, 0, NULL)`,
+    `INSERT INTO pairing (id, code, created_at, expires_at, used, paired_user_id) 
+     VALUES (1, ?, ?, ?, 0, NULL)
+     ON CONFLICT (id) DO UPDATE SET 
+       code = EXCLUDED.code,
+       created_at = EXCLUDED.created_at,
+       expires_at = EXCLUDED.expires_at,
+       used = EXCLUDED.used,
+       paired_user_id = EXCLUDED.paired_user_id`,
     [code, now, expiresAt]
   );
 }
