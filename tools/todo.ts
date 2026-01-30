@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getDatabase } from "../data/db";
+import { debug } from "../utils/debug.ts";
 
 const CreateTodoSchema = z.object({
   title: z.string().describe("Title of the todo list"),
@@ -258,7 +259,7 @@ export const todoTools = {
 // cleanup function
 export async function cleanupTodos(): Promise<void> {
   // nothing to clean up since db handles persistence
-  console.log("[todo] cleanup called (no-op for sqlite)");
+  debug("[todo] cleanup called (no-op for sqlite)");
 }
 
 export type TodoTools = typeof todoTools;

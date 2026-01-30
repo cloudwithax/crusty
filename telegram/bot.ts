@@ -12,6 +12,7 @@ import {
   listSkillNames,
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
+import { debug } from "../utils/debug.ts";
 
 // Environment configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -140,7 +141,7 @@ export async function sendMessage(
 ): Promise<TelegramMessage | null> {
   // Check delivery gate for heartbeat messages
   if (shouldSuppressDelivery(text, options?.isHeartbeat)) {
-    console.log("[telegram] suppressed HEARTBEAT_OK delivery");
+    debug("[telegram] suppressed HEARTBEAT_OK delivery");
     return null;
   }
 
@@ -158,7 +159,7 @@ export async function sendMessage(
   } catch (error) {
     // if markdown parsing fails, retry without parse_mode
     if (error instanceof Error && error.message.includes("400")) {
-      console.log(`[Markdown parse failed, retrying as plain text]`);
+      debug(`[Markdown parse failed, retrying as plain text]`);
       return makeRequest("sendMessage", {
         chat_id: chatId,
         text: messageText,
@@ -447,7 +448,7 @@ async function handleSoulInput(
 
   try {
     await Bun.write(soulPath, content);
-    console.log(`[soul] updated by user ${userId} (${content.length} chars)`);
+    debug(`[soul] updated by user ${userId} (${content.length} chars)`);
 
     // clear session so agent picks up new soul on next message
     clearUserSession(userId);
@@ -684,11 +685,11 @@ export async function startBot(): Promise<void> {
         if (update.message) {
           const userId = update.message.from?.id || update.message.chat.id;
           const text = update.message.text || "";
-          console.log(`[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`);
+          debug(`[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`);
 
           // skip if user is already being processed
           if (processingUsers.has(userId)) {
-            console.log(`[User ${userId} is busy, queuing will happen on next poll]`);
+            debug(`[User ${userId} is busy, queuing will happen on next poll]`);
             continue;
           }
 

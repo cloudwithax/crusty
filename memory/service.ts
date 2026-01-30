@@ -1,5 +1,6 @@
 import { getDatabase } from "../data/db";
 import { v4 as uuidv4 } from "uuid";
+import { debug } from "../utils/debug.ts";
 
 export interface Memory {
   id: string;
@@ -81,7 +82,7 @@ export class MemoryService {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
 
     this.initialized = true;
-    console.log("[memory] table initialized");
+    debug("[memory] table initialized");
   }
 
   // extract meaningful keywords from text
@@ -140,7 +141,7 @@ export class MemoryService {
 
     // skip trivially short content
     if (content.length < 20) {
-      console.log(`[memory] skipped (too short): "${content.substring(0, 40)}..."`);
+      debug(`[memory] skipped (too short): "${content.substring(0, 40)}..."`);
       return null as any;
     }
 
@@ -173,7 +174,7 @@ export class MemoryService {
       ]
     );
 
-    console.log(`[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`);
+    debug(`[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`);
     return memory;
   }
 
@@ -349,7 +350,7 @@ Use this context to inform your response naturally, without explicitly mentionin
     this.ensureTable();
     const db = getDatabase();
     db.run(`DELETE FROM memories WHERE user_id = ?`, [userId]);
-    console.log(`[memory] cleared all memories for user ${userId}`);
+    debug(`[memory] cleared all memories for user ${userId}`);
   }
 
   // clear all memories
@@ -357,7 +358,7 @@ Use this context to inform your response naturally, without explicitly mentionin
     this.ensureTable();
     const db = getDatabase();
     db.run(`DELETE FROM memories`);
-    console.log("[memory] cleared all memories");
+    debug("[memory] cleared all memories");
   }
 }
 

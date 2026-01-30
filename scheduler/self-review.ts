@@ -1,5 +1,6 @@
 import { OpenAI } from "openai";
 import { getDatabase } from "../data/db.ts";
+import { debug } from "../utils/debug.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -98,17 +99,17 @@ export function initSelfReview(): void {
     return;
   }
 
-  console.log("[self-review] initializing...");
+  debug("[self-review] initializing...");
 
   try {
     const entries = loadEntriesFromDb();
     watchlist = buildWatchlist(entries);
-    console.log(`[self-review] loaded ${watchlist.length} entries from last ${LOOKBACK_DAYS} days`);
+    debug(`[self-review] loaded ${watchlist.length} entries from last ${LOOKBACK_DAYS} days`);
 
     if (watchlist.length > 0) {
-      console.log("[self-review] top patterns to watch:");
+      debug("[self-review] top patterns to watch:");
       for (const entry of watchlist.slice(0, 3)) {
-        console.log(`  - [${entry.tag}] ${entry.miss.substring(0, 50)}...`);
+        debug(`  - [${entry.tag}] ${entry.miss.substring(0, 50)}...`);
       }
     }
   } catch (error) {
@@ -177,7 +178,7 @@ export function logReviewEntry(tag: ReviewTag, miss: string, fix: string): void 
     const db = getDatabase();
     db.run("INSERT INTO self_review (date, tag, miss, fix) VALUES (?, ?, ?, ?)", [date!, tag, miss, fix]);
 
-    console.log(`[self-review] logged entry: [${tag}] ${miss.substring(0, 40)}...`);
+    debug(`[self-review] logged entry: [${tag}] ${miss.substring(0, 40)}...`);
 
     // refresh watchlist
     const entries = loadEntriesFromDb();
@@ -252,15 +253,15 @@ be specific and actionable. dont log trivial issues.`;
 
 // full self-review cycle
 export async function selfReviewCycle(recentContext: string): Promise<void> {
-  console.log("[self-review] running self-check cycle...");
+  debug("[self-review] running self-check cycle...");
 
   const result = await runSelfCheck(recentContext);
 
   if (result.detected && result.tag && result.miss && result.fix) {
     logReviewEntry(result.tag, result.miss, result.fix);
-    console.log(`[self-review] pattern detected and logged: [${result.tag}]`);
+    debug(`[self-review] pattern detected and logged: [${result.tag}]`);
   } else {
-    console.log("[self-review] no patterns detected this cycle");
+    debug("[self-review] no patterns detected this cycle");
   }
 }
 
@@ -268,5 +269,5 @@ export async function selfReviewCycle(recentContext: string): Promise<void> {
 export function cleanupSelfReview(): void {
   watchlist = [];
   isInitialized = false;
-  console.log("[self-review] cleaned up");
+  debug("[self-review] cleaned up");
 }

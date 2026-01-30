@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
+import { debug } from "../utils/debug.ts";
 
 const DB_PATH = join(import.meta.dir, "crusty.db");
 
@@ -71,13 +72,13 @@ function initTables(): void {
   database.exec(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
   database.exec(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
 
-  console.log("[db] tables initialized");
+  debug("[db] tables initialized");
 }
 
 export function closeDatabase(): void {
   if (db) {
     db.close();
     db = null;
-    console.log("[db] closed");
+    debug("[db] closed");
   }
 }

@@ -1,6 +1,7 @@
 import { startBot, cleanupBot, sendMessage, getPairedUserId } from "./telegram/bot.ts";
 import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
 import { closeDatabase } from "./data/db.ts";
+import { debug } from "./utils/debug.ts";
 
 // Handle graceful shutdown
 process.on("SIGINT", async () => {
@@ -21,7 +22,7 @@ process.on("SIGTERM", async () => {
 async function sendHeartbeatMessage(text: string, isHeartbeat?: boolean): Promise<void> {
   const userId = getPairedUserId();
   if (!userId) {
-    console.log("[heartbeat] no paired user, skipping delivery");
+    debug("[heartbeat] no paired user, skipping delivery");
     return;
   }
 

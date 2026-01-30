@@ -3,6 +3,7 @@ import { join } from "path";
 import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { initSelfReview, selfReviewCycle, cleanupSelfReview } from "./self-review.ts";
+import { debug } from "../utils/debug.ts";
 
 // Environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -52,7 +53,7 @@ export function parseDuration(duration: string): number {
 
   const match = trimmed.match(/^(\d+)([mhd])$/);
   if (!match) {
-    console.log(`[heartbeat] invalid duration format: ${duration}, disabling`);
+    debug(`[heartbeat] invalid duration format: ${duration}, disabling`);
     return 0;
   }
 
@@ -274,7 +275,7 @@ export async function heartbeatTick(
 ): Promise<void> {
   // Check if within active hours
   if (!isWithinActiveHours(config.activeHours)) {
-    console.log("[heartbeat] outside active hours, skipping");
+    debug("[heartbeat] outside active hours, skipping");
     return;
   }
 
@@ -293,11 +294,11 @@ export async function heartbeatTick(
   const heartbeatContent = readHeartbeatFile();
 
   if (!heartbeatContent) {
-    console.log("[heartbeat] skipped (empty or template-only)");
+    debug("[heartbeat] skipped (empty or template-only)");
     return;
   }
 
-  console.log("[heartbeat] processing...");
+  debug("[heartbeat] processing...");
 
   try {
     // Build system prompt for heartbeat
@@ -323,13 +324,13 @@ Be concise. Only respond with HEARTBEAT_OK if there are truly no pending tasks o
 
     const output = response.choices[0]?.message?.content?.trim() || "";
 
-    console.log("[heartbeat] model output:", output.substring(0, 100));
+    debug("[heartbeat] model output:", output.substring(0, 100));
 
     // Check if output is HEARTBEAT_OK
     if (output === "HEARTBEAT_OK") {
       // Suppress outbound delivery and write audit log
       writeAuditLog("HEARTBEAT_OK - no action needed");
-      console.log("[heartbeat] HEARTBEAT_OK - suppressed delivery");
+      debug("[heartbeat] HEARTBEAT_OK - suppressed delivery");
       return;
     }
 
@@ -337,14 +338,14 @@ Be concise. Only respond with HEARTBEAT_OK if there are truly no pending tasks o
     // This shouldn't happen since we checked exact match, but handle edge cases
     if (output.length <= config.maxAckChars && output.toUpperCase() === "HEARTBEAT_OK") {
       writeAuditLog("HEARTBEAT_OK (case variant) - no action needed");
-      console.log("[heartbeat] HEARTBEAT_OK variant - suppressed delivery");
+      debug("[heartbeat] HEARTBEAT_OK variant - suppressed delivery");
       return;
     }
 
     // Deliver via normal outbound channel
     await sendMessage(output, true);
     writeAuditLog(`DELIVERED: ${output.substring(0, 100)}${output.length > 100 ? "..." : ""}`);
-    console.log("[heartbeat] delivered message");
+    debug("[heartbeat] delivered message");
 
   } catch (error) {
     console.error("[heartbeat] error during tick:", error);
@@ -362,7 +363,7 @@ export function startHeartbeat(
   config?: HeartbeatConfig
 ): void {
   if (isRunning) {
-    console.log("[heartbeat] already running");
+    debug("[heartbeat] already running");
     return;
   }
 
@@ -373,11 +374,11 @@ export function startHeartbeat(
   const intervalMs = parseDuration(effectiveConfig.every);
 
   if (intervalMs === 0) {
-    console.log("[heartbeat] disabled (interval is 0 or invalid)");
+    debug("[heartbeat] disabled (interval is 0 or invalid)");
     return;
   }
 
-  console.log(`[heartbeat] starting with interval: ${effectiveConfig.every} (${intervalMs}ms)`);
+  debug(`[heartbeat] starting with interval: ${effectiveConfig.every} (${intervalMs}ms)`);
 
   // Run immediately on start
   heartbeatTick(sendMessage, effectiveConfig).catch((error) => {
@@ -401,7 +402,7 @@ export function stopHeartbeat(): void {
     heartbeatInterval = null;
   }
   isRunning = false;
-  console.log("[heartbeat] stopped");
+  debug("[heartbeat] stopped");
 }
 
 // Cleanup function for graceful shutdown

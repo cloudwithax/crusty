@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { homedir } from "os";
+import { debug } from "../utils/debug.ts";
 
 // skill metadata extracted from frontmatter
 export interface SkillMetadata {
@@ -145,7 +146,7 @@ async function loadSkill(
     const parsed = parseFrontmatter(content);
 
     if (!parsed) {
-      console.log(`[Skills] No frontmatter in ${skillPath}`);
+      debug(`[Skills] No frontmatter in ${skillPath}`);
       return null;
     }
 
@@ -154,7 +155,7 @@ async function loadSkill(
     const description = String(frontmatter.description || "");
 
     if (!description) {
-      console.log(`[Skills] Missing description in ${skillPath}`);
+      debug(`[Skills] Missing description in ${skillPath}`);
       return null;
     }
 
@@ -183,7 +184,7 @@ async function loadSkill(
       scope,
     };
   } catch (error) {
-    console.log(`[Skills] Error loading ${skillPath}:`, error);
+    debug(`[Skills] Error loading ${skillPath}:`, error);
     return null;
   }
 }
@@ -220,7 +221,7 @@ export async function discoverSkills(): Promise<Map<string, Skill>> {
         }
       }
     } catch (error) {
-      console.log(`[Skills] Error scanning ${searchPath}:`, error);
+      debug(`[Skills] Error scanning ${searchPath}:`, error);
     }
   }
 

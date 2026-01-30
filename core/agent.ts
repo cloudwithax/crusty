@@ -18,6 +18,7 @@ import {
 } from "../scheduler/self-review.ts";
 import { addRecentContext } from "../scheduler/heartbeat.ts";
 import { memoryService } from "../memory/service.ts";
+import { debug } from "../utils/debug.ts";
 
 // Environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -60,7 +61,7 @@ class RateLimiter {
       // calculate wait time until the oldest request falls outside the window
       const oldestTimestamp = this.timestamps[0]!;
       const waitTime = this.windowMs - (now - oldestTimestamp) + 10; // +10ms buffer
-      console.log(`[Rate limit] waiting ${waitTime}ms before next api call`);
+      debug(`[Rate limit] waiting ${waitTime}ms before next api call`);
       await new Promise((resolve) => setTimeout(resolve, waitTime));
       // recurse to recheck after waiting
       return this.acquire();
@@ -71,7 +72,7 @@ class RateLimiter {
 }
 
 const inferenceRateLimiter = new RateLimiter(INFERENCE_RPM_LIMIT);
-console.log(
+debug(
   `[Rate limit] inference api limited to ${INFERENCE_RPM_LIMIT} requests per minute`,
 );
 
@@ -280,11 +281,11 @@ function sanitizeToolCalls(
     try {
       JSON.parse(args);
     } catch {
-      console.log(
+      debug(
         `[Warning: Malformed tool call arguments for ${tc.function.name}: ${args}]`,
       );
       const recovered = recoverMalformedArgs(tc.function.name, args);
-      console.log(`[Recovered args: ${recovered}]`);
+      debug(`[Recovered args: ${recovered}]`);
       args = recovered;
     }
     return {
@@ -338,7 +339,7 @@ function sanitizeArgumentValues(argsString: string): string {
       }
 
       if (modified) {
-        console.log(`[Sanitizing ${key}: "${value}" -> "${cleaned}"]`);
+        debug(`[Sanitizing ${key}: "${value}" -> "${cleaned}"]`);
         args[key] = cleaned;
       }
     }
@@ -522,14 +523,14 @@ export class Agent {
     const overlaps = await checkForOverlaps(userMessage);
     if (overlaps.length > 0) {
       const counterCheckPrompt = generateCounterCheckPrompt(overlaps);
-      console.log(`[self-review] ${overlaps.length} pattern overlap(s) detected, injecting counter-check`);
+      debug(`[self-review] ${overlaps.length} pattern overlap(s) detected, injecting counter-check`);
       this._messages.push({ role: "system", content: counterCheckPrompt });
     }
 
     // build memory context from relevant past interactions
     const memoryContext = memoryService.buildMemoryContext(this.userId, userMessage);
     if (memoryContext) {
-      console.log(`[memory] injecting relevant memory context`);
+      debug(`[memory] injecting relevant memory context`);
       this._messages.push({ role: "system", content: memoryContext });
     }
 
@@ -598,7 +599,7 @@ export class Agent {
       totalIterations++;
       remainingIterations--;
 
-      console.log(
+      debug(
         `\n--- Iteration ${totalIterations} (${remainingIterations} remaining) ---`,
       );
 
@@ -643,7 +644,7 @@ export class Agent {
       } catch (apiError) {
         clearTimeout(apiStatusTimeout);
         const errorMessage = apiError instanceof Error ? apiError.message : "Unknown error";
-        console.log(`[API error: ${errorMessage}]`);
+        debug(`[API error: ${errorMessage}]`);
 
         // if we have accumulated content, return it with an error note
         if (responseChunks.length > 0) {
@@ -659,15 +660,15 @@ export class Agent {
 
       const choice = response.choices[0];
       if (!choice) {
-        console.log("[No choice in response]");
+        debug("[No choice in response]");
         break; // Exit loop if no response
       }
 
       const message = choice.message;
       const content = message.content || "";
 
-      console.log("[Raw content]:", JSON.stringify(content));
-      console.log(
+      debug("[Raw content]:", JSON.stringify(content));
+      debug(
         "[Native tool_calls]:",
         message.tool_calls ? JSON.stringify(message.tool_calls) : "none",
       );
@@ -676,15 +677,15 @@ export class Agent {
       const { toolCalls: textToolCalls, cleanContent } =
         parseTextToolCalls(content);
 
-      console.log("[Parsed text tool calls]:", JSON.stringify(textToolCalls));
-      console.log("[Clean content]:", JSON.stringify(cleanContent));
+      debug("[Parsed text tool calls]:", JSON.stringify(textToolCalls));
+      debug("[Clean content]:", JSON.stringify(cleanContent));
 
       // Handle native tool calls OR text-based tool calls
       const hasNativeToolCalls =
         message.tool_calls && message.tool_calls.length > 0;
       const hasTextToolCalls = textToolCalls.length > 0;
 
-      console.log(
+      debug(
         `[hasNativeToolCalls: ${hasNativeToolCalls}, hasTextToolCalls: ${hasTextToolCalls}]`,
       );
 
@@ -753,7 +754,7 @@ export class Agent {
           await callbacks.onTyping();
         }
 
-        console.log(`[Executing tool: ${toolCall.name}]`, toolCall.arguments);
+        debug(`[Executing tool: ${toolCall.name}]`, toolCall.arguments);
 
         // Handle the special request_more_iterations tool
         if (toolCall.name === "request_more_iterations") {
@@ -761,14 +762,14 @@ export class Agent {
           try {
             args = JSON.parse(toolCall.arguments || "{}");
           } catch (parseError) {
-            console.log(
+            debug(
               `[Warning: Failed to parse request_more_iterations arguments: ${toolCall.arguments}]`,
             );
           }
 
           const additionalIterations = 3;
           remainingIterations += additionalIterations;
-          console.log(
+          debug(
             `[Agent requested more iterations: "${args.reason || "no reason provided"}"] Added ${additionalIterations}, now ${remainingIterations} remaining`,
           );
 
@@ -792,12 +793,12 @@ export class Agent {
           try {
             args = JSON.parse(toolCall.arguments || "{}");
           } catch (parseError) {
-            console.log(
+            debug(
               `[Warning: Failed to parse send_status_update arguments: ${toolCall.arguments}]`,
             );
           }
 
-          console.log(
+          debug(
             `[Agent status update: "${args.message || "no message"}"]`,
           );
 
@@ -852,7 +853,7 @@ export class Agent {
         if (statusSent && callbacks?.onTyping) {
           await callbacks.onTyping();
         }
-        console.log(`[Tool result (truncated)]:`, result.substring(0, 500));
+        debug(`[Tool result (truncated)]:`, result.substring(0, 500));
 
         // collect urls from browser navigation
         if (toolCall.name === "browser_navigate") {
@@ -923,7 +924,7 @@ export class Agent {
     }
 
     // tools were used - generate a final response summarizing what was done
-    console.log("\n--- Generating final response ---");
+    debug("\n--- Generating final response ---");
 
     // refresh typing indicator before final response generation
     if (callbacks?.onTyping) {
@@ -956,7 +957,7 @@ export class Agent {
     } catch (apiError) {
       clearTimeout(finalStatusTimeout);
       const errorMessage = apiError instanceof Error ? apiError.message : "Unknown error";
-      console.log(`[Final response API error: ${errorMessage}]`);
+      debug(`[Final response API error: ${errorMessage}]`);
 
       // return whatever we accumulated during tool usage
       if (responseChunks.length > 0) {
@@ -980,7 +981,7 @@ export class Agent {
     // strip emojis to comply with project guidelines
     const cleanFinal = stripEmojis(rawCleanFinal);
 
-    console.log("[Final response]:", JSON.stringify(cleanFinal));
+    debug("[Final response]:", JSON.stringify(cleanFinal));
 
     if (cleanFinal.trim()) {
       const finalWithSources = cleanFinal + sourcesSection;
