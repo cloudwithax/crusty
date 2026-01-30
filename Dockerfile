@@ -51,6 +51,9 @@ RUN mkdir -p /app/data && chown -R bun:bun /app/data
 ARG OPENAI_API_KEY
 ARG TELEGRAM_BOT_TOKEN
 
+# database configuration (optional, uses sqlite if not provided)
+ARG DATABASE_URL
+
 # openai configuration
 ARG OPENAI_BASE_URL
 ARG OPENAI_MODEL=gpt-4o
@@ -87,6 +90,9 @@ ARG HEARTBEAT_END
 # required credentials
 ENV OPENAI_API_KEY=${OPENAI_API_KEY}
 ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+
+# database configuration
+ENV DATABASE_URL=${DATABASE_URL}
 
 # openai configuration
 ENV OPENAI_BASE_URL=${OPENAI_BASE_URL}
