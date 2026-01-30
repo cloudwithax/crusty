@@ -3,6 +3,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { browserTools, cleanupBrowser } from "./browser.ts";
 import { todoTools, cleanupTodos } from "./todo.ts";
 import { skillTools } from "./skill.ts";
+import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
 
 // Common tool definition format - each tool has description, zod schema, and handler
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,11 +15,12 @@ type ToolDefinition = {
   handler: (args: any, userId: number) => Promise<string>;
 };
 
-// Registry of all available tools
+// Registry of all available tools - bash tools only available in docker
 const toolRegistry: Record<string, ToolDefinition> = {
   ...browserTools,
   ...todoTools,
   ...skillTools,
+  ...(DOCKER_ENV ? bashTools : {}),
 };
 
 /**
@@ -153,6 +155,7 @@ export function getAvailableTools(): string[] {
 export async function cleanupTools(): Promise<void> {
   await cleanupBrowser();
   await cleanupTodos();
+  await cleanupBash();
 }
 
 // Re-export tool types for extension

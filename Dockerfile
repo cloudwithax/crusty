@@ -1,10 +1,23 @@
 # syntax=docker/dockerfile:1
 
-FROM oven/bun:1 AS base
+FROM debian:bookworm-slim AS base
 WORKDIR /app
 
-# install chromium dependencies for puppeteer
+# install system dependencies + chromium for puppeteer
 RUN apt-get update && apt-get install -y \
+    curl \
+    unzip \
+    git \
+    wget \
+    jq \
+    vim \
+    nano \
+    htop \
+    tree \
+    net-tools \
+    dnsutils \
+    iputils-ping \
+    ca-certificates \
     chromium \
     fonts-liberation \
     libasound2 \
@@ -26,22 +39,26 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# install bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
 # puppeteer configuration
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
+# docker detection for bash tools
+ENV CRUSTY_DOCKER=true
+
 # install dependencies
-FROM base AS install
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
-# production image
-FROM base AS release
-COPY --from=install /app/node_modules ./node_modules
+# copy source
 COPY . .
 
-# create data directory for sqlite and ensure bun user can write to it
-RUN mkdir -p /app/data && chown -R bun:bun /app/data
+# create data directory for sqlite
+RUN mkdir -p /app/data
 
 # ============================================================
 # build arguments - pass at build time with --build-arg
@@ -60,10 +77,6 @@ ARG OPENAI_MODEL=gpt-4o
 
 # inference settings
 ARG INFERENCE_RPM_LIMIT=40
-
-# browser settings
-ARG BROWSER_HEADLESS=true
-ARG BROWSER_VIEWPORT=1280x800
 
 # bootstrap configuration
 ARG AGENTS_BOOTSTRAP_MAX_CHARS=20000
@@ -101,10 +114,6 @@ ENV OPENAI_MODEL=${OPENAI_MODEL}
 # inference settings
 ENV INFERENCE_RPM_LIMIT=${INFERENCE_RPM_LIMIT}
 
-# browser settings
-ENV BROWSER_HEADLESS=${BROWSER_HEADLESS}
-ENV BROWSER_VIEWPORT=${BROWSER_VIEWPORT}
-
 # bootstrap configuration
 ENV AGENTS_BOOTSTRAP_MAX_CHARS=${AGENTS_BOOTSTRAP_MAX_CHARS}
 
@@ -122,8 +131,5 @@ ENV HEARTBEAT_TIMEZONE=${HEARTBEAT_TIMEZONE}
 ENV HEARTBEAT_DAYS=${HEARTBEAT_DAYS}
 ENV HEARTBEAT_START=${HEARTBEAT_START}
 ENV HEARTBEAT_END=${HEARTBEAT_END}
-
-# run as non-root user for security
-USER bun
 
 ENTRYPOINT ["bun", "run", "index.ts"]
