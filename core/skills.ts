@@ -248,7 +248,7 @@ export function buildSkillsPromptSection(
   const lines = [
     "# Available Skills",
     "",
-    "The following skills are available to extend your capabilities. Use the `skill` tool to load a skill when the task matches its description.",
+    "IMPORTANT: Skills contain detailed instructions for specific tasks. You MUST load the relevant skill BEFORE attempting tasks that match a skill's description.",
     "",
     "<available_skills>",
   ];
@@ -263,9 +263,17 @@ export function buildSkillsPromptSection(
 
   lines.push("</available_skills>");
   lines.push("");
-  lines.push(
-    "To use a skill, call the `skill` tool with the skill name. The full skill instructions will be loaded into context.",
-  );
+  lines.push("## How to Use Skills");
+  lines.push("");
+  lines.push("1. BEFORE starting a task, check if it matches any skill description above");
+  lines.push("2. If it matches, call the `skill` tool with the skill name: skill({ name: \"skill-name\" })");
+  lines.push("3. Read the returned instructions carefully");
+  lines.push("4. Follow those instructions to complete the task");
+  lines.push("");
+  lines.push("Example: If the user asks you to run a shell command, first load the bash skill:");
+  lines.push("  -> Call: skill({ name: \"bash\" })");
+  lines.push("  -> Read the instructions");
+  lines.push("  -> Then execute the command following the skill's guidance");
 
   return lines.join("\n");
 }

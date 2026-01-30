@@ -143,7 +143,7 @@ function truncateOutput(output: string, maxLength: number = 4000): string {
 
 export const bashTools = {
   bash_execute: {
-    description: `Execute an arbitrary bash command inside the Docker container. This is your primary tool for running shell commands, scripts, and system utilities.
+    description: `Execute an arbitrary bash command in the terminal. This is your primary tool for running shell commands, scripts, and system utilities.
 
 WHEN TO USE:
 - Running programs or scripts (python, node, bun, etc.)
@@ -156,7 +156,7 @@ WHEN TO USE:
 PARAMETERS:
 - command (required): The full bash command to run. Can include pipes, redirects, and chained commands.
 - timeout (optional): Max execution time in ms. Default 30000 (30s), max 120000 (2min). Use higher values for long-running tasks.
-- workdir (optional): Directory to run the command in. Default is /app (the bot's root directory).
+- workdir (optional): Directory to run the command in. Default is /app (the project root directory).
 
 BLOCKED: sudo, rm -rf, reboot, shutdown, and other destructive/privilege escalation commands are blocked for safety.
 
@@ -168,7 +168,7 @@ EXAMPLES:
     schema: BashExecuteSchema,
     handler: async (args: z.infer<typeof BashExecuteSchema>, _userId: number) => {
       if (!DOCKER_ENV) {
-        return "[Error] bash_execute is only available when running inside the Docker container.";
+        return "[Error] bash_execute is only available when shell access is enabled.";
       }
 
       const blocked = isCommandBlocked(args.command);
@@ -238,7 +238,7 @@ EXAMPLES:
     }),
     handler: async (args: { path: string; lines?: number }, _userId: number) => {
       if (!DOCKER_ENV) {
-        return "[Error] bash_read_file is only available when running inside the Docker container.";
+        return "[Error] bash_read_file is only available when shell access is enabled.";
       }
 
       const cmd = args.lines ? `head -n ${args.lines} "${args.path}"` : `cat "${args.path}"`;
@@ -298,7 +298,7 @@ EXAMPLES:
       _userId: number
     ) => {
       if (!DOCKER_ENV) {
-        return "[Error] bash_write_file is only available when running inside the Docker container.";
+        return "[Error] bash_write_file is only available when shell access is enabled.";
       }
 
       // use heredoc to handle special characters safely
@@ -354,7 +354,7 @@ EXAMPLES:
     }),
     handler: async (args: { path: string; all?: boolean }, _userId: number) => {
       if (!DOCKER_ENV) {
-        return "[Error] bash_list_dir is only available when running inside the Docker container.";
+        return "[Error] bash_list_dir is only available when shell access is enabled.";
       }
 
       const flags = args.all ? "-la" : "-l";
