@@ -58,6 +58,8 @@ export function markPaired(userId: number): void {
   db.run("UPDATE pairing SET used = 1, paired_user_id = ? WHERE id = 1", [userId]);
 }
 
+
+
 // check if a code is valid
 export function isValidPairingCode(code: string): boolean {
   const data = loadPairingData();
@@ -130,6 +132,23 @@ export async function markPairedAsync(userId: number): Promise<void> {
   }
 
   await asyncDb.run("UPDATE pairing SET used = 1, paired_user_id = $1 WHERE id = 1", [userId]);
+}
+
+// clear existing pairing when generating a new code
+// this allows re-pairing after expiration or when switching users
+export function clearPairingForNewCode(): void {
+  const db = getDatabase();
+  db.run("DELETE FROM pairing WHERE id = 1");
+}
+
+// async version for postgres support
+export async function clearPairingForNewCodeAsync(): Promise<void> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    clearPairingForNewCode();
+    return;
+  }
+  await asyncDb.run("DELETE FROM pairing WHERE id = 1");
 }
 
 export async function isValidPairingCodeAsync(code: string): Promise<boolean> {

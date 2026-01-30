@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { chromium } from "playwright";
-import { generatePairingCode, savePairingCode, loadPairingData, clearPairing, getPairingCodeRemainingMinutes } from "./pairing.ts";
+import { generatePairingCode, savePairingCode, loadPairingData, clearPairing, getPairingCodeRemainingMinutes, clearPairingForNewCode } from "./pairing.ts";
 
 const ENV_PATH = join(import.meta.dir, "..", ".env");
 const COGS_PATH = join(import.meta.dir, "..", "cogs");
@@ -290,6 +290,12 @@ async function generatePairing(): Promise<void> {
     console.log(`Expires in: ${remaining} minutes`);
     console.log("\nUse this code as the first message to the bot on Telegram.");
     return;
+  }
+
+  // clear any existing pairing (expired or used) before generating a new code
+  // this allows re-pairing after expiration or when switching users
+  if (existingData) {
+    clearPairingForNewCode();
   }
 
   const code = generatePairingCode();
