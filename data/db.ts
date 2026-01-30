@@ -77,6 +77,8 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
   readonly type = "postgres" as const;
   private queryCache: Map<string, { result: unknown[]; params: string; time: number }> = new Map();
   private cacheTimeout = 50; // ms
+  private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(connectionString: string) {
     this.sql = postgres(connectionString, {
@@ -86,31 +88,64 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
     });
   }
 
-  // sync run - queues the operation
+  // set the init promise so queries can wait for it
+  setInitPromise(promise: Promise<void>): void {
+    this.initPromise = promise;
+    promise.then(() => {
+      this.initialized = true;
+    });
+  }
+
+  // wait for tables to be ready
+  private async waitForInit(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+  }
+
+  // sync run - queues the operation (waits for init)
   run(sql: string, params?: unknown[]): void {
     const pgSql = this.convertPlaceholders(sql);
-    this.sql.unsafe(pgSql, (params || []) as postgres.ParameterOrFragment<never>[]).catch((err) => {
-      console.error("[db:postgres] run error:", err);
-    });
+    const execute = () => {
+      this.sql.unsafe(pgSql, (params || []) as postgres.ParameterOrFragment<never>[]).catch((err) => {
+        console.error("[db:postgres] run error:", err);
+      });
+    };
+
+    if (!this.initialized && this.initPromise) {
+      this.initPromise.then(execute);
+    } else {
+      execute();
+    }
   }
 
   // async run
   async runAsync(sql: string, params?: unknown[]): Promise<void> {
+    await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
     await this.sql.unsafe(pgSql, (params || []) as postgres.ParameterOrFragment<never>[]);
   }
 
-  // sync exec
+  // sync exec (waits for init)
   exec(sql: string): void {
     const statements = sql
       .split(";")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
-    for (const stmt of statements) {
-      this.sql.unsafe(stmt).catch((err) => {
-        console.error("[db:postgres] exec error:", err);
-      });
+    const execute = () => {
+      for (const stmt of statements) {
+        this.sql.unsafe(stmt).catch((err) => {
+          console.error("[db:postgres] exec error:", err);
+        });
+      }
+    };
+
+    if (!this.initialized && this.initPromise) {
+      this.initPromise.then(execute);
+    } else {
+      execute();
     }
   }
 
@@ -142,6 +177,11 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
           return (cached.result[0] as T) || null;
         }
 
+        // dont queue queries until tables are initialized
+        if (!adapter.initialized) {
+          return cached ? (cached.result[0] as T) || null : null;
+        }
+
         // queue async fetch for future calls
         adapter.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[])
           .then((rows) => {
@@ -165,6 +205,11 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
           return cached.result as T[];
         }
 
+        // dont queue queries until tables are initialized
+        if (!adapter.initialized) {
+          return cached ? (cached.result as T[]) : [];
+        }
+
         adapter.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[])
           .then((rows) => {
             adapter.queryCache.set(cacheKey, {
@@ -182,6 +227,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
 
   // async get
   async get<T>(sql: string, ...params: unknown[]): Promise<T | null> {
+    await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
     const rows = await this.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[]);
     return (rows[0] as T) || null;
@@ -189,6 +235,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
 
   // async all
   async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+    await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
     const rows = await this.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[]);
     return rows as unknown as T[];
@@ -225,8 +272,10 @@ export function getDatabase(): DatabaseAdapter {
       debug("[db] using postgresql database");
       pgAdapter = new PostgresAdapter(DATABASE_URL!);
       db = pgAdapter;
-      // init tables async for postgres
-      initTablesAsync().catch((err) => console.error("[db] init error:", err));
+      // init tables async for postgres and register the promise so queries can wait
+      const initPromise = initTablesAsync();
+      pgAdapter.setInitPromise(initPromise);
+      initPromise.catch((err) => console.error("[db] init error:", err));
     } else {
       debug("[db] using sqlite database");
       db = new SQLiteAdapter(getSqlitePath());
