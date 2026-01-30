@@ -17,6 +17,12 @@ async function prompt(question: string, defaultValue?: string): Promise<string> 
       : `${question}: `;
     stdout.write(displayQuestion);
 
+    // ensure stdin is in raw mode for char-by-char reading and is actively reading
+    if (typeof stdin.setRawMode === "function") {
+      stdin.setRawMode(true);
+    }
+    stdin.resume();
+
     let input = "";
 
     const onData = (data: Buffer) => {
@@ -25,6 +31,10 @@ async function prompt(question: string, defaultValue?: string): Promise<string> 
       if (char === "\n" || char === "\r") {
         stdout.write("\n");
         stdin.removeListener("data", onData);
+        // restore stdin state for next prompt or other uses
+        if (typeof stdin.setRawMode === "function") {
+          stdin.setRawMode(false);
+        }
         const result = input.trim() || defaultValue || "";
         resolve(result);
       } else if (char === "\u0003") {
