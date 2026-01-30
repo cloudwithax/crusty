@@ -1,6 +1,14 @@
 import { Agent, type AgentCallbacks } from "../core/agent.ts";
 import { cleanupTools } from "../tools/registry.ts";
-import { isValidPairingCode, markPaired, isUserPaired, isSystemPaired, loadPairingData } from "../cli/pairing.ts";
+import {
+  isValidPairingCode,
+  markPaired,
+  isUserPaired,
+  isSystemPaired,
+  loadPairingData,
+  generatePairingCode,
+  savePairingCode,
+} from "../cli/pairing.ts";
 import { memoryService } from "../memory/service.ts";
 import { join } from "path";
 import {
@@ -656,7 +664,19 @@ export async function startBot(): Promise<void> {
   if (isSystemPaired()) {
     console.log("bot is paired");
   } else {
-    console.log("bot is not paired - run `bun run setup` to generate pairing code");
+    // in non-interactive mode (docker, piped output, etc), auto-generate a pairing code
+    const isNonInteractive = !process.stdout.isTTY;
+    if (isNonInteractive) {
+      const code = generatePairingCode();
+      savePairingCode(code, 60);
+      console.log("----------------------------------------");
+      console.log("PAIRING CODE: " + code);
+      console.log("----------------------------------------");
+      console.log("send this code to the bot on telegram to pair");
+      console.log("code expires in 60 minutes");
+    } else {
+      console.log("bot is not paired - run `bun run setup` to generate pairing code");
+    }
   }
 
   // Set bot commands
