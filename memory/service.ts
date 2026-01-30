@@ -62,27 +62,11 @@ export class MemoryService {
   private ensureTable(): void {
     if (this.initialized) return;
 
-    const db = getDatabase();
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        raw_content TEXT,
-        keywords TEXT NOT NULL,
-        emotional_weight INTEGER DEFAULT 5,
-        timestamp INTEGER NOT NULL,
-        last_recalled INTEGER,
-        recall_count INTEGER DEFAULT 0
-      )
-    `);
-
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
+    // tables are now initialized in db.ts during database initialization
+    // this method just marks the service as initialized
 
     this.initialized = true;
-    debug("[memory] table initialized");
+    debug("[memory] service initialized");
   }
 
   // extract meaningful keywords from text

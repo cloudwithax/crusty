@@ -342,9 +342,25 @@ function initTables(): void {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      raw_content TEXT,
+      keywords TEXT NOT NULL,
+      emotional_weight INTEGER DEFAULT 5,
+      timestamp INTEGER NOT NULL,
+      last_recalled INTEGER,
+      recall_count INTEGER DEFAULT 0
+    )
+  `);
+
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
 
   debug("[db] tables initialized");
 }
@@ -396,9 +412,25 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      content TEXT NOT NULL,
+      raw_content TEXT,
+      keywords TEXT NOT NULL,
+      emotional_weight INTEGER DEFAULT 5,
+      timestamp BIGINT NOT NULL,
+      last_recalled BIGINT,
+      recall_count INTEGER DEFAULT 0
+    )
+  `);
+
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
+  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
+  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
 
   debug("[db] postgres tables initialized");
 }
