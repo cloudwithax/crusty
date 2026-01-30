@@ -1,14 +1,20 @@
 # Crusty
 
 ```
-    _____
-   /     \
-  |  o o  |
-   \_____/
-  /|     |\
- / |     | \
-(  |_____|  )
- \_/     \_/
+  ░░                      
+░░░░              ░░░░░░  
+░░░░  ░░            ░░░░░░
+░░░░  ░░        ░░    ░░▒▒
+░░░░░░▒▒          ░░▒▒░░▒▒
+  ░░▒▒                ░░▒▒
+    ░░▒▒  ░░░░░░░░  ░░▒▒  
+      ░░░░░░░░░░░░░░░░    
+    ░░░░░░░░██░░██░░░░░░  
+    ▒▒░░░░░░░░░░░░░░░░▒▒  
+  ░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░
+  ░░░░  ▒▒░░    ░░▒▒  ░░░░
+  ░░    ▒▒        ▒▒    ░░
+
 ```
 
 a telegram ai agent with web browsing capabilities, long-term memory, and a modular personality system. crusty scuttles across the web, digging up information and helping with research tasks.
