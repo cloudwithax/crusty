@@ -40,8 +40,8 @@ FROM base AS release
 COPY --from=install /app/node_modules ./node_modules
 COPY . .
 
-# create data directory for sqlite
-RUN mkdir -p /app/data
+# create data directory for sqlite and ensure bun user can write to it
+RUN mkdir -p /app/data && chown -R bun:bun /app/data
 
 # ============================================================
 # build arguments - pass at build time with --build-arg
