@@ -1,0 +1,29 @@
+{
+  "name": "crusty",
+  "version": "1.0.0",
+  "description": "a crab-themed telegram ai agent with web browsing capabilities",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "crusty": "./cli/index.ts"
+  },
+  "scripts": {
+    "setup": "bun cli/setup.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/uuid": "^11.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "openai": "^6.17.0",
+    "puppeteer": "^24.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "uuid": "^13.0.0",
+    "zod": "^4.3.6"
+  }
+}

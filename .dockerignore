@@ -1,0 +1,42 @@
+# dependencies
+node_modules
+
+# git
+.git
+.gitignore
+
+# github
+.github
+
+# ide
+.vscode
+.idea
+*.swp
+*.swo
+
+# environment and secrets
+.env
+.env.*
+*.env
+
+# database files
+*.db
+*.db-shm
+*.db-wal
+
+# logs
+*.log
+logs/
+
+# test files
+*.test.ts
+*.spec.ts
+__tests__/
+
+# documentation
+*.md
+!cogs/*.md
+
+# misc
+.DS_Store
+Thumbs.db
