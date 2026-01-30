@@ -1,10 +1,10 @@
 import { Agent, type AgentCallbacks } from "../core/agent.ts";
 import { cleanupTools } from "../tools/registry.ts";
 import {
-  isValidPairingCode,
-  markPaired,
-  isUserPaired,
-  isSystemPaired,
+  isValidPairingCodeAsync,
+  markPairedAsync,
+  isUserPairedAsync,
+  isSystemPairedAsync,
   loadPairingData,
   generatePairingCode,
   savePairingCode,
@@ -204,7 +204,7 @@ const commands: Record<
   (userId: number, chatId: number, messageThreadId: number | undefined, args: string) => Promise<void>
 > = {
   async start(userId, chatId, messageThreadId) {
-    if (!isSystemPaired()) {
+    if (!(await isSystemPairedAsync())) {
       await sendMessage(
         chatId,
         "🔐 *Pairing Required*\n\n" +
@@ -216,7 +216,7 @@ const commands: Record<
       return;
     }
 
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 *Already Paired*\n\n" +
@@ -243,7 +243,7 @@ const commands: Record<
   },
 
   async help(userId, chatId, messageThreadId) {
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
@@ -276,7 +276,7 @@ const commands: Record<
   },
 
   async clear(userId, chatId, messageThreadId) {
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
@@ -291,7 +291,7 @@ const commands: Record<
   },
 
   async memory(userId, chatId, messageThreadId, args) {
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
@@ -304,13 +304,13 @@ const commands: Record<
     const arg = args.trim().toLowerCase();
 
     if (arg === "clear") {
-      memoryService.clearUserMemories(userId);
+      await memoryService.clearUserMemories(userId);
       await sendMessage(chatId, "memory banks wiped clean.", { message_thread_id: messageThreadId });
       return;
     }
 
     // show memory stats
-    const stats = memoryService.getStats(userId);
+    const stats = await memoryService.getStats(userId);
     await sendMessage(
       chatId,
       `*Memory Stats*\n\n` +
@@ -321,7 +321,7 @@ const commands: Record<
   },
 
   async soul(userId, chatId, messageThreadId, args) {
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
@@ -367,7 +367,7 @@ const commands: Record<
   },
 
   async skill(userId, chatId, messageThreadId, args) {
-    if (!isUserPaired(userId)) {
+    if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
@@ -532,11 +532,13 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   const messageThreadId = message.message_thread_id;
   const text = message.text;
 
-  // Check if system is paired
-  if (!isSystemPaired()) {
+  // Check if system is paired (use async for postgres support)
+  const systemPaired = await isSystemPairedAsync();
+  if (!systemPaired) {
     // Check if message is a valid pairing code
-    if (isValidPairingCode(text)) {
-      markPaired(userId);
+    const validCode = await isValidPairingCodeAsync(text);
+    if (validCode) {
+      await markPairedAsync(userId);
       await sendMessage(
         chatId,
         "*Successfully Paired!*\n\n" +
@@ -558,8 +560,9 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  // System is paired - check if this user is the paired user
-  if (!isUserPaired(userId)) {
+  // System is paired - check if this user is the paired user (use async for postgres)
+  const userPaired = await isUserPairedAsync(userId);
+  if (!userPaired) {
     await sendMessage(
       chatId,
       "🔐 *Access Denied*\n\n" +
@@ -661,7 +664,7 @@ export async function startBot(): Promise<void> {
   }
 
   // check pairing status
-  if (isSystemPaired()) {
+  if (await isSystemPairedAsync()) {
     console.log("bot is paired");
   } else {
     // in non-interactive mode (docker, piped output, etc), auto-generate a pairing code

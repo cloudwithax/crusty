@@ -1,5 +1,5 @@
 import { OpenAI } from "openai";
-import { getDatabase } from "../data/db.ts";
+import { getDatabase, getAsyncDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 
 // environment configuration
@@ -61,14 +61,30 @@ function calculateWeight(dateStr: string): number {
 }
 
 // load entries from database and build watchlist
-function loadEntriesFromDb(): ReviewEntry[] {
-  const db = getDatabase();
+async function loadEntriesFromDb(): Promise<ReviewEntry[]> {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - LOOKBACK_DAYS);
   const cutoffStr = cutoffDate.toISOString().split("T")[0];
 
+  const asyncDb = getAsyncDatabase();
+  if (asyncDb) {
+    const rows = await asyncDb.all<{ id: number; date: string; tag: string; miss: string; fix: string }>(
+      "SELECT id, date, tag, miss, fix FROM self_review WHERE date >= $1 ORDER BY date DESC",
+      cutoffStr!
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      tag: row.tag as ReviewTag,
+      miss: row.miss,
+      fix: row.fix,
+    }));
+  }
+
+  const db = getDatabase();
   const rows = db
-    .query<{ id: number; date: string; tag: string; miss: string; fix: string }, [string]>(
+    .query<{ id: number; date: string; tag: string; miss: string; fix: string }>(
       "SELECT id, date, tag, miss, fix FROM self_review WHERE date >= ? ORDER BY date DESC"
     )
     .all(cutoffStr!);
@@ -94,7 +110,7 @@ function buildWatchlist(entries: ReviewEntry[]): WatchlistEntry[] {
 }
 
 // initialize self-review system
-export function initSelfReview(): void {
+export async function initSelfReview(): Promise<void> {
   if (isInitialized) {
     return;
   }
@@ -102,7 +118,7 @@ export function initSelfReview(): void {
   debug("[self-review] initializing...");
 
   try {
-    const entries = loadEntriesFromDb();
+    const entries = await loadEntriesFromDb();
     watchlist = buildWatchlist(entries);
     debug(`[self-review] loaded ${watchlist.length} entries from last ${LOOKBACK_DAYS} days`);
 
@@ -171,17 +187,27 @@ explicitly consider the opposite of your first instinct. if any of these pattern
 }
 
 // append a new entry to the database
-export function logReviewEntry(tag: ReviewTag, miss: string, fix: string): void {
+export async function logReviewEntry(tag: ReviewTag, miss: string, fix: string): Promise<void> {
   const date = new Date().toISOString().split("T")[0];
 
   try {
-    const db = getDatabase();
-    db.run("INSERT INTO self_review (date, tag, miss, fix) VALUES (?, ?, ?, ?)", [date!, tag, miss, fix]);
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run("INSERT INTO self_review (date, tag, miss, fix) VALUES ($1, $2, $3, $4)", [
+        date!,
+        tag,
+        miss,
+        fix,
+      ]);
+    } else {
+      const db = getDatabase();
+      db.run("INSERT INTO self_review (date, tag, miss, fix) VALUES (?, ?, ?, ?)", [date!, tag, miss, fix]);
+    }
 
     debug(`[self-review] logged entry: [${tag}] ${miss.substring(0, 40)}...`);
 
     // refresh watchlist
-    const entries = loadEntriesFromDb();
+    const entries = await loadEntriesFromDb();
     watchlist = buildWatchlist(entries);
   } catch (error) {
     console.error("[self-review] failed to log entry:", error);
@@ -258,7 +284,7 @@ export async function selfReviewCycle(recentContext: string): Promise<void> {
   const result = await runSelfCheck(recentContext);
 
   if (result.detected && result.tag && result.miss && result.fix) {
-    logReviewEntry(result.tag, result.miss, result.fix);
+    await logReviewEntry(result.tag, result.miss, result.fix);
     debug(`[self-review] pattern detected and logged: [${result.tag}]`);
   } else {
     debug("[self-review] no patterns detected this cycle");

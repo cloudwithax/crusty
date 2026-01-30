@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import { getDatabase } from "../data/db";
+import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
 
 // generate a random pairing code
 export function generatePairingCode(): string {
@@ -35,10 +35,11 @@ interface PairingData {
 
 export function loadPairingData(): PairingData | null {
   const db = getDatabase();
-  const row = db.query<
-    { code: string; created_at: number; expires_at: number; used: number; paired_user_id: number | null },
-    []
-  >("SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1").get();
+  const row = db
+    .query<{ code: string; created_at: number; expires_at: number; used: number; paired_user_id: number | null }>(
+      "SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1"
+    )
+    .get();
 
   if (!row) return null;
 
@@ -92,4 +93,61 @@ export function getPairingCodeRemainingMinutes(): number | null {
 export function clearPairing(): void {
   const db = getDatabase();
   db.run("DELETE FROM pairing WHERE id = 1");
+}
+
+// async versions for postgres support
+
+export async function loadPairingDataAsync(): Promise<PairingData | null> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    return loadPairingData();
+  }
+
+  const row = await asyncDb.get<{
+    code: string;
+    created_at: number;
+    expires_at: number;
+    used: number;
+    paired_user_id: number | null;
+  }>("SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1");
+
+  if (!row) return null;
+
+  return {
+    code: row.code,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    used: row.used === 1,
+    pairedUserId: row.paired_user_id ?? undefined,
+  };
+}
+
+export async function markPairedAsync(userId: number): Promise<void> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    markPaired(userId);
+    return;
+  }
+
+  await asyncDb.run("UPDATE pairing SET used = 1, paired_user_id = $1 WHERE id = 1", [userId]);
+}
+
+export async function isValidPairingCodeAsync(code: string): Promise<boolean> {
+  const data = await loadPairingDataAsync();
+  if (!data) return false;
+  if (data.used) return false;
+  if (Date.now() > data.expiresAt) return false;
+  return data.code === code.toUpperCase();
+}
+
+export async function isUserPairedAsync(userId: number): Promise<boolean> {
+  const data = await loadPairingDataAsync();
+  if (!data) return false;
+  return data.used && data.pairedUserId === userId;
+}
+
+export async function isSystemPairedAsync(): Promise<boolean> {
+  const data = await loadPairingDataAsync();
+  if (!data) return false;
+  return data.used;
 }

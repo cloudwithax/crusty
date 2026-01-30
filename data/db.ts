@@ -1,4 +1,4 @@
-import { Database as BunSQLite } from "bun:sqlite";
+import { Database as BunSQLite, type SQLQueryBindings } from "bun:sqlite";
 import postgres from "postgres";
 import { join } from "path";
 import { debug } from "../utils/debug.ts";
@@ -25,13 +25,21 @@ export interface DatabaseAdapter {
   readonly type: "sqlite" | "postgres";
 }
 
-// async database interface for postgres
+// async database interface for postgres - used for async operations
 export interface AsyncDatabaseAdapter {
   run(sql: string, params?: unknown[]): Promise<void>;
   exec(sql: string): Promise<void>;
   get<T>(sql: string, ...params: unknown[]): Promise<T | null>;
   all<T>(sql: string, ...params: unknown[]): Promise<T[]>;
   close(): Promise<void>;
+  readonly type: "postgres";
+}
+
+// postgres adapter async methods interface - what getAsyncDatabase returns
+export interface PostgresAsyncMethods {
+  run(sql: string, params?: unknown[]): Promise<void>;
+  get<T>(sql: string, ...params: unknown[]): Promise<T | null>;
+  all<T>(sql: string, ...params: unknown[]): Promise<T[]>;
   readonly type: "postgres";
 }
 
@@ -47,7 +55,7 @@ class SQLiteAdapter implements DatabaseAdapter {
 
   run(sql: string, params?: unknown[]): void {
     if (params && params.length > 0) {
-      this.db.run(sql, params);
+      this.db.run(sql, params as SQLQueryBindings[]);
     } else {
       this.db.run(sql);
     }
@@ -60,8 +68,8 @@ class SQLiteAdapter implements DatabaseAdapter {
   query<T>(sql: string): QueryHandle<T> {
     const stmt = this.db.query(sql);
     return {
-      get: (...params: unknown[]): T | null => stmt.get(...params) as T | null,
-      all: (...params: unknown[]): T[] => stmt.all(...params) as T[],
+      get: (...params: unknown[]): T | null => stmt.get(...(params as SQLQueryBindings[])) as T | null,
+      all: (...params: unknown[]): T[] => stmt.all(...(params as SQLQueryBindings[])) as T[],
     };
   }
 
@@ -72,7 +80,8 @@ class SQLiteAdapter implements DatabaseAdapter {
 
 // postgres adapter using postgres.js with sync-like interface
 // uses a command queue to handle async operations synchronously
-class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
+// implements DatabaseAdapter for sync operations and has async methods for proper async usage
+class PostgresAdapter implements DatabaseAdapter {
   private sql: postgres.Sql;
   readonly type = "postgres" as const;
   private queryCache: Map<string, { result: unknown[]; params: string; time: number }> = new Map();
@@ -108,7 +117,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
   run(sql: string, params?: unknown[]): void {
     const pgSql = this.convertPlaceholders(sql);
     const execute = () => {
-      this.sql.unsafe(pgSql, (params || []) as postgres.ParameterOrFragment<never>[]).catch((err) => {
+      this.sql.unsafe(pgSql, (params || []) as any).catch((err) => {
         console.error("[db:postgres] run error:", err);
       });
     };
@@ -124,7 +133,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
   async runAsync(sql: string, params?: unknown[]): Promise<void> {
     await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
-    await this.sql.unsafe(pgSql, (params || []) as postgres.ParameterOrFragment<never>[]);
+    await this.sql.unsafe(pgSql, (params || []) as any);
   }
 
   // sync exec (waits for init)
@@ -183,7 +192,8 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
         }
 
         // queue async fetch for future calls
-        adapter.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[])
+        adapter.sql
+          .unsafe(pgSql, params as any)
           .then((rows) => {
             adapter.queryCache.set(cacheKey, {
               result: rows as unknown[],
@@ -210,7 +220,8 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
           return cached ? (cached.result as T[]) : [];
         }
 
-        adapter.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[])
+        adapter.sql
+          .unsafe(pgSql, params as any)
           .then((rows) => {
             adapter.queryCache.set(cacheKey, {
               result: rows as unknown[],
@@ -229,7 +240,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
   async get<T>(sql: string, ...params: unknown[]): Promise<T | null> {
     await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
-    const rows = await this.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[]);
+    const rows = await this.sql.unsafe(pgSql, params as any);
     return (rows[0] as T) || null;
   }
 
@@ -237,7 +248,7 @@ class PostgresAdapter implements DatabaseAdapter, AsyncDatabaseAdapter {
   async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
     await this.waitForInit();
     const pgSql = this.convertPlaceholders(sql);
-    const rows = await this.sql.unsafe(pgSql, params as postgres.ParameterOrFragment<never>[]);
+    const rows = await this.sql.unsafe(pgSql, params as any);
     return rows as unknown as T[];
   }
 
@@ -286,12 +297,21 @@ export function getDatabase(): DatabaseAdapter {
 }
 
 // get async postgres adapter for proper async operations
-export function getAsyncDatabase(): AsyncDatabaseAdapter | null {
+export function getAsyncDatabase(): PostgresAsyncMethods | null {
   if (!isUsingPostgres()) return null;
   if (!pgAdapter) {
     getDatabase(); // ensure initialized
   }
-  return pgAdapter;
+  if (!pgAdapter) return null;
+
+  // return a wrapper that exposes the async methods
+  const adapter = pgAdapter;
+  return {
+    type: "postgres" as const,
+    run: (sql: string, params?: unknown[]) => adapter.runAsync(sql, params),
+    get: <T>(sql: string, ...params: unknown[]) => adapter.get<T>(sql, ...params),
+    all: <T>(sql: string, ...params: unknown[]) => adapter.all<T>(sql, ...params),
+  };
 }
 
 function initTables(): void {

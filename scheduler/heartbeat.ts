@@ -358,17 +358,17 @@ let heartbeatInterval: Timer | null = null;
 let isRunning = false;
 
 // Start the heartbeat scheduler
-export function startHeartbeat(
+export async function startHeartbeat(
   sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
   config?: HeartbeatConfig
-): void {
+): Promise<void> {
   if (isRunning) {
     debug("[heartbeat] already running");
     return;
   }
 
   // initialize self-review system on heartbeat start
-  initSelfReview();
+  await initSelfReview();
 
   const effectiveConfig = config || loadConfig();
   const intervalMs = parseDuration(effectiveConfig.every);

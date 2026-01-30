@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getDatabase } from "../data/db";
+import { getDatabase, getAsyncDatabase } from "../data/db";
 import { debug } from "../utils/debug.ts";
 
 const CreateTodoSchema = z.object({
@@ -53,11 +53,50 @@ function generateTodoId(): string {
   return `todo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function getTodoWithItems(todoId: string, userId: number): TodoList | null {
-  const db = getDatabase();
+async function getTodoWithItems(todoId: string, userId: number): Promise<TodoList | null> {
+  const asyncDb = getAsyncDatabase();
 
+  if (asyncDb) {
+    const todoRow = await asyncDb.get<{
+      id: string;
+      title: string;
+      created_at: number;
+      updated_at: number;
+    }>(
+      "SELECT id, title, created_at, updated_at FROM todos WHERE id = $1 AND user_id = $2",
+      todoId,
+      userId
+    );
+
+    if (!todoRow) return null;
+
+    const itemRows = await asyncDb.all<{
+      task: string;
+      priority: string;
+      estimated_effort: string | null;
+      completed: number;
+    }>(
+      "SELECT task, priority, estimated_effort, completed FROM todo_items WHERE todo_id = $1 ORDER BY item_order",
+      todoId
+    );
+
+    return {
+      id: todoRow.id,
+      title: todoRow.title,
+      items: itemRows.map((row) => ({
+        task: row.task,
+        priority: row.priority as "high" | "medium" | "low",
+        estimatedEffort: row.estimated_effort ?? undefined,
+        completed: row.completed === 1,
+      })),
+      createdAt: new Date(todoRow.created_at * 1000),
+      updatedAt: new Date(todoRow.updated_at * 1000),
+    };
+  }
+
+  const db = getDatabase();
   const todoRow = db
-    .query<{ id: string; title: string; created_at: number; updated_at: number }, [string, number]>(
+    .query<{ id: string; title: string; created_at: number; updated_at: number }>(
       "SELECT id, title, created_at, updated_at FROM todos WHERE id = ? AND user_id = ?"
     )
     .get(todoId, userId);
@@ -65,10 +104,9 @@ function getTodoWithItems(todoId: string, userId: number): TodoList | null {
   if (!todoRow) return null;
 
   const itemRows = db
-    .query<
-      { task: string; priority: string; estimated_effort: string | null; completed: number },
-      [string]
-    >("SELECT task, priority, estimated_effort, completed FROM todo_items WHERE todo_id = ? ORDER BY item_order")
+    .query<{ task: string; priority: string; estimated_effort: string | null; completed: number }>(
+      "SELECT task, priority, estimated_effort, completed FROM todo_items WHERE todo_id = ? ORDER BY item_order"
+    )
     .all(todoId);
 
   return {
@@ -107,27 +145,43 @@ export const todoTools = {
       "Create a structured todo list for multi-step tasks, projects, or complex workflows. Use when the user mentions multiple actions, sequences, deadlines, or objectives that need organization.",
     schema: CreateTodoSchema,
     handler: async (args: z.infer<typeof CreateTodoSchema>, userId: number) => {
-      const db = getDatabase();
+      const asyncDb = getAsyncDatabase();
       const todoId = generateTodoId();
       const now = Math.floor(Date.now() / 1000);
 
-      db.run("INSERT INTO todos (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [
-        todoId,
-        userId,
-        args.title,
-        now,
-        now,
-      ]);
-
-      for (let i = 0; i < args.items.length; i++) {
-        const item = args.items[i]!;
-        db.run(
-          "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES (?, ?, ?, ?, 0, ?)",
-          [todoId, item.task, item.priority, item.estimatedEffort ?? null, i]
+      if (asyncDb) {
+        await asyncDb.run(
+          "INSERT INTO todos (id, user_id, title, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+          [todoId, userId, args.title, now, now]
         );
+
+        for (let i = 0; i < args.items.length; i++) {
+          const item = args.items[i]!;
+          await asyncDb.run(
+            "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES ($1, $2, $3, $4, 0, $5)",
+            [todoId, item.task, item.priority, item.estimatedEffort ?? null, i]
+          );
+        }
+      } else {
+        const db = getDatabase();
+        db.run("INSERT INTO todos (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [
+          todoId,
+          userId,
+          args.title,
+          now,
+          now,
+        ]);
+
+        for (let i = 0; i < args.items.length; i++) {
+          const item = args.items[i]!;
+          db.run(
+            "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES (?, ?, ?, ?, 0, ?)",
+            [todoId, item.task, item.priority, item.estimatedEffort ?? null, i]
+          );
+        }
       }
 
-      const todo = getTodoWithItems(todoId, userId);
+      const todo = await getTodoWithItems(todoId, userId);
       return `Created todo list:\n\n${formatTodoList(todo!)}\n\nTodo ID: \`${todoId}\``;
     },
   },
@@ -136,27 +190,43 @@ export const todoTools = {
     description: "Update an existing todo list by replacing all its items. Use this when the user wants to add new tasks, remove tasks, reorder tasks, or modify task details. You need the todo ID (from todo_list or todo_create) and the complete new list of items.",
     schema: UpdateTodoSchema,
     handler: async (args: z.infer<typeof UpdateTodoSchema>, userId: number) => {
-      const db = getDatabase();
-
-      const existing = getTodoWithItems(args.todoId, userId);
+      const existing = await getTodoWithItems(args.todoId, userId);
       if (!existing) {
         return `Todo list not found: ${args.todoId}`;
       }
 
-      // delete old items and insert new ones
-      db.run("DELETE FROM todo_items WHERE todo_id = ?", [args.todoId]);
+      const asyncDb = getAsyncDatabase();
+      if (asyncDb) {
+        await asyncDb.run("DELETE FROM todo_items WHERE todo_id = $1", [args.todoId]);
 
-      for (let i = 0; i < args.items.length; i++) {
-        const item = args.items[i]!;
-        db.run(
-          "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES (?, ?, ?, ?, ?, ?)",
-          [args.todoId, item.task, item.priority, item.estimatedEffort ?? null, item.completed ? 1 : 0, i]
-        );
+        for (let i = 0; i < args.items.length; i++) {
+          const item = args.items[i]!;
+          await asyncDb.run(
+            "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES ($1, $2, $3, $4, $5, $6)",
+            [args.todoId, item.task, item.priority, item.estimatedEffort ?? null, item.completed ? 1 : 0, i]
+          );
+        }
+
+        await asyncDb.run("UPDATE todos SET updated_at = $1 WHERE id = $2", [
+          Math.floor(Date.now() / 1000),
+          args.todoId,
+        ]);
+      } else {
+        const db = getDatabase();
+        db.run("DELETE FROM todo_items WHERE todo_id = ?", [args.todoId]);
+
+        for (let i = 0; i < args.items.length; i++) {
+          const item = args.items[i]!;
+          db.run(
+            "INSERT INTO todo_items (todo_id, task, priority, estimated_effort, completed, item_order) VALUES (?, ?, ?, ?, ?, ?)",
+            [args.todoId, item.task, item.priority, item.estimatedEffort ?? null, item.completed ? 1 : 0, i]
+          );
+        }
+
+        db.run("UPDATE todos SET updated_at = ? WHERE id = ?", [Math.floor(Date.now() / 1000), args.todoId]);
       }
 
-      db.run("UPDATE todos SET updated_at = ? WHERE id = ?", [Math.floor(Date.now() / 1000), args.todoId]);
-
-      const todo = getTodoWithItems(args.todoId, userId);
+      const todo = await getTodoWithItems(args.todoId, userId);
       return `Updated todo list:\n\n${formatTodoList(todo!)}`;
     },
   },
@@ -165,10 +235,34 @@ export const todoTools = {
     description: "Show all todo lists the user has created. Use this when the user asks to see their todos, check what tasks they have, or when you need to find a todo ID for other operations. Returns list titles, progress, and IDs.",
     schema: z.object({}),
     handler: async (_args: unknown, userId: number) => {
-      const db = getDatabase();
+      const asyncDb = getAsyncDatabase();
 
+      if (asyncDb) {
+        const todos = await asyncDb.all<{ id: string; title: string }>(
+          "SELECT id, title FROM todos WHERE user_id = $1",
+          userId
+        );
+
+        if (todos.length === 0) {
+          return "No todo lists found. Create one with todo_create!";
+        }
+
+        const lists: string[] = [];
+        for (const t of todos) {
+          const items = await asyncDb.all<{ completed: number }>(
+            "SELECT completed FROM todo_items WHERE todo_id = $1",
+            t.id
+          );
+          const completedCount = items.filter((i) => i.completed === 1).length;
+          lists.push(`- ${t.title} (${completedCount}/${items.length}) - \`${t.id}\``);
+        }
+
+        return `Your todo lists:\n\n${lists.join("\n")}`;
+      }
+
+      const db = getDatabase();
       const todos = db
-        .query<{ id: string; title: string }, [number]>("SELECT id, title FROM todos WHERE user_id = ?")
+        .query<{ id: string; title: string }>("SELECT id, title FROM todos WHERE user_id = ?")
         .all(userId);
 
       if (todos.length === 0) {
@@ -178,7 +272,7 @@ export const todoTools = {
       const lists = todos
         .map((t) => {
           const items = db
-            .query<{ completed: number }, [string]>("SELECT completed FROM todo_items WHERE todo_id = ?")
+            .query<{ completed: number }>("SELECT completed FROM todo_items WHERE todo_id = ?")
             .all(t.id);
           const completedCount = items.filter((i) => i.completed === 1).length;
           return `- ${t.title} (${completedCount}/${items.length}) - \`${t.id}\``;
@@ -195,7 +289,7 @@ export const todoTools = {
       todoId: z.string().describe("ID of the todo list to show"),
     }),
     handler: async (args: { todoId: string }, userId: number) => {
-      const todo = getTodoWithItems(args.todoId, userId);
+      const todo = await getTodoWithItems(args.todoId, userId);
 
       if (!todo) {
         return `Todo list not found: ${args.todoId}`;
@@ -209,8 +303,7 @@ export const todoTools = {
     description: "Mark a single task as done/completed in a todo list. Use this when the user says they finished a task, completed something, or wants to check off an item. Requires the todo ID and the item index (1-based, so first item is index 0).",
     schema: MarkCompleteSchema,
     handler: async (args: z.infer<typeof MarkCompleteSchema>, userId: number) => {
-      const db = getDatabase();
-      const todo = getTodoWithItems(args.todoId, userId);
+      const todo = await getTodoWithItems(args.todoId, userId);
 
       if (!todo) {
         return `Todo list not found: ${args.todoId}`;
@@ -225,13 +318,26 @@ export const todoTools = {
         return `Could not find item at index ${args.itemIndex}`;
       }
 
-      db.run("UPDATE todo_items SET completed = 1 WHERE todo_id = ? AND item_order = ?", [
-        args.todoId,
-        args.itemIndex,
-      ]);
-      db.run("UPDATE todos SET updated_at = ? WHERE id = ?", [Math.floor(Date.now() / 1000), args.todoId]);
+      const asyncDb = getAsyncDatabase();
+      if (asyncDb) {
+        await asyncDb.run("UPDATE todo_items SET completed = 1 WHERE todo_id = $1 AND item_order = $2", [
+          args.todoId,
+          args.itemIndex,
+        ]);
+        await asyncDb.run("UPDATE todos SET updated_at = $1 WHERE id = $2", [
+          Math.floor(Date.now() / 1000),
+          args.todoId,
+        ]);
+      } else {
+        const db = getDatabase();
+        db.run("UPDATE todo_items SET completed = 1 WHERE todo_id = ? AND item_order = ?", [
+          args.todoId,
+          args.itemIndex,
+        ]);
+        db.run("UPDATE todos SET updated_at = ? WHERE id = ?", [Math.floor(Date.now() / 1000), args.todoId]);
+      }
 
-      const updated = getTodoWithItems(args.todoId, userId);
+      const updated = await getTodoWithItems(args.todoId, userId);
       return `done: "${item.task}"\n\n${formatTodoList(updated!)}`;
     },
   },
@@ -242,15 +348,18 @@ export const todoTools = {
       todoId: z.string().describe("ID of the todo list to delete"),
     }),
     handler: async (args: { todoId: string }, userId: number) => {
-      const db = getDatabase();
-
-      const existing = getTodoWithItems(args.todoId, userId);
+      const existing = await getTodoWithItems(args.todoId, userId);
       if (!existing) {
         return `Todo list not found: ${args.todoId}`;
       }
 
-      // cascade delete handles items
-      db.run("DELETE FROM todos WHERE id = ? AND user_id = ?", [args.todoId, userId]);
+      const asyncDb = getAsyncDatabase();
+      if (asyncDb) {
+        await asyncDb.run("DELETE FROM todos WHERE id = $1 AND user_id = $2", [args.todoId, userId]);
+      } else {
+        const db = getDatabase();
+        db.run("DELETE FROM todos WHERE id = ? AND user_id = ?", [args.todoId, userId]);
+      }
       return `done: deleted todo list`;
     },
   },

@@ -528,14 +528,14 @@ export class Agent {
     }
 
     // build memory context from relevant past interactions
-    const memoryContext = memoryService.buildMemoryContext(this.userId, userMessage);
+    const memoryContext = await memoryService.buildMemoryContext(this.userId, userMessage);
     if (memoryContext) {
       debug(`[memory] injecting relevant memory context`);
       this._messages.push({ role: "system", content: memoryContext });
     }
 
     // store this message as a memory for future recall
-    memoryService.storeMemory(this.userId, userMessage);
+    await memoryService.storeMemory(this.userId, userMessage);
 
     // Add user message to memory
     this._messages.push({ role: "user", content: userMessage });

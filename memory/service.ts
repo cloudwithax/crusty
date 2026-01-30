@@ -1,4 +1,4 @@
-import { getDatabase } from "../data/db";
+import { getDatabase, getAsyncDatabase } from "../data/db";
 import { v4 as uuidv4 } from "uuid";
 import { debug } from "../utils/debug.ts";
 
@@ -119,14 +119,13 @@ export class MemoryService {
   }
 
   // store a new memory
-  storeMemory(userId: number, content: string): Memory {
+  async storeMemory(userId: number, content: string): Promise<Memory | null> {
     this.ensureTable();
-    const db = getDatabase();
 
     // skip trivially short content
     if (content.length < 20) {
       debug(`[memory] skipped (too short): "${content.substring(0, 40)}..."`);
-      return null as any;
+      return null;
     }
 
     const keywords = this.extractKeywords(content);
@@ -143,36 +142,64 @@ export class MemoryService {
       recallCount: 0,
     };
 
-    db.run(
-      `INSERT INTO memories (id, user_id, content, raw_content, keywords, emotional_weight, timestamp, recall_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        memory.id,
-        memory.userId,
-        memory.content,
-        memory.rawContent || null,
-        JSON.stringify(memory.keywords),
-        memory.emotionalWeight,
-        memory.timestamp,
-        memory.recallCount,
-      ]
-    );
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run(
+        `INSERT INTO memories (id, user_id, content, raw_content, keywords, emotional_weight, timestamp, recall_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          memory.id,
+          memory.userId,
+          memory.content,
+          memory.rawContent || null,
+          JSON.stringify(memory.keywords),
+          memory.emotionalWeight,
+          memory.timestamp,
+          memory.recallCount,
+        ]
+      );
+    } else {
+      const db = getDatabase();
+      db.run(
+        `INSERT INTO memories (id, user_id, content, raw_content, keywords, emotional_weight, timestamp, recall_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          memory.id,
+          memory.userId,
+          memory.content,
+          memory.rawContent || null,
+          JSON.stringify(memory.keywords),
+          memory.emotionalWeight,
+          memory.timestamp,
+          memory.recallCount,
+        ]
+      );
+    }
 
     debug(`[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`);
     return memory;
   }
 
   // search for relevant memories based on query text
-  searchMemories(userId: number, queryText: string, limit: number = 5): MemorySearchResult[] {
+  async searchMemories(userId: number, queryText: string, limit: number = 5): Promise<MemorySearchResult[]> {
     this.ensureTable();
-    const db = getDatabase();
 
     const queryKeywords = this.extractKeywords(queryText);
     if (queryKeywords.length === 0) return [];
 
-    const rows = db
-      .query(`SELECT * FROM memories WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100`)
-      .all(userId) as any[];
+    let rows: any[];
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      rows = await asyncDb.all(
+        `SELECT * FROM memories WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 100`,
+        userId
+      );
+    } else {
+      const db = getDatabase();
+      rows = db
+        .query(`SELECT * FROM memories WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100`)
+        .all(userId) as any[];
+    }
 
     const memories: Memory[] = rows.map((row) => ({
       id: row.id,
@@ -228,29 +255,50 @@ export class MemoryService {
   }
 
   // mark a memory as recalled
-  markRecalled(memoryId: string): void {
+  async markRecalled(memoryId: string): Promise<void> {
     this.ensureTable();
-    const db = getDatabase();
-    db.run(
-      `UPDATE memories SET last_recalled = ?, recall_count = recall_count + 1 WHERE id = ?`,
-      [Date.now(), memoryId]
-    );
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run(
+        `UPDATE memories SET last_recalled = $1, recall_count = recall_count + 1 WHERE id = $2`,
+        [Date.now(), memoryId]
+      );
+    } else {
+      const db = getDatabase();
+      db.run(
+        `UPDATE memories SET last_recalled = ?, recall_count = recall_count + 1 WHERE id = ?`,
+        [Date.now(), memoryId]
+      );
+    }
   }
 
   // get a random memory that hasn't been recalled recently
-  getRandomMemory(userId: number): Memory | null {
+  async getRandomMemory(userId: number): Promise<Memory | null> {
     this.ensureTable();
-    const db = getDatabase();
 
-    const row = db
-      .query(
-        `SELECT * FROM memories 
-         WHERE user_id = ? 
-         AND (last_recalled IS NULL OR last_recalled < ?)
+    let row: any;
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      row = await asyncDb.get(
+        `SELECT * FROM memories
+         WHERE user_id = $1
+         AND (last_recalled IS NULL OR last_recalled < $2)
          ORDER BY RANDOM()
-         LIMIT 1`
-      )
-      .get(userId, Date.now() - 1000 * 60 * 30) as any;
+         LIMIT 1`,
+        userId, Date.now() - 1000 * 60 * 30
+      );
+    } else {
+      const db = getDatabase();
+      row = db
+        .query(
+          `SELECT * FROM memories
+           WHERE user_id = ?
+           AND (last_recalled IS NULL OR last_recalled < ?)
+           ORDER BY RANDOM()
+           LIMIT 1`
+        )
+        .get(userId, Date.now() - 1000 * 60 * 30) as any;
+    }
 
     if (!row) return null;
 
@@ -268,15 +316,15 @@ export class MemoryService {
   }
 
   // build memory context for agent prompt
-  buildMemoryContext(userId: number, currentMessage: string): string {
-    const results = this.searchMemories(userId, currentMessage, 3);
+  async buildMemoryContext(userId: number, currentMessage: string): Promise<string> {
+    const results = await this.searchMemories(userId, currentMessage, 3);
 
     if (results.length === 0) {
       // occasionally surface a random memory
       if (Math.random() < 0.15) {
-        const randomMemory = this.getRandomMemory(userId);
+        const randomMemory = await this.getRandomMemory(userId);
         if (randomMemory) {
-          this.markRecalled(randomMemory.id);
+          await this.markRecalled(randomMemory.id);
           return `\n<memory type="random-recall">
 Something from a while back just popped into your head: "${randomMemory.rawContent || randomMemory.content}"
 Use this to subtly influence your response, but don't quote it directly.
@@ -289,11 +337,12 @@ Use this to subtly influence your response, but don't quote it directly.
     const relevantMemories = results.filter((r) => r.relevanceScore > 2);
     if (relevantMemories.length === 0) return "";
 
-    const memoryLines = relevantMemories.map((r) => {
-      this.markRecalled(r.memory.id);
+    const memoryLines: string[] = [];
+    for (const r of relevantMemories) {
+      await this.markRecalled(r.memory.id);
       const timeAgo = this.formatTimeAgo(r.memory.timestamp);
-      return `- "${r.memory.rawContent || r.memory.content}" (${timeAgo})`;
-    });
+      memoryLines.push(`- "${r.memory.rawContent || r.memory.content}" (${timeAgo})`);
+    }
 
     return `\n<memory type="relevant-recall">
 Things you remember that relate to what they just said:
@@ -312,16 +361,29 @@ Use this context to inform your response naturally, without explicitly mentionin
   }
 
   // get memory stats for a user
-  getStats(userId: number): { total: number; avgWeight: number } {
+  async getStats(userId: number): Promise<{ total: number; avgWeight: number }> {
     this.ensureTable();
-    const db = getDatabase();
 
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      const row = await asyncDb.get<{ total: number; avg_weight: number }>(
+        `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
+         FROM memories WHERE user_id = $1`,
+        userId
+      );
+      return {
+        total: row?.total || 0,
+        avgWeight: row?.avg_weight || 5,
+      };
+    }
+
+    const db = getDatabase();
     const row = db
-      .query(
+      .query<{ total: number; avg_weight: number }>(
         `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
          FROM memories WHERE user_id = ?`
       )
-      .get(userId) as any;
+      .get(userId);
 
     return {
       total: row?.total || 0,
@@ -330,18 +392,30 @@ Use this context to inform your response naturally, without explicitly mentionin
   }
 
   // clear all memories for a user
-  clearUserMemories(userId: number): void {
+  async clearUserMemories(userId: number): Promise<void> {
     this.ensureTable();
-    const db = getDatabase();
-    db.run(`DELETE FROM memories WHERE user_id = ?`, [userId]);
+
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run(`DELETE FROM memories WHERE user_id = $1`, [userId]);
+    } else {
+      const db = getDatabase();
+      db.run(`DELETE FROM memories WHERE user_id = ?`, [userId]);
+    }
     debug(`[memory] cleared all memories for user ${userId}`);
   }
 
   // clear all memories
-  clearAll(): void {
+  async clearAll(): Promise<void> {
     this.ensureTable();
-    const db = getDatabase();
-    db.run(`DELETE FROM memories`);
+
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run(`DELETE FROM memories`);
+    } else {
+      const db = getDatabase();
+      db.run(`DELETE FROM memories`);
+    }
     debug("[memory] cleared all memories");
   }
 }

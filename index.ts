@@ -32,7 +32,7 @@ async function sendHeartbeatMessage(text: string, isHeartbeat?: boolean): Promis
 // Start the Telegram bot and heartbeat
 async function main(): Promise<void> {
   // Start heartbeat scheduler
-  startHeartbeat(sendHeartbeatMessage);
+  await startHeartbeat(sendHeartbeatMessage);
 
   // Start the bot
   await startBot();
