@@ -5,6 +5,7 @@ WORKDIR /app
 
 # install system dependencies + chromium for puppeteer
 RUN apk add --no-cache \
+    bash \
     curl \
     unzip \
     git \
