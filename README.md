@@ -28,6 +28,7 @@ a telegram ai agent with web browsing capabilities, long-term memory, and a modu
 - skills system - reusable instruction packages following the agent skills standard
 - heartbeat scheduler - periodic tasks with timezone-aware active hours
 - self-review - failure pattern detection and counter-checks
+- reminder system - scheduled notifications with natural language time parsing
 - openai-compatible api support - works with various llm providers
 - secure pairing system - one user per crab
 
@@ -110,6 +111,7 @@ once paired, use these commands:
 
 - `/start` - initialize and show help
 - `/clear` - clear memory and reset conversation
+- `/reminders` - list all pending reminders
 - `/skill` or `/skill list` - list available skills
 - `/skill new` - create a new skill interactively
 - `/skill <name>` - view skill details
@@ -136,11 +138,13 @@ crusty/
 │   ├── registry.ts       # central registry with zod validation
 │   ├── browser.ts        # web browsing tools
 │   ├── todo.ts           # todo list management
+│   ├── reminder.ts       # reminder system
 │   └── skill.ts          # skill loading tools
 ├── memory/               # long-term memory system
 │   └── service.ts        # keyword extraction, emotional weighting
 ├── scheduler/            # background tasks
 │   ├── heartbeat.ts      # periodic task scheduling
+│   ├── reminders.ts      # reminder processing
 │   └── self-review.ts    # failure pattern detection
 ├── data/                 # database
 │   └── db.ts             # sqlite singleton with wal mode
@@ -206,6 +210,12 @@ skill content here...
 - `mark_complete(todoId, itemIndex)` - mark complete
 - `get_todo(todoId)` - retrieve todo
 
+### reminder tools
+
+- `reminder_create(message, remind_at)` - create a reminder with natural language time parsing
+- `reminder_list()` - list all pending reminders
+- `reminder_cancel(reminder_id)` - cancel a pending reminder
+
 ### skill tools
 
 - `skill(name)` - load skill by name
@@ -228,6 +238,17 @@ configurable periodic tasks with:
 - timezone-aware scheduling
 - active hours support (overnight windows too)
 - self-review integration for failure pattern detection
+
+## reminder system
+
+scheduled notifications with natural language time parsing:
+
+- create reminders via natural language (e.g., "remind me in 5 minutes", "tomorrow at 3pm")
+- list all pending reminders with relative time display
+- cancel reminders by id
+- automatic processing via scheduler
+- persistent storage in sqlite database
+- status tracking (pending, sent, cancelled)
 
 ## testing
 
