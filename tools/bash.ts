@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { spawn } from "child_process";
+import { accessSync, constants, existsSync } from "fs";
 import { debug } from "../utils/debug.ts";
 
 // only enable when running inside docker container
@@ -80,7 +81,33 @@ interface CommandResult {
   timedOut: boolean;
 }
 
-async function executeCommand(
+function getShellCandidates(): string[] {
+  const candidates: string[] = [];
+
+  if (process.env.CRUSTY_SHELL?.trim()) {
+    candidates.push(process.env.CRUSTY_SHELL.trim());
+  }
+
+  candidates.push("/bin/bash");
+  candidates.push("/usr/bin/bash");
+  candidates.push("bash");
+  candidates.push("/bin/sh");
+  candidates.push("/usr/bin/sh");
+  candidates.push("sh");
+
+  return [...new Set(candidates)];
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function executeCommand(
   command: string,
   timeout: number = 30000,
   workdir: string = "/app"
@@ -88,50 +115,91 @@ async function executeCommand(
   const maxTimeout = 120000;
   const actualTimeout = Math.min(timeout, maxTimeout);
 
-  return new Promise((resolve) => {
-    const proc = spawn("bash", ["-c", command], {
-      cwd: workdir,
-      env: process.env,
-      timeout: actualTimeout,
-    });
+  const actualWorkdir = existsSync(workdir) ? workdir : process.cwd();
 
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGKILL");
-    }, actualTimeout);
-
-    proc.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      clearTimeout(timeoutId);
-      resolve({
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        exitCode: code,
-        timedOut,
-      });
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeoutId);
-      resolve({
-        stdout: "",
-        stderr: err.message,
-        exitCode: 1,
-        timedOut: false,
-      });
-    });
+  const candidates = getShellCandidates().filter((candidate) => {
+    if (candidate.startsWith("/")) return isExecutableFile(candidate);
+    return true;
   });
+
+  const executeWithShell = async (
+    shell: string
+  ): Promise<{ result: CommandResult; missingShell: boolean }> => {
+    return await new Promise((resolve) => {
+      const proc = spawn(shell, ["-c", command], {
+        cwd: actualWorkdir,
+        env: process.env,
+        timeout: actualTimeout,
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGKILL");
+      }, actualTimeout);
+
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        clearTimeout(timeoutId);
+        resolve({
+          result: {
+            stdout: stdout.trim(),
+            stderr: stderr.trim(),
+            exitCode: code,
+            timedOut,
+          },
+          missingShell: false,
+        });
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timeoutId);
+        resolve({
+          result: {
+            stdout: "",
+            stderr: err.message,
+            exitCode: 1,
+            timedOut: false,
+          },
+          missingShell: (err as NodeJS.ErrnoException).code === "ENOENT",
+        });
+      });
+    });
+  };
+
+  let lastResult: CommandResult | null = null;
+
+  for (const shell of candidates) {
+    const { result, missingShell } = await executeWithShell(shell);
+    lastResult = result;
+
+    if (missingShell) {
+      debug(`[bash] shell not found: ${shell}`);
+      continue;
+    }
+
+    debug(`[bash] executing via ${shell}: ${command}`);
+    return result;
+  }
+
+  return (
+    lastResult ?? {
+      stdout: "",
+      stderr: "no usable shell found",
+      exitCode: 1,
+      timedOut: false,
+    }
+  );
 }
 
 // truncate output to prevent massive responses
@@ -143,7 +211,7 @@ function truncateOutput(output: string, maxLength: number = 4000): string {
 
 export const bashTools = {
   bash_execute: {
-    description: `Execute an arbitrary bash command in the terminal. This is your primary tool for running shell commands, scripts, and system utilities.
+    description: `Execute an arbitrary shell command in the terminal (prefers bash when available, falls back to sh). This is your primary tool for running shell commands, scripts, and system utilities.
 
 WHEN TO USE:
 - Running programs or scripts (python, node, bun, etc.)
@@ -175,8 +243,6 @@ EXAMPLES:
       if (blocked) {
         return `[Error] ${blocked}`;
       }
-
-      debug(`[bash] executing: ${args.command}`);
 
       const result = await executeCommand(
         args.command,
