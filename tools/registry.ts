@@ -141,6 +141,11 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
       cleaned = cleaned.replace(/^:\s*/, "");
     }
 
+    // handle protocol-relative urls (//domain.com) by prepending https:
+    if (/^\/\/[a-zA-Z0-9]/.test(cleaned)) {
+      cleaned = `https:${cleaned}`;
+    }
+
     // remove leading garbage before urls
     const urlPrefixMatch = cleaned.match(/^[^a-zA-Z]*(https?:\/\/)/i);
     if (urlPrefixMatch?.[1] && urlPrefixMatch[0] !== urlPrefixMatch[1]) {
@@ -179,10 +184,12 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
 // attempt to recover valid json from malformed tool arguments
 function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
   const directionMatch = brokenArgs.match(/"?direction"?\s*[:=]\s*"?(up|down)/i);
-  const urlMatch = brokenArgs.match(/"?url"?\s*[:=]\s*"?([^"}\s]+)/i);
+  // url extraction: handle quoted, unquoted, and protocol-relative urls
+  const urlMatch = brokenArgs.match(/"?url"?\s*[:=]\s*"?((?:https?:)?\/\/[^"}\s]+|[^"}\s]+\.[a-z]{2,}[^"}\s]*)/i);
   const selectorMatch = brokenArgs.match(/"?selector"?\s*[:=]\s*"([^"]+)"/i);
   const textMatch = brokenArgs.match(/"?text"?\s*[:=]\s*"([^"]+)"/i);
-  const queryMatch = brokenArgs.match(/"?query"?\s*[:=]\s*"([^"]+)"/i);
+  // query extraction: handle both quoted and unquoted values
+  const queryMatch = brokenArgs.match(/"?query"?\s*[:=]\s*"?([^"{}]+?)(?:"|,|\s*}|$)/i);
   const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
   const commandMatch = brokenArgs.match(/"?command"?\s*[:=]\s*"([^"]+)"/i);
   const contentMatch = brokenArgs.match(/"?content"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
@@ -192,7 +199,12 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
     return JSON.stringify({ direction: directionMatch[1]!.toLowerCase() });
   }
   if (toolName === "browser_navigate" && urlMatch) {
-    return JSON.stringify({ url: urlMatch[1] });
+    let url = urlMatch[1]!.trim();
+    // fix protocol-relative urls
+    if (url.startsWith("//")) url = `https:${url}`;
+    // add protocol if missing but looks like a url
+    if (!url.startsWith("http") && url.includes(".")) url = `https://${url}`;
+    return JSON.stringify({ url });
   }
   if (toolName === "browser_click" && selectorMatch) {
     return JSON.stringify({ selector: selectorMatch[1] });
@@ -201,9 +213,17 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
     return JSON.stringify({ selector: selectorMatch[1], text: textMatch[1] });
   }
 
-  // web search
-  if (toolName === "web_search" && queryMatch) {
-    return JSON.stringify({ query: queryMatch[1] });
+  // web search - more flexible matching
+  if (toolName === "web_search") {
+    const query = queryMatch?.[1]?.trim();
+    if (query && query.length >= 2) {
+      return JSON.stringify({ query });
+    }
+    // fallback: if the whole arg looks like a search term (not json-like), use it
+    const cleaned = brokenArgs.replace(/[{}":]/g, "").trim();
+    if (cleaned.length >= 2 && !cleaned.includes("=")) {
+      return JSON.stringify({ query: cleaned });
+    }
   }
 
   // bash tools
