@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM debian:bookworm-slim AS base
+FROM alpine:3.21 AS base
 WORKDIR /app
 
 # install system dependencies + chromium for puppeteer
-RUN apt-get update && apt-get install -y \
+RUN apk add --no-cache \
     curl \
     unzip \
     git \
@@ -15,29 +15,15 @@ RUN apt-get update && apt-get install -y \
     htop \
     tree \
     net-tools \
-    dnsutils \
-    iputils-ping \
+    bind-tools \
+    iputils \
     ca-certificates \
     chromium \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xdg-utils \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+    nss \
+    freetype \
+    harfbuzz \
+    ttf-freefont \
+    font-noto-emoji
 
 # install bun
 RUN curl -fsSL https://bun.sh/install | bash
@@ -45,7 +31,7 @@ ENV PATH="/root/.bun/bin:${PATH}"
 
 # puppeteer configuration
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # docker detection for bash tools
 ENV CRUSTY_DOCKER=true
