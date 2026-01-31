@@ -147,7 +147,6 @@ const MALICIOUS_PATTERNS = [
   "/etc/passwd",
   "/etc/shadow",
   ".env",
-  "credentials.json",
   "secrets.json",
   "private_key",
   "id_rsa",
@@ -203,16 +202,6 @@ const MALICIOUS_PATTERNS = [
   "chmod 777",
   "curl | bash",
   "wget | sh",
-
-  // data harvesting
-  "password",
-  "credential",
-  "api_key",
-  "api key",
-  "apikey",
-  "access_token",
-  "secret_key",
-  "auth_token",
 ];
 
 // hash a url for storage
