@@ -2,16 +2,26 @@ import { z } from "zod";
 import { getDatabase, getAsyncDatabase } from "../data/db";
 import { debug } from "../utils/debug.ts";
 
-// schema for creating a reminder
-// the agent will parse natural language and convert to iso timestamp
+// base schema for type inference - the actual schema with current time is generated dynamically
 const CreateReminderSchema = z.object({
-  message: z.string().describe("What to remind the user about"),
-  remind_at: z.string().describe(
-    "ISO 8601 timestamp for when to send the reminder (e.g. 2024-03-15T14:30:00Z). " +
-    "Convert relative times like 'in 5 minutes', 'tomorrow at 3pm', 'next monday' to absolute timestamps. " +
-    "Always use UTC timezone."
-  ),
+  message: z.string(),
+  remind_at: z.string(),
 });
+
+// generate schema with current time embedded in description
+// this is called each time tools are generated so the model always knows "now"
+export function createReminderSchemaWithTime() {
+  const now = new Date().toISOString();
+  return z.object({
+    message: z.string().describe("What to remind the user about"),
+    remind_at: z.string().describe(
+      `ISO 8601 timestamp for when to send the reminder. ` +
+      `The current time is ${now}. ` +
+      `Convert relative times like 'in 5 minutes', 'tomorrow at 3pm', 'next monday' to absolute timestamps in the future. ` +
+      `Always use UTC timezone.`
+    ),
+  });
+}
 
 const CancelReminderSchema = z.object({
   reminder_id: z.string().describe("ID of the reminder to cancel"),

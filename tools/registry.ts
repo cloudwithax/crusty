@@ -5,7 +5,7 @@ import { todoTools, cleanupTodos } from "./todo.ts";
 import { skillTools } from "./skill.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
 import { hookTools } from "./hooks.ts";
-import { reminderTools, cleanupReminders } from "./reminder.ts";
+import { reminderTools, cleanupReminders, createReminderSchemaWithTime } from "./reminder.ts";
 
 // Common tool definition format - each tool has description, zod schema, and handler
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,14 +93,21 @@ function zodSchemaToOpenAIParameters(schema: z.ZodType): Record<string, unknown>
  * Generate OpenAI-compatible tool definitions from the registry
  */
 export function generateOpenAITools(): ChatCompletionTool[] {
-  return Object.entries(toolRegistry).map(([name, tool]) => ({
-    type: "function" as const,
-    function: {
-      name,
-      description: tool.description,
-      parameters: zodSchemaToOpenAIParameters(tool.schema),
-    },
-  }));
+  return Object.entries(toolRegistry).map(([name, tool]) => {
+    // use dynamic schema for reminder_create so model knows current time
+    const schema = name === "reminder_create"
+      ? createReminderSchemaWithTime()
+      : tool.schema;
+
+    return {
+      type: "function" as const,
+      function: {
+        name,
+        description: tool.description,
+        parameters: zodSchemaToOpenAIParameters(schema),
+      },
+    };
+  });
 }
 
 /**
