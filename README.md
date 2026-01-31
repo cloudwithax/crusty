@@ -241,4 +241,4 @@ bun test core/bootstrap.test.ts
 
 ## license
 
-mit
+this project is licensed under the MIT license. see the `LICENSE` file for details.
