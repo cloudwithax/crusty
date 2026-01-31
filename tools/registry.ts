@@ -118,8 +118,17 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
       let cmd = val;
       // strip leading ": " (bash no-op prefix)
       if (/^:\s+/.test(cmd)) cmd = cmd.replace(/^:\s+/, "");
-      // strip trailing backslash-quote
-      if (/\\["']$/.test(cmd) || /["']$/.test(cmd)) cmd = cmd.replace(/\\?["']$/, "");
+      // unwrap a fully quoted command but do not strip legitimate closing quotes
+      const trimmed = cmd.trim();
+      if (trimmed.length >= 2) {
+        const quote = trimmed[0];
+        if ((quote === "\"" || quote === "'") && trimmed[trimmed.length - 1] === quote) {
+          const inner = trimmed.slice(1, -1);
+          if (!inner.includes(quote)) {
+            cmd = inner;
+          }
+        }
+      }
       result[key] = cmd;
       continue;
     }
