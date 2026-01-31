@@ -303,7 +303,7 @@ function sanitizeToolCalls(
 
 // sanitize argument values to fix common model quirks
 // handles malformed urls, leading colons, extra quotes, type coercion, etc
-function sanitizeArgumentValues(argsString: string): string {
+function sanitizeArgumentValues(argsString: string, toolName?: string): string {
   try {
     const args = JSON.parse(argsString);
     const keysToDelete: string[] = [];
@@ -316,6 +316,10 @@ function sanitizeArgumentValues(argsString: string): string {
       if (value === "") {
         debug(`[Sanitizing ${key}: removing empty string]`);
         keysToDelete.push(key);
+        continue;
+      }
+
+      if (toolName === "bash_execute" && key === "command") {
         continue;
       }
 
@@ -924,7 +928,10 @@ export class Agent {
         toolsUsed.push(toolCall.name);
 
         // sanitize argument values to fix common model quirks before execution
-        const sanitizedArgs = sanitizeArgumentValues(toolCall.arguments);
+        const sanitizedArgs = sanitizeArgumentValues(
+          toolCall.arguments,
+          toolCall.name,
+        );
 
         // set up a one-time status update after 3 seconds for long-running tools
         // uses whimsical messages based on tool type
