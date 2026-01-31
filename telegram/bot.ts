@@ -104,10 +104,10 @@ function getOrCreateAgent(userId: number): Agent {
   return userSessions.get(userId)!;
 }
 
-function clearUserSession(userId: number): void {
+async function clearUserSession(userId: number): Promise<void> {
   const agent = userSessions.get(userId);
   if (agent) {
-    agent.clearMemory();
+    await agent.clearMemoryAndPersist();
     userSessions.delete(userId);
   }
 }
@@ -289,7 +289,7 @@ const commands: Record<
       return;
     }
 
-    clearUserSession(userId);
+    await clearUserSession(userId);
     await sendMessage(chatId, "Shell cleaned! Starting fresh with a blank tide pool.", { message_thread_id: messageThreadId });
   },
 
@@ -319,6 +319,32 @@ const commands: Record<
       `*Memory Stats*\n\n` +
       `total memories: ${stats.total}\n` +
       `avg emotional weight: ${stats.avgWeight.toFixed(1)}/10`,
+      { message_thread_id: messageThreadId }
+    );
+  },
+
+  async context(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "🔐 This bot is not paired with you.\n" +
+        "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId }
+      );
+      return;
+    }
+
+    const agent = getOrCreateAgent(userId);
+    await agent.initialize();
+    const stats = agent.getContextStats();
+
+    await sendMessage(
+      chatId,
+      `*Context Stats*\n\n` +
+      `messages in context: ${stats.messageCount}\n` +
+      `estimated tokens: ${stats.estimatedTokens}\n` +
+      `has summary: ${stats.hasSummary ? "yes" : "no"}\n` +
+      `summary length: ${stats.summaryLength} chars`,
       { message_thread_id: messageThreadId }
     );
   },
@@ -515,7 +541,7 @@ async function handleSoulInput(
     debug(`[soul] updated by user ${userId} (${content.length} chars)`);
 
     // clear session so agent picks up new soul on next message
-    clearUserSession(userId);
+    await clearUserSession(userId);
 
     await sendMessage(
       chatId,
@@ -553,7 +579,7 @@ async function handleSkillWizardInput(
         await skillRegistry.refresh();
 
         // clear session so agent picks up new skill on next message
-        clearUserSession(userId);
+        await clearUserSession(userId);
 
         await sendMessage(
           chatId,

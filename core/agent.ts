@@ -19,6 +19,8 @@ import {
 import { addRecentContext } from "../scheduler/heartbeat.ts";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
+import { ContextManager } from "./context-manager";
+import { conversationStore } from "./conversation-store";
 
 // Environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -491,6 +493,8 @@ export class Agent {
   private _messages: ChatCompletionMessageParam[];
   private userId: number;
   private initialized: boolean = false;
+  private contextManager: ContextManager;
+  private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // getter for testing purposes
   get messages(): ChatCompletionMessageParam[] {
@@ -500,25 +504,90 @@ export class Agent {
   constructor(userId: number = 0) {
     this.userId = userId;
     this._messages = [];
+    this.contextManager = new ContextManager();
   }
 
   // Initialize the agent with system prompt
+  // loads persisted conversation if available
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
     const systemPrompt = await getSystemPrompt();
-    this._messages = [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
-    ];
+
+    // try to load persisted conversation
+    const stored = await conversationStore().load(this.userId);
+    if (stored && stored.messages.length > 0) {
+      debug(`[agent] restored ${stored.messages.length} messages from persistence`);
+      
+      // replace system prompt with fresh one (it may have changed)
+      const firstIsSystem = stored.messages[0]?.role === "system";
+      if (firstIsSystem) {
+        this._messages = [
+          { role: "system", content: systemPrompt },
+          ...stored.messages.slice(1),
+        ];
+      } else {
+        this._messages = [
+          { role: "system", content: systemPrompt },
+          ...stored.messages,
+        ];
+      }
+
+      // restore summary if present
+      if (stored.summary) {
+        this.contextManager = new ContextManager(stored.summary);
+        debug(`[agent] restored conversation summary (${stored.summary.length} chars)`);
+      }
+    } else {
+      this._messages = [
+        {
+          role: "system",
+          content: systemPrompt,
+        },
+      ];
+    }
+
     this.initialized = true;
+  }
+
+  // persist conversation to database (debounced)
+  private scheduleSave(): void {
+    if (this.saveDebounceTimer) {
+      clearTimeout(this.saveDebounceTimer);
+    }
+
+    // debounce saves to avoid hammering db on rapid message exchange
+    this.saveDebounceTimer = setTimeout(() => {
+      this.saveConversation().catch((err) => {
+        debug(`[agent] failed to persist conversation:`, err);
+      });
+    }, 1000);
+  }
+
+  // immediately save conversation
+  async saveConversation(): Promise<void> {
+    if (this.saveDebounceTimer) {
+      clearTimeout(this.saveDebounceTimer);
+      this.saveDebounceTimer = null;
+    }
+
+    await conversationStore().save(
+      this.userId,
+      this._messages,
+      this.contextManager.summary
+    );
   }
 
   async chat(userMessage: string, callbacks?: AgentCallbacks): Promise<string> {
     // Ensure agent is initialized
     await this.initialize();
+
+    // check if summarization is needed before adding new messages
+    const { summarized, messagesToDrop } = await this.contextManager.maybeSummarize(this._messages);
+    if (summarized && messagesToDrop > 0) {
+      this._messages = this.contextManager.pruneMessages(this._messages, messagesToDrop);
+      debug(`[agent] context summarized and pruned`);
+    }
 
     // check for overlaps with recent MISS patterns and inject counter-check if needed
     const overlaps = await checkForOverlaps(userMessage);
@@ -530,16 +599,15 @@ export class Agent {
 
     // build memory context from relevant past interactions
     const memoryContext = await memoryService.buildMemoryContext(this.userId, userMessage);
-    if (memoryContext) {
-      debug(`[memory] injecting relevant memory context`);
-      this._messages.push({ role: "system", content: memoryContext });
-    }
 
     // store this message as a memory for future recall
     await memoryService.storeMemory(this.userId, userMessage);
 
     // Add user message to memory
     this._messages.push({ role: "user", content: userMessage });
+
+    // schedule save after adding user message
+    this.scheduleSave();
 
     // Generate tools dynamically from registry
     const tools = generateOpenAITools();
@@ -615,13 +683,20 @@ export class Agent {
           ? `\n[System: You have ${remainingIterations} iteration(s) remaining. If you need more time, call request_more_iterations. Otherwise, wrap up your response.]`
           : "";
 
+      // build messages for model with rolling window (handles token limits)
+      // inject memory context here instead of modifying _messages directly
+      const prunedMessages = this.contextManager.buildMessagesForModel(
+        this._messages,
+        memoryContext || undefined
+      );
+
       // Temporarily add iteration context if needed
       const messagesWithContext = iterationContext
         ? [
-            ...this._messages,
+            ...prunedMessages,
             { role: "system" as const, content: iterationContext },
           ]
-        : this._messages;
+        : prunedMessages;
 
       // set up a one-time status update after 3 seconds for long api calls
       let apiStatusSent = false;
@@ -992,6 +1067,8 @@ export class Agent {
       });
       // log interaction context for self-review
       addRecentContext(`user: ${userMessage}\n\nassistant: ${finalWithSources}`);
+      // persist conversation after assistant response
+      this.scheduleSave();
       return finalWithSources;
     }
 
@@ -1001,6 +1078,8 @@ export class Agent {
       // log interaction context for self-review
       const cleanedLastResponse = stripEmojis(lastResponse);
       addRecentContext(`user: ${userMessage}\n\nassistant: ${cleanedLastResponse}`);
+      // persist conversation
+      this.scheduleSave();
       return cleanedLastResponse + sourcesSection;
     }
 
@@ -1011,12 +1090,31 @@ export class Agent {
     return this.messages;
   }
 
+  // get context statistics for debugging
+  getContextStats(): {
+    messageCount: number;
+    estimatedTokens: number;
+    hasSummary: boolean;
+    summaryLength: number;
+  } {
+    return this.contextManager.getStats(this._messages);
+  }
+
   clearMemory(): void {
     const systemMessage = this._messages[0];
     this._messages = systemMessage ? [systemMessage] : [];
+    this.contextManager = new ContextManager(); // reset summary too
+  }
+
+  // clear memory and persist the cleared state
+  async clearMemoryAndPersist(): Promise<void> {
+    this.clearMemory();
+    await conversationStore().clear(this.userId);
   }
 
   async cleanup(): Promise<void> {
+    // save any pending changes before cleanup
+    await this.saveConversation();
     await cleanupTools();
   }
 }

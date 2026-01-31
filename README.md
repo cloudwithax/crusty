@@ -23,7 +23,8 @@ a telegram ai agent with web browsing capabilities, long-term memory, and a modu
 
 - web browsing via puppeteer with stealth mode - navigates websites while avoiding bot detection
 - multi-turn conversations - agentic loop with 5-20 iterations and tool execution
-- long-term memory - semantic keyword matching with emotional weighting
+- long-term memory - keyword matching (sqlite) or embedding search (postgres + pgvector)
+- context management - rolling window, automatic summarization, conversation persistence
 - modular personality system - dynamic prompt assembly from markdown files
 - skills system - reusable instruction packages following the agent skills standard
 - heartbeat scheduler - periodic tasks with timezone-aware active hours
@@ -103,6 +104,20 @@ HEARTBEAT_TIMEZONE=America/New_York
 HEARTBEAT_DAYS=1,2,3,4,5
 HEARTBEAT_START=09:00
 HEARTBEAT_END=18:00
+
+# context management (optional)
+MAX_CONTEXT_TOKENS=24000
+RESERVED_COMPLETION_TOKENS=2000
+MAX_TURNS=40
+SUMMARIZE_MODEL=gpt-4o-mini
+
+# embeddings (optional, requires postgres + pgvector)
+# DATABASE_URL=postgres://user:pass@localhost:5432/crusty
+# EMBEDDING_PROVIDER=openai  # openai, local, or none
+# OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+# OPENAI_EMBEDDING_DIMENSION=1536
+# LOCAL_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2  # cpu-friendly, no api needed
+# LOCAL_EMBEDDING_DIMENSION=384
 ```
 
 ## telegram commands
@@ -111,6 +126,8 @@ once paired, use these commands:
 
 - `/start` - initialize and show help
 - `/clear` - clear memory and reset conversation
+- `/context` - show context stats (message count, tokens, summary)
+- `/memory` - show memory stats
 - `/reminders` - list all pending reminders
 - `/skill` or `/skill list` - list available skills
 - `/skill new` - create a new skill interactively
@@ -126,10 +143,14 @@ crusty/
 │   ├── index.ts          # command router
 │   ├── setup.ts          # interactive configuration wizard
 │   ├── pairing.ts        # one-time pairing system
-│   └── daemon.ts         # systemd user service management
+│   ├── daemon.ts         # systemd user service management
+│   └── context.ts        # context management cli
 ├── core/                 # agent system
 │   ├── agent.ts          # multi-turn conversation loop
 │   ├── bootstrap.ts      # system prompt assembly
+│   ├── context-manager.ts # rolling window, summarization
+│   ├── context-config.ts # token limits and budgets
+│   ├── conversation-store.ts # persistence layer
 │   ├── skills.ts         # skill discovery and registry
 │   └── skill-wizard.ts   # interactive skill creation
 ├── telegram/             # telegram bot integration
@@ -141,7 +162,8 @@ crusty/
 │   ├── reminder.ts       # reminder system
 │   └── skill.ts          # skill loading tools
 ├── memory/               # long-term memory system
-│   └── service.ts        # keyword extraction, emotional weighting
+│   ├── service.ts        # keyword extraction, emotional weighting
+│   └── embeddings.ts     # pgvector embedding search (postgres only)
 ├── scheduler/            # background tasks
 │   ├── heartbeat.ts      # periodic task scheduling
 │   ├── reminders.ts      # reminder processing

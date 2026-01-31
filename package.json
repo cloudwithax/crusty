@@ -20,6 +20,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "openai": "^6.17.0",
     "postgres": "^3.4.8",
     "puppeteer": "^24.0.0",

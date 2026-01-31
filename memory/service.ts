@@ -1,6 +1,11 @@
-import { getDatabase, getAsyncDatabase } from "../data/db";
+import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
 import { v4 as uuidv4 } from "uuid";
 import { debug } from "../utils/debug.ts";
+import {
+  storeMemoryWithEmbedding,
+  searchByEmbedding,
+  isEmbeddingsAvailable,
+} from "./embeddings";
 
 export interface Memory {
   id: string;
@@ -177,12 +182,55 @@ export class MemoryService {
     }
 
     debug(`[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`);
+
+    // async store embedding if postgres/pgvector available
+    // dont await - fire and forget to avoid slowing down the response
+    if (isUsingPostgres()) {
+      storeMemoryWithEmbedding(memory.id, content).catch((err) => {
+        debug(`[memory] embedding storage failed:`, err);
+      });
+    }
+
     return memory;
   }
 
   // search for relevant memories based on query text
+  // uses embedding search if available (postgres + pgvector), falls back to keyword
   async searchMemories(userId: number, queryText: string, limit: number = 5): Promise<MemorySearchResult[]> {
     this.ensureTable();
+
+    // try embedding search first if available
+    const embeddingsAvailable = await isEmbeddingsAvailable();
+    if (embeddingsAvailable) {
+      const embeddingResults = await searchByEmbedding(userId, queryText, limit);
+      
+      if (embeddingResults.length > 0) {
+        debug(`[memory] using embedding search (${embeddingResults.length} results)`);
+        
+        return embeddingResults
+          .filter((r) => r.similarity > 0.3) // filter low similarity
+          .map((r) => {
+            const hoursSince = (Date.now() - r.timestamp) / (1000 * 60 * 60);
+            return {
+              memory: {
+                id: r.id,
+                userId: r.userId,
+                content: r.content,
+                rawContent: r.rawContent,
+                keywords: [], // not used for embedding results
+                emotionalWeight: r.emotionalWeight,
+                timestamp: r.timestamp,
+                recallCount: r.recallCount,
+              },
+              relevanceScore: r.similarity * 10, // scale to match keyword scoring
+              isRecent: hoursSince < 1,
+            };
+          });
+      }
+    }
+
+    // fallback to keyword search
+    debug(`[memory] using keyword search`);
 
     const queryKeywords = this.extractKeywords(queryText);
     if (queryKeywords.length === 0) return [];
