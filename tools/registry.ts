@@ -1,14 +1,12 @@
 import type { z } from "zod";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
-import { browserTools, cleanupBrowser } from "./browser.ts";
-import { todoTools, cleanupTodos } from "./todo.ts";
-import { skillTools } from "./skill.ts";
+import { filesystemTools, cleanupFilesystem } from "./filesystem.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
-import { hookTools } from "./hooks.ts";
-import { reminderTools, cleanupReminders, createReminderSchemaWithTime } from "./reminder.ts";
+import { browserTools, cleanupBrowser } from "./browser.ts";
 
-// Common tool definition format - each tool has description, zod schema, and handler
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// minimal tool registry - nanocode style
+// filesystem + browser + bash (in docker)
+
 type ToolDefinition = {
   description: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,67 +15,40 @@ type ToolDefinition = {
   handler: (args: any, userId: number) => Promise<string>;
 };
 
-// Registry of all available tools - bash tools only available in docker
 const toolRegistry: Record<string, ToolDefinition> = {
+  ...filesystemTools,
   ...browserTools,
-  ...todoTools,
-  ...skillTools,
-  ...hookTools,
-  ...reminderTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
-/**
- * Convert Zod schema to OpenAI tool parameter format
- */
-function zodSchemaToOpenAIParameters(schema: z.ZodType): Record<string, unknown> {
-  // Get the shape if it's an object schema
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const shape = (schema as any).shape;
-
-  if (!shape) {
-    return { type: "object", properties: {} };
-  }
+// convert zod schema to openai parameters
+function zodToOpenAI(schema: z.ZodType): Record<string, unknown> {
+  const shape = (schema as { shape?: Record<string, z.ZodType> }).shape;
+  if (!shape) return { type: "object", properties: {} };
 
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
 
   for (const [key, value] of Object.entries(shape)) {
-    const zodType = value as z.ZodType;
+    const zodType = value as z.ZodType & { _def?: { typeName?: string; values?: string[] } };
     const description = zodType.description;
+    const typeName = zodType._def?.typeName;
 
-    // Determine the JSON schema type from Zod type
-    let type = "string";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const zodTypeName = (zodType as any)._def?.typeName;
-
-    if (zodTypeName === "ZodEnum") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const enumValues = (zodType as any)._def?.values;
-      properties[key] = {
-        type: "string",
-        enum: enumValues,
-        description,
-      };
-    } else if (zodTypeName === "ZodNumber") {
-      type = "number";
-      properties[key] = { type, description };
-    } else if (zodTypeName === "ZodBoolean") {
-      type = "boolean";
-      properties[key] = { type, description };
-    } else if (zodTypeName === "ZodArray") {
-      type = "array";
-      properties[key] = { type, description };
-    } else if (zodTypeName === "ZodObject") {
-      type = "object";
-      properties[key] = { type, description };
+    if (typeName === "ZodEnum") {
+      properties[key] = { type: "string", enum: zodType._def?.values, description };
+    } else if (typeName === "ZodNumber") {
+      properties[key] = { type: "number", description };
+    } else if (typeName === "ZodBoolean") {
+      properties[key] = { type: "boolean", description };
+    } else if (typeName === "ZodArray") {
+      properties[key] = { type: "array", description };
+    } else if (typeName === "ZodObject") {
+      properties[key] = { type: "object", description };
     } else {
-      // Default to string for ZodString and others
       properties[key] = { type: "string", description };
     }
 
-    // Check if field is required (not optional)
-    if (zodTypeName !== "ZodOptional") {
+    if (typeName !== "ZodOptional") {
       required.push(key);
     }
   }
@@ -89,106 +60,46 @@ function zodSchemaToOpenAIParameters(schema: z.ZodType): Record<string, unknown>
   };
 }
 
-/**
- * Generate OpenAI-compatible tool definitions from the registry
- */
 export function generateOpenAITools(): ChatCompletionTool[] {
-  return Object.entries(toolRegistry).map(([name, tool]) => {
-    // use dynamic schema for reminder_create so model knows current time
-    const schema = name === "reminder_create"
-      ? createReminderSchemaWithTime()
-      : tool.schema;
-
-    return {
-      type: "function" as const,
-      function: {
-        name,
-        description: tool.description,
-        parameters: zodSchemaToOpenAIParameters(schema),
-      },
-    };
-  });
+  return Object.entries(toolRegistry).map(([name, tool]) => ({
+    type: "function" as const,
+    function: {
+      name,
+      description: tool.description,
+      parameters: zodToOpenAI(tool.schema),
+    },
+  }));
 }
 
-/**
- * Execute a tool by name with the given arguments
- */
 export async function executeTool(name: string, args: string, userId: number = 0): Promise<string> {
   const tool = toolRegistry[name];
   if (!tool) {
-    return `[Error] Unknown tool: ${name}. Available tools: ${Object.keys(toolRegistry).join(", ")}`;
+    return `error: unknown tool "${name}". available: ${Object.keys(toolRegistry).join(", ")}`;
   }
 
-  let parsedArgs: unknown;
+  let parsed: unknown;
   try {
-    parsedArgs = JSON.parse(args);
-  } catch (parseError) {
-    return `[Error] Invalid JSON in arguments for ${name}. Received: ${args.slice(0, 100)}. Please provide valid JSON arguments.`;
-  }
-
-  // coerce mistyped values before validation
-  // models sometimes pass strings when booleans/numbers expected, or null for optional fields
-  if (parsedArgs && typeof parsedArgs === "object") {
-    const obj = parsedArgs as Record<string, unknown>;
-    for (const key of Object.keys(obj)) {
-      const val = obj[key];
-      // null -> undefined (zod .optional() doesnt accept null)
-      if (val === null) {
-        delete obj[key];
-      }
-      // string booleans -> actual booleans
-      else if (val === "true") obj[key] = true;
-      else if (val === "false" || val === "") obj[key] = false;
-      // string numbers -> actual numbers (only if its a clean numeric string)
-      else if (typeof val === "string" && val !== "" && !isNaN(Number(val)) && val.trim() === val) {
-        obj[key] = Number(val);
-      }
-    }
+    parsed = JSON.parse(args);
+  } catch {
+    return `error: invalid json for ${name}`;
   }
 
   try {
-    const validatedArgs = tool.schema.parse(parsedArgs);
-    return await tool.handler(validatedArgs, userId);
-  } catch (error) {
-    if (error instanceof Error) {
-      // provide actionable feedback based on error type
-      const msg = error.message;
-
-      if (msg.includes("Required") || msg.includes("required")) {
-        return `[Error] Missing required argument for ${name}. ${msg}. Please provide all required parameters.`;
-      }
-
-      if (msg.includes("Invalid enum") || msg.includes("Expected")) {
-        return `[Error] Invalid argument value for ${name}. ${msg}. Check the allowed values and try again.`;
-      }
-
-      // navigation/network errors should suggest alternatives
-      if (msg.includes("timeout") || msg.includes("net::ERR")) {
-        return `[Error] Network issue with ${name}: ${msg}. The page may be slow or unavailable. Consider trying a different URL.`;
-      }
-
-      return `[Error] ${name} failed: ${msg}`;
-    }
-    return `[Error] ${name} failed: ${String(error)}`;
+    const validated = tool.schema.parse(parsed);
+    return await tool.handler(validated, userId);
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
-/**
- * Get list of available tool names
- */
 export function getAvailableTools(): string[] {
   return Object.keys(toolRegistry);
 }
 
-/**
- * Cleanup all tools (close browsers, connections, etc.)
- */
 export async function cleanupTools(): Promise<void> {
+  await cleanupFilesystem();
   await cleanupBrowser();
-  await cleanupTodos();
   await cleanupBash();
-  await cleanupReminders();
 }
 
-// Re-export tool types for extension
 export type { ToolDefinition };
