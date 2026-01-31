@@ -16,7 +16,6 @@ import { debug } from "../utils/debug.ts";
 import { stripReasoningTags } from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
-import { CodingAgent, isCodingTask } from "./coding-agent.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -249,12 +248,6 @@ export class Agent {
   // nanocode-style agentic loop: call api until no more tools
   async chat(userMessage: string, callbacks?: AgentCallbacks): Promise<string> {
     await this.initialize();
-
-    // detect coding tasks and delegate to coding agent
-    if (await isCodingTask(userMessage)) {
-      debug("[agent] detected coding task, delegating to coding agent");
-      return this.handleCodingTask(userMessage, callbacks);
-    }
 
     // context management
     const { summarized, messagesToDrop } =
@@ -521,90 +514,5 @@ export class Agent {
   async cleanup(): Promise<void> {
     await this.saveConversation();
     await cleanupTools();
-  }
-
-  // handle coding tasks with plan-then-execute react loop
-  private async handleCodingTask(
-    userMessage: string,
-    callbacks?: AgentCallbacks,
-  ): Promise<string> {
-    const codingAgent = new CodingAgent();
-    const responses: string[] = [];
-
-    // notify user we're starting a coding task
-    if (callbacks?.onStatusUpdate) {
-      await callbacks.onStatusUpdate("analyzing your coding request...");
-    }
-
-    try {
-      const { plan, result, workspace, uploadUrl } = await codingAgent.run(userMessage, {
-        onTyping: callbacks?.onTyping,
-
-        onWorkspaceCreated: async (path) => {
-          if (callbacks?.onStatusUpdate) {
-            await callbacks.onStatusUpdate(`workspace created: ${path}`);
-          }
-        },
-
-        onPlanReady: async (plan) => {
-          if (callbacks?.onStatusUpdate) {
-            // send plan summary (first ~500 chars)
-            const planPreview =
-              plan.length > 500
-                ? plan.slice(0, 500) + "...\n\n[executing plan]"
-                : plan;
-            await callbacks.onStatusUpdate(`**plan:**\n${planPreview}`);
-          }
-          responses.push(`## plan\n${plan}`);
-        },
-
-        onThought: async (thought) => {
-          debug(`[coding thought]: ${thought}`);
-        },
-
-        onAction: async (tool, preview) => {
-          if (callbacks?.onStatusUpdate) {
-            await callbacks.onStatusUpdate(`${tool}(${preview}...)`);
-          }
-        },
-
-        onObservation: async (obs) => {
-          debug(`[coding observation]: ${obs.slice(0, 100)}`);
-        },
-
-        onComplete: async (summary) => {
-          responses.push(`## result\n${summary}`);
-        },
-
-        onUploadReady: async (url) => {
-          if (callbacks?.onStatusUpdate) {
-            await callbacks.onStatusUpdate(`project uploaded: ${url}`);
-          }
-        },
-      });
-
-      // build final response with download link
-      let finalResponse = result || "coding task completed.";
-      if (uploadUrl) {
-        finalResponse += `\n\ndownload: ${uploadUrl}`;
-      }
-      finalResponse += `\nworkspace: ${workspace}`;
-
-      // store in conversation history
-      this._messages.push({ role: "user", content: userMessage });
-      this._messages.push({ role: "assistant", content: finalResponse });
-      this.scheduleSave();
-
-      // log for self-review
-      addRecentContext(`user: ${userMessage}\n\nassistant: ${finalResponse}`);
-
-      return finalResponse;
-    } catch (err) {
-      const errorMsg = `coding agent error: ${err instanceof Error ? err.message : String(err)}`;
-      debug(`[coding error]: ${errorMsg}`);
-      return errorMsg;
-    } finally {
-      await codingAgent.cleanup();
-    }
   }
 }
