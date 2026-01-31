@@ -33,11 +33,12 @@ if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY environment variable is required");
 }
 
-// Initialize OpenAI client with 10 second timeout to prevent indefinite hangs
+// Initialize OpenAI client with 30 second timeout to prevent indefinite hangs
+// 10s was too aggressive and caused spurious timeouts during normal operations
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
   baseURL: OPENAI_BASE_URL,
-  timeout: 10 * 1000,
+  timeout: 30 * 1000,
 });
 
 // rate limiter for inference api calls

@@ -117,6 +117,26 @@ export async function executeTool(name: string, args: string, userId: number = 0
     return `[Error] Invalid JSON in arguments for ${name}. Received: ${args.slice(0, 100)}. Please provide valid JSON arguments.`;
   }
 
+  // coerce mistyped values before validation
+  // models sometimes pass strings when booleans/numbers expected, or null for optional fields
+  if (parsedArgs && typeof parsedArgs === "object") {
+    const obj = parsedArgs as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      // null -> undefined (zod .optional() doesnt accept null)
+      if (val === null) {
+        delete obj[key];
+      }
+      // string booleans -> actual booleans
+      else if (val === "true") obj[key] = true;
+      else if (val === "false" || val === "") obj[key] = false;
+      // string numbers -> actual numbers (only if its a clean numeric string)
+      else if (typeof val === "string" && val !== "" && !isNaN(Number(val)) && val.trim() === val) {
+        obj[key] = Number(val);
+      }
+    }
+  }
+
   try {
     const validatedArgs = tool.schema.parse(parsedArgs);
     return await tool.handler(validatedArgs, userId);

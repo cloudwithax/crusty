@@ -50,12 +50,15 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 # docker detection for bash tools
 ENV CRUSTY_DOCKER=true
 
-# install dependencies
+# install dependencies (include dev deps for build step)
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+RUN bun install --frozen-lockfile
 
 # copy source
 COPY . .
+
+# build typescript to javascript
+RUN bun run build
 
 # create data directory for sqlite
 RUN mkdir -p /app/data
@@ -132,4 +135,4 @@ ENV HEARTBEAT_DAYS=${HEARTBEAT_DAYS}
 ENV HEARTBEAT_START=${HEARTBEAT_START}
 ENV HEARTBEAT_END=${HEARTBEAT_END}
 
-ENTRYPOINT ["bun", "run", "index.ts"]
+ENTRYPOINT ["bun", "run", "dist/index.js"]
