@@ -400,19 +400,29 @@ function sanitizeArgumentValues(argsString: string, toolName?: string): string {
         continue;
       }
 
+      // special handling for bash_execute command field
+      // strip common model quirks: leading ": " prefix and trailing quotes
       if (toolName === "bash_execute" && key === "command") {
-        continue;
-      }
+        let cmd = value;
+        let cmdModified = false;
 
-      // numeric strings should be converted to numbers
-      // handles common model quirk of sending "30000" instead of 30000
-      if (/^\d+$/.test(value)) {
-        const num = parseInt(value, 10);
-        if (!isNaN(num)) {
-          debug(`[Sanitizing ${key}: "${value}" -> ${num} (number)]`);
-          args[key] = num;
-          continue;
+        // strip leading ": " (bash no-op command prefix)
+        if (/^:\s+/.test(cmd)) {
+          cmd = cmd.replace(/^:\s+/, "");
+          cmdModified = true;
         }
+
+        // strip trailing backslash-quote and quote patterns
+        if (/\\["']$/.test(cmd) || /["']$/.test(cmd)) {
+          cmd = cmd.replace(/\\?["']$/, "");
+          cmdModified = true;
+        }
+
+        if (cmdModified) {
+          debug(`[Sanitizing command: "${value}" -> "${cmd}"]`);
+          args[key] = cmd;
+        }
+        continue;
       }
 
       let cleaned = value;
@@ -448,6 +458,16 @@ function sanitizeArgumentValues(argsString: string, toolName?: string): string {
       if (modified) {
         debug(`[Sanitizing ${key}: "${value}" -> "${cleaned}"]`);
         args[key] = cleaned;
+      }
+
+      // numeric conversion happens AFTER cleanup
+      // handles common model quirk of sending ":30000" or "30000" instead of 30000
+      if (/^\d+$/.test(args[key])) {
+        const num = parseInt(args[key], 10);
+        if (!isNaN(num)) {
+          debug(`[Sanitizing ${key}: "${args[key]}" -> ${num} (number)]`);
+          args[key] = num;
+        }
       }
     }
 
