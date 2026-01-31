@@ -302,17 +302,36 @@ function sanitizeToolCalls(
 }
 
 // sanitize argument values to fix common model quirks
-// handles malformed urls, leading colons, extra quotes, etc
+// handles malformed urls, leading colons, extra quotes, type coercion, etc
 function sanitizeArgumentValues(argsString: string): string {
   try {
     const args = JSON.parse(argsString);
-    let modified = false;
+    const keysToDelete: string[] = [];
 
     for (const key of Object.keys(args)) {
       const value = args[key];
       if (typeof value !== "string") continue;
 
+      // empty strings should be removed (makes optional fields undefined)
+      if (value === "") {
+        debug(`[Sanitizing ${key}: removing empty string]`);
+        keysToDelete.push(key);
+        continue;
+      }
+
+      // numeric strings should be converted to numbers
+      // handles common model quirk of sending "30000" instead of 30000
+      if (/^\d+$/.test(value)) {
+        const num = parseInt(value, 10);
+        if (!isNaN(num)) {
+          debug(`[Sanitizing ${key}: "${value}" -> ${num} (number)]`);
+          args[key] = num;
+          continue;
+        }
+      }
+
       let cleaned = value;
+      let modified = false;
 
       // remove leading colons and whitespace (common model quirk)
       if (/^:\s*/.test(cleaned)) {
@@ -345,6 +364,11 @@ function sanitizeArgumentValues(argsString: string): string {
         debug(`[Sanitizing ${key}: "${value}" -> "${cleaned}"]`);
         args[key] = cleaned;
       }
+    }
+
+    // remove keys marked for deletion
+    for (const key of keysToDelete) {
+      delete args[key];
     }
 
     return JSON.stringify(args);
