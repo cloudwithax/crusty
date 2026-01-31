@@ -48,7 +48,8 @@ export function loadPairingData(): PairingData | null {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     used: row.used === 1,
-    pairedUserId: row.paired_user_id ?? undefined,
+    // normalize to number to handle bigint from sqlite
+    pairedUserId: row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
   };
 }
 
@@ -120,7 +121,8 @@ export async function loadPairingDataAsync(): Promise<PairingData | null> {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     used: row.used === 1,
-    pairedUserId: row.paired_user_id ?? undefined,
+    // normalize to number to handle bigint from postgres
+    pairedUserId: row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
   };
 }
 
