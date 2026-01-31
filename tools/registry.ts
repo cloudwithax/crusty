@@ -71,17 +71,179 @@ export function generateOpenAITools(): ChatCompletionTool[] {
   }));
 }
 
+// sanitize and coerce argument values to fix common model quirks
+// handles: type coercion, leading colons, malformed urls, escaped quotes, etc
+function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<string, unknown> {
+  const result = { ...args };
+  const keysToDelete: string[] = [];
+
+  for (const key of Object.keys(result)) {
+    const val = result[key];
+
+    // null -> delete
+    if (val === null) {
+      keysToDelete.push(key);
+      continue;
+    }
+
+    // string booleans -> actual booleans
+    if (val === "true") {
+      result[key] = true;
+      continue;
+    }
+    if (val === "false") {
+      result[key] = false;
+      continue;
+    }
+
+    // only process strings from here
+    if (typeof val !== "string") continue;
+
+    // empty strings -> delete (makes optional fields undefined)
+    if (val === "") {
+      keysToDelete.push(key);
+      continue;
+    }
+
+    // special handling for bash_execute command field
+    if (toolName === "bash_execute" && key === "command") {
+      let cmd = val;
+      // strip leading ": " (bash no-op prefix)
+      if (/^:\s+/.test(cmd)) cmd = cmd.replace(/^:\s+/, "");
+      // strip trailing backslash-quote
+      if (/\\["']$/.test(cmd) || /["']$/.test(cmd)) cmd = cmd.replace(/\\?["']$/, "");
+      result[key] = cmd;
+      continue;
+    }
+
+    let cleaned = val;
+
+    // remove leading colons and whitespace
+    if (/^:\s*/.test(cleaned)) {
+      cleaned = cleaned.replace(/^:\s*/, "");
+    }
+
+    // remove leading garbage before urls
+    const urlPrefixMatch = cleaned.match(/^[^a-zA-Z]*(https?:\/\/)/i);
+    if (urlPrefixMatch?.[1] && urlPrefixMatch[0] !== urlPrefixMatch[1]) {
+      cleaned = cleaned.slice(urlPrefixMatch[0].length - urlPrefixMatch[1].length);
+    }
+
+    // remove wrapping quotes from urls
+    if (/^["'].*["']$/.test(cleaned) && cleaned.includes("://")) {
+      cleaned = cleaned.slice(1, -1);
+    }
+
+    // fix escaped quotes in urls
+    if (cleaned.includes('\\"') && cleaned.includes("://")) {
+      cleaned = cleaned.replace(/\\"/g, "");
+    }
+
+    // string numbers -> actual numbers
+    if (/^\d+$/.test(cleaned)) {
+      const num = parseInt(cleaned, 10);
+      if (!isNaN(num)) {
+        result[key] = num;
+        continue;
+      }
+    }
+
+    result[key] = cleaned;
+  }
+
+  for (const key of keysToDelete) {
+    delete result[key];
+  }
+
+  return result;
+}
+
+// attempt to recover valid json from malformed tool arguments
+function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
+  const directionMatch = brokenArgs.match(/"?direction"?\s*[:=]\s*"?(up|down)/i);
+  const urlMatch = brokenArgs.match(/"?url"?\s*[:=]\s*"?([^"}\s]+)/i);
+  const selectorMatch = brokenArgs.match(/"?selector"?\s*[:=]\s*"([^"]+)"/i);
+  const textMatch = brokenArgs.match(/"?text"?\s*[:=]\s*"([^"]+)"/i);
+  const queryMatch = brokenArgs.match(/"?query"?\s*[:=]\s*"([^"]+)"/i);
+  const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
+  const commandMatch = brokenArgs.match(/"?command"?\s*[:=]\s*"([^"]+)"/i);
+  const contentMatch = brokenArgs.match(/"?content"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
+
+  // browser tools
+  if (toolName === "browser_scroll" && directionMatch) {
+    return JSON.stringify({ direction: directionMatch[1]!.toLowerCase() });
+  }
+  if (toolName === "browser_navigate" && urlMatch) {
+    return JSON.stringify({ url: urlMatch[1] });
+  }
+  if (toolName === "browser_click" && selectorMatch) {
+    return JSON.stringify({ selector: selectorMatch[1] });
+  }
+  if (toolName === "browser_type" && selectorMatch && textMatch) {
+    return JSON.stringify({ selector: selectorMatch[1], text: textMatch[1] });
+  }
+
+  // web search
+  if (toolName === "web_search" && queryMatch) {
+    return JSON.stringify({ query: queryMatch[1] });
+  }
+
+  // bash tools
+  if (toolName === "bash_execute" && commandMatch) {
+    const cmd = commandMatch[1]!.replace(/^:\s*/, "");
+    if (cmd && cmd.length > 2) return JSON.stringify({ command: cmd });
+  }
+  if ((toolName === "bash_read_file" || toolName === "read") && pathMatch) {
+    return JSON.stringify({ path: pathMatch[1]!.replace(/^:\s*/, "") });
+  }
+  if ((toolName === "bash_write_file" || toolName === "write") && pathMatch) {
+    return JSON.stringify({ path: pathMatch[1]!.replace(/^:\s*/, ""), content: contentMatch?.[1] ?? "" });
+  }
+  if (toolName === "bash_list_dir" && pathMatch) {
+    return JSON.stringify({ path: pathMatch[1]!.replace(/^:\s*/, "") });
+  }
+
+  // filesystem tools
+  if (toolName === "edit" && pathMatch) {
+    const oldMatch = brokenArgs.match(/"?old"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
+    const newMatch = brokenArgs.match(/"?new"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
+    return JSON.stringify({ path: pathMatch[1], old: oldMatch?.[1] ?? "", new: newMatch?.[1] ?? "" });
+  }
+  if (toolName === "glob") {
+    const patMatch = brokenArgs.match(/"?pat"?\s*[:=]\s*"([^"]+)"/i);
+    if (patMatch) return JSON.stringify({ pat: patMatch[1] });
+  }
+  if (toolName === "grep") {
+    const patMatch = brokenArgs.match(/"?pat"?\s*[:=]\s*"([^"]+)"/i);
+    if (patMatch) return JSON.stringify({ pat: patMatch[1], path: pathMatch?.[1] });
+  }
+
+  return "{}";
+}
+
 export async function executeTool(name: string, args: string, userId: number = 0): Promise<string> {
   const tool = toolRegistry[name];
   if (!tool) {
     return `error: unknown tool "${name}". available: ${Object.keys(toolRegistry).join(", ")}`;
   }
 
+  // try to parse json, recover if malformed
   let parsed: unknown;
   try {
     parsed = JSON.parse(args);
   } catch {
-    return `error: invalid json for ${name}`;
+    // attempt recovery from malformed args
+    const recovered = recoverMalformedArgs(name, args);
+    try {
+      parsed = JSON.parse(recovered);
+    } catch {
+      return `error: invalid json for ${name}`;
+    }
+  }
+
+  // sanitize and coerce types before validation
+  if (parsed && typeof parsed === "object") {
+    parsed = sanitizeArgs(parsed as Record<string, unknown>, name);
   }
 
   try {
