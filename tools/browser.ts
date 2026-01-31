@@ -38,7 +38,7 @@ interface BrowserState {
   pageTitle?: string;
 }
 
-type SearchProviderId = "duckduckgo_lite" | "startpage" | "mojeek" | "marginalia" | "wiby";
+type SearchProviderId = "duckduckgo_lite" | "brave";
 
 type RawSearchResult = {
   title: string;
@@ -65,24 +65,9 @@ const SEARCH_PROVIDERS: SearchProvider[] = [
     buildUrl: (query) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
   },
   {
-    id: "startpage",
-    label: "startpage",
-    buildUrl: (query) => `https://www.startpage.com/do/search?query=${encodeURIComponent(query)}`,
-  },
-  {
-    id: "mojeek",
-    label: "mojeek",
-    buildUrl: (query) => `https://www.mojeek.com/search?q=${encodeURIComponent(query)}`,
-  },
-  {
-    id: "marginalia",
-    label: "marginalia",
-    buildUrl: (query) => `https://marginalia-search.com/search?query=${encodeURIComponent(query)}`,
-  },
-  {
-    id: "wiby",
-    label: "wiby",
-    buildUrl: (query) => `https://wiby.me/?q=${encodeURIComponent(query)}`,
+    id: "brave",
+    label: "brave search",
+    buildUrl: (query) => `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
   },
 ];
 
@@ -150,16 +135,8 @@ function unwrapDuckDuckGoUrl(value?: string): string | undefined {
 function detectSearchBlock(provider: SearchProviderId, title: string, text: string): string | undefined {
   const haystack = `${title} ${text}`.toLowerCase();
 
-  if (provider === "startpage" && haystack.includes("startpage blocked")) {
-    return "Blocked by Startpage";
-  }
-
-  if (provider === "mojeek" && haystack.includes("automated queries")) {
-    return "Mojeek blocked automated queries";
-  }
-
-  if (provider === "marginalia" && haystack.includes("anubis")) {
-    return "Marginalia bot protection (Anubis)";
+  if (provider === "brave" && haystack.includes("unusual traffic")) {
+    return "Brave Search rate limited";
   }
 
   const genericIndicators = [
@@ -188,14 +165,8 @@ function getProviderBaseUrl(provider: SearchProviderId): string | undefined {
   switch (provider) {
     case "duckduckgo_lite":
       return "https://duckduckgo.com";
-    case "startpage":
-      return "https://www.startpage.com";
-    case "mojeek":
-      return "https://www.mojeek.com";
-    case "marginalia":
-      return "https://marginalia-search.com";
-    case "wiby":
-      return "https://wiby.me";
+    case "brave":
+      return "https://search.brave.com";
     default:
       return undefined;
   }
@@ -553,50 +524,19 @@ class BrowserManager {
       return results || [];
     }
 
-    if (provider === "wiby") {
+    if (provider === "brave") {
       const results = await this.page.evaluate(() => {
         const doc = (globalThis as any).document;
         const searchResults: Array<{ title: string; url?: string; snippet?: string }> = [];
-        const blocks = doc.querySelectorAll("blockquote");
 
-        for (const block of blocks) {
-          const titleEl = block.querySelector("a.tlink");
-          const urlEl = block.querySelector("p.url");
-          const title = titleEl?.textContent?.trim();
-          const url = urlEl?.textContent?.trim() || titleEl?.getAttribute("href") || undefined;
-
-          const snippetParts: string[] = [];
-          const snippetEls = block.querySelectorAll("p");
-          for (const el of snippetEls) {
-            if (el.classList?.contains("url")) continue;
-            const text = el.textContent?.trim();
-            if (text) snippetParts.push(text);
-          }
-
-          const snippet = snippetParts.join(" ").trim() || undefined;
-
-          if (title && (url || snippet)) {
-            searchResults.push({ title, url, snippet });
-          }
-        }
-
-        return searchResults;
-      });
-
-      return results || [];
-    }
-
-    if (provider === "startpage") {
-      const results = await this.page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const searchResults: Array<{ title: string; url?: string; snippet?: string }> = [];
-        const containers = doc.querySelectorAll(".w-gl__result, .result, .search-result, article");
+        // brave uses data-type="web" for organic results
+        const containers = doc.querySelectorAll('[data-type="web"], .snippet, .result');
 
         for (const container of containers) {
-          const titleEl = container.querySelector("a, h2 a, h3 a");
+          const titleEl = container.querySelector("a[href]:not([href^='#']), .title a, h3 a");
           const title = titleEl?.textContent?.trim();
           const url = titleEl?.getAttribute("href") || undefined;
-          const snippetEl = container.querySelector(".w-gl__description, .result__snippet, .search-result__snippet, p");
+          const snippetEl = container.querySelector(".snippet-description, .snippet-content, .description, p");
           const snippet = snippetEl?.textContent?.trim();
 
           if (title && (url || snippet)) {
@@ -604,69 +544,20 @@ class BrowserManager {
           }
         }
 
-        if (searchResults.length > 0) return searchResults;
+        // fallback: try generic result selectors
+        if (searchResults.length === 0) {
+          const articles = doc.querySelectorAll("article, .card, [class*='result']");
+          for (const article of articles) {
+            const titleEl = article.querySelector("a, h2, h3");
+            const title = titleEl?.textContent?.trim();
+            const linkEl = article.querySelector("a[href]");
+            const url = linkEl?.getAttribute("href") || undefined;
+            const snippetEl = article.querySelector("p, .desc, .description");
+            const snippet = snippetEl?.textContent?.trim();
 
-        const main = doc.querySelector("main, #mainline, #main") || doc.body;
-        const anchors = main.querySelectorAll("a");
-
-        for (const anchor of anchors) {
-          const title = anchor.textContent?.trim();
-          const url = anchor.getAttribute("href") || undefined;
-          if (!title || !url) continue;
-          if (title.length < 3) continue;
-
-          const parent = anchor.closest("article, div, section");
-          const snippetEl = parent?.querySelector("p");
-          const snippet = snippetEl?.textContent?.trim();
-
-          searchResults.push({ title, url, snippet });
-        }
-
-        return searchResults;
-      });
-
-      return results || [];
-    }
-
-    if (provider === "mojeek") {
-      const results = await this.page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const searchResults: Array<{ title: string; url?: string; snippet?: string }> = [];
-        const containers = doc.querySelectorAll("li.result, .results li, .result, article");
-
-        for (const container of containers) {
-          const titleEl = container.querySelector("a, h2 a, h3 a");
-          const title = titleEl?.textContent?.trim();
-          const url = titleEl?.getAttribute("href") || undefined;
-          const snippetEl = container.querySelector(".snippet, .desc, .description, p");
-          const snippet = snippetEl?.textContent?.trim();
-
-          if (title && (url || snippet)) {
-            searchResults.push({ title, url, snippet });
-          }
-        }
-
-        return searchResults;
-      });
-
-      return results || [];
-    }
-
-    if (provider === "marginalia") {
-      const results = await this.page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const searchResults: Array<{ title: string; url?: string; snippet?: string }> = [];
-        const containers = doc.querySelectorAll(".result, .search-result, article, li");
-
-        for (const container of containers) {
-          const titleEl = container.querySelector("a, h2 a, h3 a");
-          const title = titleEl?.textContent?.trim();
-          const url = titleEl?.getAttribute("href") || undefined;
-          const snippetEl = container.querySelector(".snippet, .desc, .description, p");
-          const snippet = snippetEl?.textContent?.trim();
-
-          if (title && (url || snippet)) {
-            searchResults.push({ title, url, snippet });
+            if (title && url) {
+              searchResults.push({ title, url, snippet });
+            }
           }
         }
 
@@ -799,7 +690,7 @@ export const browserTools = {
   },
 
   web_search: {
-    description: "Search the web using multiple html-friendly engines (DuckDuckGo Lite, Startpage, Mojeek, Marginalia, and Wiby) and aggregate the results. THIS IS YOUR PRIMARY TOOL FOR FINDING INFORMATION ONLINE. Use this FIRST when the user asks you to: look something up, search for something, find information, check prices, compare products, find stores, research topics, get current info, verify facts, find reviews, locate businesses, etc. Returns search results that you can read directly. If you need more details from a specific result, use browser_navigate to visit that URL.",
+    description: "Search the web using DuckDuckGo Lite and Brave Search, then aggregate the results. THIS IS YOUR PRIMARY TOOL FOR FINDING INFORMATION ONLINE. Use this FIRST when the user asks you to: look something up, search for something, find information, check prices, compare products, find stores, research topics, get current info, verify facts, find reviews, locate businesses, etc. Returns search results that you can read directly. If you need more details from a specific result, use browser_navigate to visit that URL.",
     schema: WebSearchSchema,
     handler: async (args: z.infer<typeof WebSearchSchema>, _userId: number) => {
       // validate query isnt empty or garbage
