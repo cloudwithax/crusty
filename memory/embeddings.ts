@@ -1,70 +1,23 @@
 // embedding-based memory search
-// supports multiple providers: openai, local (transformers.js), or none
+// uses local transformers.js model for zero-config experience
 
-import { OpenAI } from "openai";
 import { getAsyncDatabase, isUsingPostgres } from "../data/db";
 import { debug } from "../utils/debug";
 
-// embedding provider: openai, local, or none
+// embedding provider: local or none
 // local uses transformers.js with all-MiniLM-L6-v2 (384 dimensions, runs on cpu)
-type EmbeddingProvider = "openai" | "local" | "none";
-const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER || "openai") as EmbeddingProvider;
-
-// track if openai embeddings have failed so we can fallback to local
-let openaiEmbeddingsFailed = false;
-let openaiFailureCount = 0;
-const OPENAI_FAILURE_THRESHOLD = 3; // fallback after this many consecutive failures
-
-// reset openai fallback state (call this to retry openai after it recovers)
-export function resetOpenAIFallback(): void {
-  openaiEmbeddingsFailed = false;
-  openaiFailureCount = 0;
-  debug("[embeddings] openai fallback state reset");
-}
-
-// openai config
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
-const OPENAI_EMBEDDING_DIMENSION = parseInt(process.env.OPENAI_EMBEDDING_DIMENSION || "1536", 10);
+type EmbeddingProvider = "local" | "none";
+const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER || "local") as EmbeddingProvider;
 
 // local model config
 const LOCAL_EMBEDDING_MODEL = process.env.LOCAL_EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
 const LOCAL_EMBEDDING_DIMENSION = parseInt(process.env.LOCAL_EMBEDDING_DIMENSION || "384", 10);
 
 // get the dimension for current provider
-// when using openai with fallback, we use local dimension since thats the fallback
 function getEmbeddingDimension(): number {
-  if (EMBEDDING_PROVIDER === "local") return LOCAL_EMBEDDING_DIMENSION;
-  // for openai provider, we use local dimension because we might fall back
-  // this ensures consistent vector sizes in the database
-  // trade-off: openai embeddings get truncated but search still works
+  if (EMBEDDING_PROVIDER === "none") return 0;
   return LOCAL_EMBEDDING_DIMENSION;
 }
-
-// normalize embedding to target dimension
-// pads with zeros or truncates as needed
-function normalizeEmbeddingDimension(embedding: number[], targetDim: number): number[] {
-  if (embedding.length === targetDim) return embedding;
-  
-  if (embedding.length > targetDim) {
-    // truncate (loses some precision but maintains comparability)
-    return embedding.slice(0, targetDim);
-  }
-  
-  // pad with zeros (shouldn't happen in practice)
-  const padded = [...embedding];
-  while (padded.length < targetDim) {
-    padded.push(0);
-  }
-  return padded;
-}
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 30 * 1000,
-});
 
 // local embedding pipeline (lazy loaded)
 let localPipeline: any = null;
@@ -163,33 +116,6 @@ async function ensurePgvector(): Promise<boolean> {
   return pgvectorAvailable;
 }
 
-// generate embedding using openai api
-async function generateOpenAIEmbedding(text: string): Promise<number[] | null> {
-  try {
-    const response = await openai.embeddings.create({
-      model: OPENAI_EMBEDDING_MODEL,
-      input: text.substring(0, 8000),
-    });
-
-    // reset failure count on success
-    openaiFailureCount = 0;
-    openaiEmbeddingsFailed = false;
-
-    return response.data[0]?.embedding || null;
-  } catch (err) {
-    openaiFailureCount++;
-    
-    if (openaiFailureCount >= OPENAI_FAILURE_THRESHOLD && !openaiEmbeddingsFailed) {
-      openaiEmbeddingsFailed = true;
-      debug(`[embeddings] openai embeddings failed ${openaiFailureCount} times, falling back to local`);
-    } else {
-      debug("[embeddings] openai embedding failed:", err);
-    }
-    
-    return null;
-  }
-}
-
 // generate embedding using local transformers.js model
 async function generateLocalEmbedding(text: string): Promise<number[] | null> {
   try {
@@ -211,41 +137,13 @@ async function generateLocalEmbedding(text: string): Promise<number[] | null> {
   }
 }
 
-// generate embedding for text (dispatches to appropriate provider)
-// falls back to local if openai fails repeatedly
+// generate embedding for text
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   if (EMBEDDING_PROVIDER === "none") {
     return null;
   }
   
-  if (EMBEDDING_PROVIDER === "local") {
-    return generateLocalEmbedding(text);
-  }
-  
-  // openai provider with automatic fallback to local
-  if (openaiEmbeddingsFailed) {
-    // already failed too many times, go straight to local
-    return generateLocalEmbedding(text);
-  }
-  
-  const result = await generateOpenAIEmbedding(text);
-  
-  if (result) {
-    return result;
-  }
-  
-  // openai failed, try local as fallback
-  debug("[embeddings] trying local fallback");
   return generateLocalEmbedding(text);
-}
-
-// generate embedding and normalize to storage dimension
-export async function generateNormalizedEmbedding(text: string): Promise<number[] | null> {
-  const embedding = await generateEmbedding(text);
-  if (!embedding) return null;
-  
-  const targetDim = getEmbeddingDimension();
-  return normalizeEmbeddingDimension(embedding, targetDim);
 }
 
 // format embedding array for postgres vector type
@@ -264,7 +162,7 @@ export async function storeMemoryWithEmbedding(
   const asyncDb = getAsyncDatabase();
   if (!asyncDb) return false;
 
-  const embedding = await generateNormalizedEmbedding(content);
+  const embedding = await generateEmbedding(content);
   if (!embedding) return false;
 
   try {
@@ -303,7 +201,7 @@ export async function searchByEmbedding(
   const asyncDb = getAsyncDatabase();
   if (!asyncDb) return [];
 
-  const queryEmbedding = await generateNormalizedEmbedding(queryText);
+  const queryEmbedding = await generateEmbedding(queryText);
   if (!queryEmbedding) return [];
 
   try {
@@ -388,28 +286,12 @@ export function getEmbeddingProviderInfo(): {
   provider: EmbeddingProvider;
   model: string;
   dimension: number;
-  fallbackActive: boolean;
-  storageDimension: number;
 } {
-  const storageDim = getEmbeddingDimension();
-  
   if (EMBEDDING_PROVIDER === "local") {
     return {
       provider: "local",
       model: LOCAL_EMBEDDING_MODEL,
       dimension: LOCAL_EMBEDDING_DIMENSION,
-      fallbackActive: false,
-      storageDimension: storageDim,
-    };
-  }
-  
-  if (EMBEDDING_PROVIDER === "openai") {
-    return {
-      provider: "openai",
-      model: openaiEmbeddingsFailed ? LOCAL_EMBEDDING_MODEL : OPENAI_EMBEDDING_MODEL,
-      dimension: openaiEmbeddingsFailed ? LOCAL_EMBEDDING_DIMENSION : OPENAI_EMBEDDING_DIMENSION,
-      fallbackActive: openaiEmbeddingsFailed,
-      storageDimension: storageDim,
     };
   }
   
@@ -417,8 +299,6 @@ export function getEmbeddingProviderInfo(): {
     provider: "none",
     model: "none",
     dimension: 0,
-    fallbackActive: false,
-    storageDimension: 0,
   };
 }
 

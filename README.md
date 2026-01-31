@@ -113,10 +113,8 @@ SUMMARIZE_MODEL=gpt-4o-mini
 
 # embeddings (optional, requires postgres + pgvector)
 # DATABASE_URL=postgres://user:pass@localhost:5432/crusty
-# EMBEDDING_PROVIDER=openai  # openai, local, or none
-# OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-# OPENAI_EMBEDDING_DIMENSION=1536
-# LOCAL_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2  # cpu-friendly, no api needed
+# EMBEDDING_PROVIDER=local  # local or none (local is default, no api needed)
+# LOCAL_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2
 # LOCAL_EMBEDDING_DIMENSION=384
 ```
 

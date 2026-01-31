@@ -3,7 +3,7 @@
 
 import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
 import { conversationStore } from "../core/conversation-store";
-import { backfillEmbeddings, getEmbeddingStats, isEmbeddingsAvailable, getEmbeddingProviderInfo, resetOpenAIFallback } from "../memory/embeddings";
+import { backfillEmbeddings, getEmbeddingStats, isEmbeddingsAvailable, getEmbeddingProviderInfo } from "../memory/embeddings";
 import {
   MAX_CONTEXT_TOKENS,
   RESERVED_COMPLETION_TOKENS,
@@ -79,8 +79,6 @@ async function showEmbeddingStats(userId?: number): Promise<void> {
   console.log(`  provider: ${providerInfo.provider}`);
   console.log(`  model: ${providerInfo.model}`);
   console.log(`  dimension: ${providerInfo.dimension}`);
-  console.log(`  storage dimension: ${providerInfo.storageDimension}`);
-  console.log(`  fallback active: ${providerInfo.fallbackActive ? "yes (openai failed)" : "no"}`);
   console.log(`  pgvector available: ${available ? "yes" : "no"}`);
 
   if (!available && providerInfo.provider !== "none") {
@@ -160,11 +158,6 @@ async function main(): Promise<void> {
       await clearConversation(clearUserId);
       break;
 
-    case "reset-fallback":
-      resetOpenAIFallback();
-      console.log("openai embedding fallback state reset");
-      break;
-
     default:
       console.log("context management cli\n");
       console.log("commands:");
@@ -173,7 +166,6 @@ async function main(): Promise<void> {
       console.log("  embeddings [uid]  - show embedding stats");
       console.log("  backfill [uid]    - backfill embeddings for memories");
       console.log("  clear <uid>       - clear conversation for user");
-      console.log("  reset-fallback    - reset openai fallback to retry api");
   }
 }
 
