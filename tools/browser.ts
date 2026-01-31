@@ -38,7 +38,7 @@ interface BrowserState {
   pageTitle?: string;
 }
 
-type SearchProviderId = "duckduckgo_lite" | "brave";
+type SearchProviderId = "duckduckgo_lite";
 
 type RawSearchResult = {
   title: string;
@@ -56,18 +56,13 @@ type SearchProvider = {
   buildUrl: (query: string) => string;
 };
 
-const MAX_RESULTS_PER_PROVIDER = 8;
+const MAX_RESULTS_PER_PROVIDER = 10;
 
 const SEARCH_PROVIDERS: SearchProvider[] = [
   {
     id: "duckduckgo_lite",
     label: "duckduckgo lite",
     buildUrl: (query) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
-  },
-  {
-    id: "brave",
-    label: "brave search",
-    buildUrl: (query) => `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
   },
 ];
 
@@ -132,12 +127,8 @@ function unwrapDuckDuckGoUrl(value?: string): string | undefined {
   return normalized;
 }
 
-function detectSearchBlock(provider: SearchProviderId, title: string, text: string): string | undefined {
+function detectSearchBlock(_provider: SearchProviderId, title: string, text: string): string | undefined {
   const haystack = `${title} ${text}`.toLowerCase();
-
-  if (provider === "brave" && haystack.includes("unusual traffic")) {
-    return "Brave Search rate limited";
-  }
 
   const genericIndicators = [
     "access denied",
@@ -165,8 +156,6 @@ function getProviderBaseUrl(provider: SearchProviderId): string | undefined {
   switch (provider) {
     case "duckduckgo_lite":
       return "https://duckduckgo.com";
-    case "brave":
-      return "https://search.brave.com";
     default:
       return undefined;
   }
@@ -524,49 +513,6 @@ class BrowserManager {
       return results || [];
     }
 
-    if (provider === "brave") {
-      const results = await this.page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const searchResults: Array<{ title: string; url?: string; snippet?: string }> = [];
-
-        // brave uses data-type="web" for organic results
-        const containers = doc.querySelectorAll('[data-type="web"], .snippet, .result');
-
-        for (const container of containers) {
-          const titleEl = container.querySelector("a[href]:not([href^='#']), .title a, h3 a");
-          const title = titleEl?.textContent?.trim();
-          const url = titleEl?.getAttribute("href") || undefined;
-          const snippetEl = container.querySelector(".snippet-description, .snippet-content, .description, p");
-          const snippet = snippetEl?.textContent?.trim();
-
-          if (title && (url || snippet)) {
-            searchResults.push({ title, url, snippet });
-          }
-        }
-
-        // fallback: try generic result selectors
-        if (searchResults.length === 0) {
-          const articles = doc.querySelectorAll("article, .card, [class*='result']");
-          for (const article of articles) {
-            const titleEl = article.querySelector("a, h2, h3");
-            const title = titleEl?.textContent?.trim();
-            const linkEl = article.querySelector("a[href]");
-            const url = linkEl?.getAttribute("href") || undefined;
-            const snippetEl = article.querySelector("p, .desc, .description");
-            const snippet = snippetEl?.textContent?.trim();
-
-            if (title && url) {
-              searchResults.push({ title, url, snippet });
-            }
-          }
-        }
-
-        return searchResults;
-      });
-
-      return results || [];
-    }
-
     return [];
   }
 }
@@ -690,7 +636,7 @@ export const browserTools = {
   },
 
   web_search: {
-    description: "Search the web using DuckDuckGo Lite and Brave Search, then aggregate the results. THIS IS YOUR PRIMARY TOOL FOR FINDING INFORMATION ONLINE. Use this FIRST when the user asks you to: look something up, search for something, find information, check prices, compare products, find stores, research topics, get current info, verify facts, find reviews, locate businesses, etc. Returns search results that you can read directly. If you need more details from a specific result, use browser_navigate to visit that URL.",
+    description: "Search the web using DuckDuckGo Lite. THIS IS YOUR PRIMARY TOOL FOR FINDING INFORMATION ONLINE. Use this FIRST when the user asks you to: look something up, search for something, find information, check prices, compare products, find stores, research topics, get current info, verify facts, find reviews, locate businesses, etc. Returns search results that you can read directly. If you need more details from a specific result, use browser_navigate to visit that URL.",
     schema: WebSearchSchema,
     handler: async (args: z.infer<typeof WebSearchSchema>, _userId: number) => {
       // validate query isnt empty or garbage
