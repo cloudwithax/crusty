@@ -6,6 +6,9 @@ import {
   cleanupTools,
 } from "../tools/registry.ts";
 import { debug } from "../utils/debug.ts";
+import { mkdirSync, rmSync, existsSync } from "fs";
+import { join } from "path";
+import { v4 as uuid } from "uuid";
 
 // environment
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -61,6 +64,13 @@ CRITICAL RULES:
 5. if something fails, reason about why and try a different approach
 6. when the task is complete, output a final summary
 
+WORKSPACE RULES:
+- you are working in an ISOLATED workspace directory
+- NEVER access files outside your workspace
+- NEVER access /app or any parent directories
+- all file paths should be relative to your workspace root
+- the workspace will be cleaned up after you finish
+
 OUTPUT FORMAT:
 Thought: [your reasoning about what to do next]
 [then call a tool OR provide final answer]
@@ -73,6 +83,35 @@ Thought: [reasoning for next step]
 available tools: read, write, edit, glob, grep, bash (if enabled)
 
 remember: think first, act second. no rushing.`;
+
+// protected paths that the coding agent should never touch
+const PROTECTED_PATHS = [
+  "/app",
+  "/home",
+  "/etc",
+  "/var",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/root",
+];
+
+// check if a path is trying to escape the workspace
+function isPathProtected(path: string, workspace: string): boolean {
+  const resolved = join(workspace, path).replace(/\/+/g, "/");
+  
+  // must stay within workspace
+  if (!resolved.startsWith(workspace)) return true;
+  
+  // check against protected paths
+  for (const protected_path of PROTECTED_PATHS) {
+    if (resolved.startsWith(protected_path) && !protected_path.startsWith(workspace)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
 
 // planning prompt
 const PLANNING_PROMPT = `you are a senior software architect. analyze the coding request and create a detailed implementation plan.
@@ -100,14 +139,29 @@ export interface CodingCallbacks {
   onObservation?: (result: string) => Promise<void>;
   onPlanReady?: (plan: string) => Promise<void>;
   onComplete?: (summary: string) => Promise<void>;
+  onWorkspaceCreated?: (path: string) => Promise<void>;
+  onUploadReady?: (url: string) => Promise<void>;
   onTyping?: () => Promise<void>;
 }
 
 export class CodingAgent {
-  private workingDir: string;
+  private workspace: string;
+  private workspaceId: string;
 
-  constructor(workingDir: string = process.cwd()) {
-    this.workingDir = workingDir;
+  constructor() {
+    // create isolated workspace in /tmp
+    this.workspaceId = uuid().slice(0, 8);
+    this.workspace = `/tmp/crusty-workspace-${this.workspaceId}`;
+    
+    if (!existsSync(this.workspace)) {
+      mkdirSync(this.workspace, { recursive: true });
+    }
+    
+    debug(`[coding] created workspace: ${this.workspace}`);
+  }
+
+  getWorkspace(): string {
+    return this.workspace;
   }
 
   // phase 1: create detailed plan
@@ -118,11 +172,15 @@ export class CodingAgent {
 
     await rateLimiter.acquire();
     
+    if (callbacks?.onWorkspaceCreated) {
+      await callbacks.onWorkspaceCreated(this.workspace);
+    }
+
     const response = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       messages: [
         { role: "system", content: PLANNING_PROMPT },
-        { role: "user", content: `working directory: ${this.workingDir}\n\ntask:\n${task}` },
+        { role: "user", content: `workspace directory: ${this.workspace}\n\ntask:\n${task}` },
       ],
       temperature: 0.7,
     });
@@ -147,7 +205,7 @@ export class CodingAgent {
       { role: "system", content: REACT_SYSTEM_PROMPT },
       { 
         role: "user", 
-        content: `## task\n${task}\n\n## plan\n${plan}\n\n## working directory\n${this.workingDir}\n\nbegin implementation. start with a Thought about your first step.`
+        content: `## task\n${task}\n\n## plan\n${plan}\n\n## workspace\n${this.workspace}\n\nIMPORTANT: all file operations must use absolute paths starting with ${this.workspace}/\n\nbegin implementation. start with a Thought about your first step.`
       },
     ];
 
@@ -211,7 +269,57 @@ export class CodingAgent {
       for (const toolCall of toolCalls) {
         const fn = (toolCall as { function: { name: string; arguments: string } }).function;
         const name = fn.name;
-        const args = fn.arguments;
+        let args = fn.arguments;
+
+        // validate and rewrite paths to stay within workspace
+        try {
+          const parsed = JSON.parse(args);
+          
+          // check for path-based arguments
+          for (const key of ["path", "workdir"]) {
+            if (parsed[key] && typeof parsed[key] === "string") {
+              const path = parsed[key] as string;
+              
+              // if relative path, make it absolute within workspace
+              if (!path.startsWith("/")) {
+                parsed[key] = join(this.workspace, path);
+              }
+              
+              // block protected paths
+              if (isPathProtected(parsed[key], this.workspace)) {
+                debug(`[coding] BLOCKED: ${name} tried to access protected path: ${path}`);
+                messages.push({
+                  role: "tool",
+                  content: `error: access denied. you can only access files within your workspace: ${this.workspace}`,
+                  tool_call_id: toolCall.id,
+                });
+                continue;
+              }
+            }
+          }
+          
+          // block commands that might escape workspace
+          if (name === "bash_execute" && parsed.command) {
+            const cmd = parsed.command as string;
+            // block cd to parent or absolute paths outside workspace
+            if (/cd\s+[./]*\.\./.test(cmd) || /cd\s+\/(?!tmp\/crusty)/.test(cmd)) {
+              messages.push({
+                role: "tool",
+                content: `error: cannot cd outside workspace. stay within ${this.workspace}`,
+                tool_call_id: toolCall.id,
+              });
+              continue;
+            }
+            // set workdir to workspace if not specified
+            if (!parsed.workdir) {
+              parsed.workdir = this.workspace;
+            }
+          }
+          
+          args = JSON.stringify(parsed);
+        } catch {
+          // ignore parse errors, let executeTool handle it
+        }
 
         // parse args for preview
         let preview = "";
@@ -264,14 +372,70 @@ export class CodingAgent {
   }
 
   // main entry: plan then execute
-  async run(task: string, callbacks?: CodingCallbacks): Promise<{ plan: string; result: string }> {
+  async run(task: string, callbacks?: CodingCallbacks): Promise<{ plan: string; result: string; workspace: string; uploadUrl?: string }> {
     const plan = await this.plan(task, callbacks);
     const result = await this.execute(task, plan, callbacks);
-    return { plan, result };
+    
+    // try to upload workspace to 0x0.st
+    let uploadUrl: string | undefined;
+    try {
+      uploadUrl = await this.uploadWorkspace();
+      if (uploadUrl && callbacks?.onUploadReady) {
+        await callbacks.onUploadReady(uploadUrl);
+      }
+    } catch (err) {
+      debug(`[coding] upload failed: ${err}`);
+    }
+    
+    return { plan, result, workspace: this.workspace, uploadUrl };
   }
 
+  // upload workspace as tarball to 0x0.st (anonymous file hosting)
+  async uploadWorkspace(): Promise<string | undefined> {
+    try {
+      // create tarball
+      const tarPath = `/tmp/crusty-${this.workspaceId}.tar.gz`;
+      const { execSync } = await import("child_process");
+      
+      execSync(`tar -czf ${tarPath} -C ${this.workspace} .`, { stdio: "pipe" });
+      debug(`[coding] created tarball: ${tarPath}`);
+      
+      // upload to 0x0.st
+      const result = execSync(`curl -s -F "file=@${tarPath}" https://0x0.st`, { 
+        encoding: "utf-8",
+        timeout: 30000,
+      });
+      
+      const url = result.trim();
+      if (url.startsWith("http")) {
+        debug(`[coding] uploaded to: ${url}`);
+        
+        // cleanup tarball
+        rmSync(tarPath, { force: true });
+        
+        return url;
+      }
+    } catch (err) {
+      debug(`[coding] upload error: ${err}`);
+    }
+    return undefined;
+  }
+
+  // cleanup workspace
   async cleanup(): Promise<void> {
     await cleanupTools();
+    
+    // optionally remove workspace (keep for now so user can inspect)
+    // rmSync(this.workspace, { recursive: true, force: true });
+    debug(`[coding] workspace preserved at: ${this.workspace}`);
+  }
+
+  // force cleanup workspace
+  destroyWorkspace(): void {
+    if (existsSync(this.workspace)) {
+      rmSync(this.workspace, { recursive: true, force: true });
+      debug(`[coding] workspace destroyed: ${this.workspace}`);
+    }
   }
 }
 

@@ -362,8 +362,14 @@ export class Agent {
     }
 
     try {
-      const { plan, result } = await codingAgent.run(userMessage, {
+      const { plan, result, workspace, uploadUrl } = await codingAgent.run(userMessage, {
         onTyping: callbacks?.onTyping,
+
+        onWorkspaceCreated: async (path) => {
+          if (callbacks?.onStatusUpdate) {
+            await callbacks.onStatusUpdate(`workspace created: ${path}`);
+          }
+        },
 
         onPlanReady: async (plan) => {
           if (callbacks?.onStatusUpdate) {
@@ -379,7 +385,6 @@ export class Agent {
 
         onThought: async (thought) => {
           debug(`[coding thought]: ${thought}`);
-          // optionally surface thoughts to user
         },
 
         onAction: async (tool, preview) => {
@@ -388,24 +393,37 @@ export class Agent {
           }
         },
 
-        onObservation: async (result) => {
-          debug(`[coding observation]: ${result.slice(0, 100)}`);
+        onObservation: async (obs) => {
+          debug(`[coding observation]: ${obs.slice(0, 100)}`);
         },
 
         onComplete: async (summary) => {
           responses.push(`## result\n${summary}`);
         },
+
+        onUploadReady: async (url) => {
+          if (callbacks?.onStatusUpdate) {
+            await callbacks.onStatusUpdate(`project uploaded: ${url}`);
+          }
+        },
       });
+
+      // build final response with download link
+      let finalResponse = result || "coding task completed.";
+      if (uploadUrl) {
+        finalResponse += `\n\ndownload: ${uploadUrl}`;
+      }
+      finalResponse += `\nworkspace: ${workspace}`;
 
       // store in conversation history
       this._messages.push({ role: "user", content: userMessage });
-      this._messages.push({ role: "assistant", content: result });
+      this._messages.push({ role: "assistant", content: finalResponse });
       this.scheduleSave();
 
       // log for self-review
-      addRecentContext(`user: ${userMessage}\n\nassistant: ${result}`);
+      addRecentContext(`user: ${userMessage}\n\nassistant: ${finalResponse}`);
 
-      return result || "coding task completed.";
+      return finalResponse;
     } catch (err) {
       const errorMsg = `coding agent error: ${err instanceof Error ? err.message : String(err)}`;
       debug(`[coding error]: ${errorMsg}`);
