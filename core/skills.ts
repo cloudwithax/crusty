@@ -375,6 +375,34 @@ class SkillRegistry {
       return null;
     }
   }
+
+  // add a skill loaded from a url (no file backing, just in-memory)
+  addUrlSkill(name: string, description: string, content: string, sourceUrl: string): boolean {
+    // dont overwrite existing skills
+    if (this.skills.has(name)) {
+      return false;
+    }
+
+    const skill: Skill = {
+      meta: {
+        name,
+        description,
+      },
+      content,
+      path: sourceUrl,
+      directory: "",
+      scope: "project",
+    };
+
+    this.skills.set(name, skill);
+    debug(`[Skills] Added URL skill: ${name} from ${sourceUrl}`);
+    return true;
+  }
+
+  // check if a skill exists
+  hasSkill(name: string): boolean {
+    return this.skills.has(name);
+  }
 }
 
 export const skillRegistry = new SkillRegistry();

@@ -395,6 +395,18 @@ function initTables(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS blocked_skill_urls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      url_hash TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      blocked_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`);
+
   debug("[db] tables initialized");
 }
 
@@ -477,6 +489,18 @@ async function initTablesAsync(): Promise<void> {
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
+
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS blocked_skill_urls (
+      id SERIAL PRIMARY KEY,
+      url_hash TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      blocked_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
+
+  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`);
 
   debug("[db] postgres tables initialized");
 }

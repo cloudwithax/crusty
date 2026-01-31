@@ -21,6 +21,7 @@ import {
   listSkillNames,
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
+import { fetchAndValidateSkillUrl } from "../core/skill-url.ts";
 import { debug } from "../utils/debug.ts";
 
 // Environment configuration
@@ -267,6 +268,7 @@ const commands: Record<
       "/skill - List available skills\n" +
       "/skill new - Create a new skill\n" +
       "/skill <name> - View skill details\n" +
+      "/skill <url> - Load skill from URL\n" +
       "/help - Show this message\n\n" +
       "You can also just chat with me naturally. I can:\n" +
       "• Scuttle across websites and summarize content\n" +
@@ -452,17 +454,18 @@ const commands: Record<
     if (!(await isUserPairedAsync(userId))) {
       await sendMessage(
         chatId,
-        "🔐 This bot is not paired with you.\n" +
+        "This bot is not paired with you.\n" +
         "Please provide the pairing code first.",
         { message_thread_id: messageThreadId }
       );
       return;
     }
 
-    const arg = args.trim().toLowerCase();
+    const arg = args.trim();
+    const argLower = arg.toLowerCase();
 
     // /skill new or /skill create - start wizard
-    if (arg === "new" || arg === "create") {
+    if (argLower === "new" || argLower === "create") {
       const firstQuestion = startWizard(userId);
       await sendMessage(
         chatId,
@@ -473,7 +476,7 @@ const commands: Record<
     }
 
     // /skill cancel - abort wizard
-    if (arg === "cancel") {
+    if (argLower === "cancel") {
       if (cancelWizard(userId)) {
         await sendMessage(chatId, "skill creation cancelled.", { message_thread_id: messageThreadId });
       } else {
@@ -483,7 +486,7 @@ const commands: Record<
     }
 
     // /skill list - show available skills
-    if (arg === "list" || arg === "") {
+    if (argLower === "list" || argLower === "") {
       const skills = listSkillNames();
       if (skills.length === 0) {
         await sendMessage(
@@ -501,8 +504,62 @@ const commands: Record<
       return;
     }
 
+    // /skill <url> - load skill from url
+    if (arg.startsWith("http://") || arg.startsWith("https://")) {
+      await sendMessage(chatId, "validating skill url...", { message_thread_id: messageThreadId });
+
+      const result = await fetchAndValidateSkillUrl(arg);
+
+      if (!result.success) {
+        await sendMessage(
+          chatId,
+          `failed to load skill: ${result.error}`,
+          { message_thread_id: messageThreadId }
+        );
+        return;
+      }
+
+      // check if skill already exists
+      if (skillRegistry.hasSkill(result.skill!.name)) {
+        await sendMessage(
+          chatId,
+          `skill "${result.skill!.name}" already exists. remove it first or use a different name.`,
+          { message_thread_id: messageThreadId }
+        );
+        return;
+      }
+
+      // add the skill to the registry
+      const added = skillRegistry.addUrlSkill(
+        result.skill!.name,
+        result.skill!.description,
+        result.skill!.content,
+        arg
+      );
+
+      if (added) {
+        // clear session so agent picks up new skill on next message
+        await clearUserSession(userId);
+
+        await sendMessage(
+          chatId,
+          `skill "${result.skill!.name}" loaded successfully.\n\n` +
+          `description: ${result.skill!.description}\n\n` +
+          `the agent now has access to this skill.`,
+          { message_thread_id: messageThreadId }
+        );
+      } else {
+        await sendMessage(
+          chatId,
+          `failed to add skill to registry.`,
+          { message_thread_id: messageThreadId }
+        );
+      }
+      return;
+    }
+
     // /skill <name> - show skill details
-    const skill = skillRegistry.getSkill(arg);
+    const skill = skillRegistry.getSkill(argLower);
     if (skill) {
       const truncated = skill.content.length > 3000
         ? skill.content.slice(0, 3000) + "\n\n... [truncated]"
@@ -515,7 +572,7 @@ const commands: Record<
     } else {
       await sendMessage(
         chatId,
-        `skill "${arg}" not found.\n\nuse \`/skill list\` to see available skills.`,
+        `skill "${argLower}" not found.\n\nuse \`/skill list\` to see available skills.`,
         { message_thread_id: messageThreadId }
       );
     }
