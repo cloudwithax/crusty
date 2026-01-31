@@ -116,8 +116,9 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
     // special handling for bash_execute command field
     if (toolName === "bash_execute" && key === "command") {
       let cmd = val;
-      // strip leading ": " (bash no-op prefix)
-      if (/^:\s+/.test(cmd)) cmd = cmd.replace(/^:\s+/, "");
+      // strip leading colons, slashes, and whitespace that models sometimes prepend
+      // handles: ": cmd", ":cmd", "://cmd", "https://cmd", etc
+      cmd = cmd.replace(/^(?:https?)?:?\/*\s*/, "");
       // unwrap a fully quoted command but do not strip legitimate closing quotes
       const trimmed = cmd.trim();
       if (trimmed.length >= 2) {
@@ -207,7 +208,7 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
 
   // bash tools
   if (toolName === "bash_execute" && commandMatch) {
-    const cmd = commandMatch[1]!.replace(/^:\s*/, "");
+    const cmd = commandMatch[1]!.replace(/^(?:https?)?:?\/*\s*/, "");
     if (cmd && cmd.length > 2) return JSON.stringify({ command: cmd });
   }
   if ((toolName === "bash_read_file" || toolName === "read") && pathMatch) {
