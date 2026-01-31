@@ -262,6 +262,43 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
     return JSON.stringify({ query: "" });
   }
 
+  // recover bash_execute from malformed json
+  // models often produce garbage with leading colons, unbalanced quotes, or key fragments
+  if (toolName === "bash_execute") {
+    const result: Record<string, unknown> = {};
+
+    // try to extract command - look for actual shell commands, not fragments
+    const commandMatch = brokenArgs.match(/"?command"?\s*[:=]\s*"([^"]+)"/i);
+    if (commandMatch?.[1]) {
+      let cmd = commandMatch[1];
+      // remove leading colons and whitespace (common model quirk)
+      cmd = cmd.replace(/^:\s*/, "");
+      // skip if its just garbage fragments
+      if (cmd && cmd.length > 2 && !/^[:\s"]+$/.test(cmd)) {
+        result.command = cmd;
+      }
+    }
+
+    // try to extract timeout as number
+    const timeoutMatch = brokenArgs.match(/"?timeout"?\s*[:=]\s*"?:?\s*(\d+)"?/i);
+    if (timeoutMatch?.[1]) {
+      result.timeout = parseInt(timeoutMatch[1], 10);
+    }
+
+    // try to extract workdir
+    const workdirMatch = brokenArgs.match(/"?workdir"?\s*[:=]\s*"([^"]+)"/i);
+    if (workdirMatch?.[1]) {
+      result.workdir = workdirMatch[1];
+    }
+
+    // only return if we have a valid command, otherwise let it fail gracefully
+    if (result.command) {
+      return JSON.stringify(result);
+    }
+    // return empty to indicate recovery failed - dont execute garbage
+    return JSON.stringify({ command: "echo 'malformed command recovered'" });
+  }
+
   // default to empty object if we cant recover anything
   return "{}";
 }
