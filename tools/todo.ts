@@ -23,7 +23,7 @@ const UpdateTodoSchema = z.object({
         task: z.string().describe("The task description"),
         priority: z.enum(["high", "medium", "low"]).describe("Priority level"),
         estimatedEffort: z.string().optional().describe("Estimated time/effort"),
-        completed: z.boolean().describe("Whether this item is completed"),
+        completed: z.coerce.boolean().describe("Whether this item is completed"),
       })
     )
     .describe("Updated list of todo items"),
@@ -31,7 +31,7 @@ const UpdateTodoSchema = z.object({
 
 const MarkCompleteSchema = z.object({
   todoId: z.string().describe("ID of the todo list"),
-  itemIndex: z.number().describe("Index of the item to mark complete"),
+  itemIndex: z.coerce.number().describe("Index of the item to mark complete"),
 });
 
 interface TodoItem {

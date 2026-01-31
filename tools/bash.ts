@@ -19,7 +19,6 @@ const BLOCKED_PATTERNS = [
   /\brm\s+-[a-z]*r[a-z]*f/i, // rm -rf variants
   /\brm\s+-[a-z]*f[a-z]*r/i, // rm -fr variants
   /\bmkfs\b/i,
-  /\bformat\b/i,
   /\bdd\s+.*of\s*=\s*\/dev/i, // dd to devices
   /\bshred\b/i,
   /\bwipe\b/i,
@@ -65,7 +64,7 @@ function isCommandBlocked(command: string): string | null {
 const BashExecuteSchema = z.object({
   command: z.string().describe("The bash command to execute"),
   timeout: z
-    .number()
+    .coerce.number()
     .optional()
     .describe("Timeout in milliseconds (default: 30000, max: 120000)"),
   workdir: z
@@ -296,7 +295,7 @@ EXAMPLES:
           "Absolute path to the file to read, e.g. /app/package.json or /app/src/index.ts"
         ),
       lines: z
-        .number()
+        .coerce.number()
         .optional()
         .describe(
           "Only read the first N lines from the file. Omit to read the entire file. Useful for large files."
@@ -353,7 +352,7 @@ EXAMPLES:
           "The full text content to write to the file. Written exactly as provided including all whitespace and newlines."
         ),
       append: z
-        .boolean()
+        .coerce.boolean()
         .optional()
         .describe(
           "Set to true to ADD content to the END of an existing file. Default false means the file is completely replaced/overwritten."
@@ -412,7 +411,7 @@ EXAMPLES:
           "The directory path to list, e.g. /app or /app/src. Must be a directory, not a file."
         ),
       all: z
-        .boolean()
+        .coerce.boolean()
         .optional()
         .describe(
           "Set to true to include hidden files (dotfiles like .env, .gitignore). Default is false, which hides dotfiles."

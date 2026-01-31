@@ -17,8 +17,8 @@ function truncate(text: string, max: number = MAX_OUTPUT): string {
 // read file with optional line range
 const ReadSchema = z.object({
   path: z.string().describe("absolute path to file"),
-  offset: z.number().optional().describe("start line (0-indexed)"),
-  limit: z.number().optional().describe("max lines to read"),
+  offset: z.coerce.number().optional().describe("start line (0-indexed)"),
+  limit: z.coerce.number().optional().describe("max lines to read"),
 });
 
 async function read(args: z.infer<typeof ReadSchema>): Promise<string> {
@@ -59,7 +59,7 @@ const EditSchema = z.object({
   path: z.string().describe("absolute path to file"),
   old: z.string().describe("text to find (must be unique unless all=true)"),
   new: z.string().describe("replacement text"),
-  all: z.boolean().optional().describe("replace all occurrences"),
+  all: z.coerce.boolean().optional().describe("replace all occurrences"),
 });
 
 async function edit(args: z.infer<typeof EditSchema>): Promise<string> {

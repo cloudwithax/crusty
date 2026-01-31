@@ -1,6 +1,7 @@
 import { OpenAI } from "openai";
 import type {
   ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import {
@@ -117,6 +118,65 @@ function getRandomMessage(messages: string[]): string {
   return messages[Math.floor(Math.random() * messages.length)] || messages[0]!;
 }
 
+const MAX_TOOL_ITERATIONS = 8;
+const MAX_REPEAT_ASSISTANT_MESSAGES = 2;
+const MAX_REPEAT_TOOL_SIGNATURES = 2;
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortObjectKeys);
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([a], [b]) => a.localeCompare(b),
+    );
+    const sorted: Record<string, unknown> = {};
+
+    for (const [key, val] of entries) {
+      sorted[key] = sortObjectKeys(val);
+    }
+
+    return sorted;
+  }
+
+  return value;
+}
+
+function normalizeToolArgs(args: string): string {
+  const trimmed = args.trim();
+  if (!trimmed) return "";
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return JSON.stringify(sortObjectKeys(parsed));
+  } catch {
+    return trimmed;
+  }
+}
+
+function buildToolSignature(
+  toolCalls: ChatCompletionMessageToolCall[],
+): string {
+  return toolCalls
+    .map((toolCall) => {
+      if (toolCall.type === "function" && "function" in toolCall) {
+        const name = toolCall.function?.name ?? "unknown";
+        const args = toolCall.function?.arguments ?? "";
+        return `${name}:${normalizeToolArgs(args)}`;
+      }
+
+      if (toolCall.type === "custom" && "custom" in toolCall) {
+        const name = toolCall.custom?.name ?? "custom";
+        const input = toolCall.custom?.input ?? "";
+        return `${name}:${normalizeToolArgs(input)}`;
+      }
+
+      return "unknown:";
+    })
+    .join("|");
+}
+
 export interface AgentCallbacks {
   onStatusUpdate?: (message: string) => Promise<void>;
   onTyping?: () => Promise<void>;
@@ -219,6 +279,12 @@ export class Agent {
 
     const tools = generateOpenAITools();
     let lastTextResponse = "";
+    let toolIterationCount = 0;
+    let lastAssistantText = "";
+    let repeatAssistantCount = 0;
+    let lastToolSignature = "";
+    let repeatToolCount = 0;
+    let loopGuardMessage: string | null = null;
 
     // agentic loop: keep calling api until no more tool calls
     while (true) {
@@ -341,6 +407,54 @@ export class Agent {
         break;
       }
 
+      toolIterationCount += 1;
+
+      const normalizedContent = cleanModelResponse(content).toLowerCase();
+      if (normalizedContent) {
+        if (normalizedContent === lastAssistantText) {
+          repeatAssistantCount += 1;
+        } else {
+          lastAssistantText = normalizedContent;
+          repeatAssistantCount = 0;
+        }
+      }
+
+      const toolSignature = buildToolSignature(toolCalls);
+      if (toolSignature) {
+        if (toolSignature === lastToolSignature) {
+          repeatToolCount += 1;
+        } else {
+          lastToolSignature = toolSignature;
+          repeatToolCount = 0;
+        }
+      }
+
+      let loopReason: string | null = null;
+      if (toolIterationCount > MAX_TOOL_ITERATIONS) {
+        loopReason = "too many tool iterations";
+      } else if (repeatAssistantCount >= MAX_REPEAT_ASSISTANT_MESSAGES) {
+        loopReason = "repeating assistant response";
+      } else if (repeatToolCount >= MAX_REPEAT_TOOL_SIGNATURES) {
+        loopReason = "repeating tool calls";
+      }
+
+      if (loopReason) {
+        loopGuardMessage =
+          "i got stuck in a tool loop and stopped to avoid repeating myself. please try again.";
+        lastTextResponse = loopGuardMessage;
+        debug(`[tool loop guard] ${loopReason}`);
+
+        for (const toolCall of toolCalls) {
+          this._messages.push({
+            role: "tool",
+            content: `error: tool call stopped to avoid loop (${loopReason})`,
+            tool_call_id: toolCall.id,
+          });
+        }
+
+        break;
+      }
+
       // execute tools and collect results
       for (const toolCall of toolCalls) {
         if (callbacks?.onTyping) await callbacks.onTyping();
@@ -365,6 +479,10 @@ export class Agent {
           tool_call_id: toolCall.id,
         });
       }
+    }
+
+    if (loopGuardMessage) {
+      this._messages.push({ role: "assistant", content: loopGuardMessage });
     }
 
     // log for self-review

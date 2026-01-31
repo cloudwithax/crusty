@@ -43,7 +43,7 @@ const listHooksSchema = z.object({});
 // schema for enabling/disabling a hook
 const toggleHookSchema = z.object({
   name: z.string().describe("the name/id of the hook to enable or disable"),
-  enabled: z.boolean().describe("true to enable, false to disable"),
+  enabled: z.coerce.boolean().describe("true to enable, false to disable"),
 });
 
 // message sender reference - will be set by bot on startup
