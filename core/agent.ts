@@ -12,6 +12,7 @@ import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/heartbeat.ts";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
+import { stripReasoningTags } from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
 import { CodingAgent, isCodingTask } from "./coding-agent.ts";
@@ -91,6 +92,11 @@ function stripEmojis(text: string): string {
     )
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+// combined cleanup for model responses
+function cleanModelResponse(text: string): string {
+  return stripEmojis(stripReasoningTags(text));
 }
 
 // whimsical status messages
@@ -268,7 +274,7 @@ export class Agent {
 
       // collect text response
       if (content.trim()) {
-        lastTextResponse = stripEmojis(content.trim());
+        lastTextResponse = cleanModelResponse(content);
         debug(`[text]: ${lastTextResponse.slice(0, 100)}...`);
       }
 
@@ -296,7 +302,7 @@ export class Agent {
 
         // show tool execution to user
         if (callbacks?.onStatusUpdate && content.trim()) {
-          await callbacks.onStatusUpdate(stripEmojis(content.trim()));
+          await callbacks.onStatusUpdate(cleanModelResponse(content));
         }
 
         const result = await executeTool(name, args, this.userId);

@@ -6,6 +6,7 @@ import {
   cleanupTools,
 } from "../tools/registry.ts";
 import { debug } from "../utils/debug.ts";
+import { stripReasoningTags } from "../utils/reasoning.ts";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { v4 as uuid } from "uuid";
@@ -240,7 +241,8 @@ export class CodingAgent {
       if (!choice) break;
 
       const message = choice.message;
-      const content = message.content || "";
+      const rawContent = message.content || "";
+      const content = stripReasoningTags(rawContent);
       const toolCalls = message.tool_calls || [];
 
       // extract and emit thought
@@ -252,10 +254,10 @@ export class CodingAgent {
         debug(`[coding] thought: ${content.slice(0, 150)}...`);
       }
 
-      // add assistant message
+      // add assistant message (preserve raw for history, stripped for display)
       messages.push({
         role: "assistant",
-        content,
+        content: rawContent,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
 
