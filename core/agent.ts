@@ -299,6 +299,50 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string): string {
     return JSON.stringify({ command: "echo 'malformed command recovered'" });
   }
 
+  // recover bash_read_file from malformed json
+  if (toolName === "bash_read_file") {
+    const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
+    if (pathMatch?.[1]) {
+      const result: Record<string, unknown> = { path: pathMatch[1].replace(/^:\s*/, "") };
+      const startMatch = brokenArgs.match(/"?start_line"?\s*[:=]\s*"?:?\s*(\d+)"?/i);
+      const endMatch = brokenArgs.match(/"?end_line"?\s*[:=]\s*"?:?\s*(\d+)"?/i);
+      if (startMatch?.[1]) result.start_line = parseInt(startMatch[1], 10);
+      if (endMatch?.[1]) result.end_line = parseInt(endMatch[1], 10);
+      return JSON.stringify(result);
+    }
+    return JSON.stringify({ path: "" });
+  }
+
+  // recover bash_write_file from malformed json
+  if (toolName === "bash_write_file") {
+    const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
+    const contentMatch = brokenArgs.match(/"?content"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
+    if (pathMatch?.[1]) {
+      const result: Record<string, unknown> = { 
+        path: pathMatch[1].replace(/^:\s*/, ""),
+        content: contentMatch?.[1] ?? ""
+      };
+      const appendMatch = brokenArgs.match(/"?append"?\s*[:=]\s*(true|false)/i);
+      if (appendMatch?.[1]) result.append = appendMatch[1].toLowerCase() === "true";
+      return JSON.stringify(result);
+    }
+    return JSON.stringify({ path: "", content: "" });
+  }
+
+  // recover bash_list_dir from malformed json
+  if (toolName === "bash_list_dir") {
+    const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
+    if (pathMatch?.[1]) {
+      const result: Record<string, unknown> = { path: pathMatch[1].replace(/^:\s*/, "") };
+      const recursiveMatch = brokenArgs.match(/"?recursive"?\s*[:=]\s*(true|false)/i);
+      const depthMatch = brokenArgs.match(/"?max_depth"?\s*[:=]\s*"?:?\s*(\d+)"?/i);
+      if (recursiveMatch?.[1]) result.recursive = recursiveMatch[1].toLowerCase() === "true";
+      if (depthMatch?.[1]) result.max_depth = parseInt(depthMatch[1], 10);
+      return JSON.stringify(result);
+    }
+    return JSON.stringify({ path: "." });
+  }
+
   // default to empty object if we cant recover anything
   return "{}";
 }
