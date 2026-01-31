@@ -10,6 +10,7 @@ import {
   savePairingCode,
 } from "../cli/pairing.ts";
 import { memoryService } from "../memory/service.ts";
+import { getUserReminders } from "../tools/reminder.ts";
 import { join } from "path";
 import {
   startWizard,
@@ -260,6 +261,7 @@ const commands: Record<
       "/clear - Clean the shell (clear conversation)\n" +
       "/memory - View memory stats\n" +
       "/memory clear - Wipe long-term memory\n" +
+      "/reminders - View pending reminders\n" +
       "/soul - View current persona\n" +
       "/soul new - Define a new persona\n" +
       "/skill - List available skills\n" +
@@ -268,6 +270,7 @@ const commands: Record<
       "/help - Show this message\n\n" +
       "You can also just chat with me naturally. I can:\n" +
       "• Scuttle across websites and summarize content\n" +
+      "• Set reminders (try: \"remind me in 10 minutes to...\")\n" +
       "• Answer questions with my claws on the keyboard\n" +
       "• Help with research - digging is my specialty\n\n" +
       "Try asking: \"What's on example.com?\"",
@@ -364,6 +367,59 @@ const commands: Record<
     } catch {
       await sendMessage(chatId, "no soul file found.", { message_thread_id: messageThreadId });
     }
+  },
+
+  async reminders(userId, chatId, messageThreadId) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\n" +
+        "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId }
+      );
+      return;
+    }
+
+    const reminders = await getUserReminders(userId);
+
+    if (reminders.length === 0) {
+      await sendMessage(
+        chatId,
+        "no pending reminders.\n\njust tell me something like \"remind me in 10 minutes to take a break\"",
+        { message_thread_id: messageThreadId }
+      );
+      return;
+    }
+
+    const formatted = reminders.map((r) => {
+      const now = Date.now();
+      const remindAtMs = r.remindAt.getTime();
+      const diffMs = remindAtMs - now;
+
+      let relativeTime: string;
+      if (diffMs < 0) {
+        relativeTime = "overdue";
+      } else if (diffMs < 60000) {
+        relativeTime = "in less than a minute";
+      } else if (diffMs < 3600000) {
+        const mins = Math.round(diffMs / 60000);
+        relativeTime = `in ${mins} min`;
+      } else if (diffMs < 86400000) {
+        const hours = Math.round(diffMs / 3600000);
+        relativeTime = `in ${hours}h`;
+      } else {
+        const days = Math.round(diffMs / 86400000);
+        relativeTime = `in ${days}d`;
+      }
+
+      return `- ${r.message} (${relativeTime})`;
+    }).join("\n");
+
+    await sendMessage(
+      chatId,
+      `*pending reminders (${reminders.length}):*\n\n${formatted}\n\nto cancel, just ask me to cancel a reminder`,
+      { message_thread_id: messageThreadId }
+    );
   },
 
   async skill(userId, chatId, messageThreadId, args) {
@@ -687,6 +743,7 @@ export async function startBot(): Promise<void> {
     commands: [
       { command: "start", description: "Start the bot" },
       { command: "clear", description: "Clear conversation history" },
+      { command: "reminders", description: "View pending reminders" },
       { command: "soul", description: "View or set the bot's persona" },
       { command: "help", description: "Show help message" },
     ],

@@ -5,6 +5,7 @@ import { todoTools, cleanupTodos } from "./todo.ts";
 import { skillTools } from "./skill.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
 import { hookTools } from "./hooks.ts";
+import { reminderTools, cleanupReminders } from "./reminder.ts";
 
 // Common tool definition format - each tool has description, zod schema, and handler
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,6 +23,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...todoTools,
   ...skillTools,
   ...hookTools,
+  ...reminderTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
@@ -178,6 +180,7 @@ export async function cleanupTools(): Promise<void> {
   await cleanupBrowser();
   await cleanupTodos();
   await cleanupBash();
+  await cleanupReminders();
 }
 
 // Re-export tool types for extension

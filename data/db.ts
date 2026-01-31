@@ -376,11 +376,24 @@ function initTables(): void {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reminders (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      message TEXT NOT NULL,
+      remind_at INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled'))
+    )
+  `);
+
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
 
   debug("[db] tables initialized");
 }
@@ -446,11 +459,24 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS reminders (
+      id TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      message TEXT NOT NULL,
+      remind_at BIGINT NOT NULL,
+      created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled'))
+    )
+  `);
+
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
   await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
+  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
+  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
 
   debug("[db] postgres tables initialized");
 }

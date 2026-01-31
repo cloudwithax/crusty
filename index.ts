@@ -1,6 +1,7 @@
 import { startBot, cleanupBot, sendMessage, getPairedUserId } from "./telegram/bot.ts";
 import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
 import { startHooks, cleanupHooks } from "./scheduler/hooks.ts";
+import { startReminderScheduler, cleanupReminderScheduler } from "./scheduler/reminders.ts";
 import { setHookMessageSender } from "./tools/hooks.ts";
 import { closeDatabase } from "./data/db.ts";
 import { debug } from "./utils/debug.ts";
@@ -9,6 +10,7 @@ import { debug } from "./utils/debug.ts";
 process.on("SIGINT", async () => {
   cleanupHeartbeat();
   cleanupHooks();
+  cleanupReminderScheduler();
   await cleanupBot();
   closeDatabase();
   process.exit(0);
@@ -17,6 +19,7 @@ process.on("SIGINT", async () => {
 process.on("SIGTERM", async () => {
   cleanupHeartbeat();
   cleanupHooks();
+  cleanupReminderScheduler();
   await cleanupBot();
   closeDatabase();
   process.exit(0);
@@ -44,6 +47,11 @@ async function sendHookMessage(text: string, isHook?: boolean): Promise<void> {
   await sendMessage(userId, text, { isHeartbeat: isHook });
 }
 
+// Create reminder message sender
+async function sendReminderMessage(userId: number, text: string): Promise<void> {
+  await sendMessage(userId, text);
+}
+
 // Start the Telegram bot and heartbeat
 async function main(): Promise<void> {
   // Start heartbeat scheduler
@@ -55,6 +63,9 @@ async function main(): Promise<void> {
   // Start hooks scheduler
   await startHooks(sendHookMessage);
 
+  // Start reminder scheduler
+  startReminderScheduler(sendReminderMessage);
+
   // Start the bot
   await startBot();
 }
@@ -63,6 +74,7 @@ main().catch(async (error) => {
   console.error("Fatal error:", error);
   cleanupHeartbeat();
   cleanupHooks();
+  cleanupReminderScheduler();
   await cleanupBot();
   closeDatabase();
   process.exit(1);
