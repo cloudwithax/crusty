@@ -4,6 +4,7 @@ import { browserTools, cleanupBrowser } from "./browser.ts";
 import { todoTools, cleanupTodos } from "./todo.ts";
 import { skillTools } from "./skill.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
+import { hookTools } from "./hooks.ts";
 
 // Common tool definition format - each tool has description, zod schema, and handler
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,6 +21,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...browserTools,
   ...todoTools,
   ...skillTools,
+  ...hookTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
