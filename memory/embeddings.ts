@@ -23,6 +23,17 @@ function getEmbeddingDimension(): number {
 let localPipeline: any = null;
 let localPipelineLoading: Promise<any> | null = null;
 
+// preload the embedding model at startup for faster first inference
+export async function preloadEmbeddingModel(): Promise<boolean> {
+  if (EMBEDDING_PROVIDER === "none") {
+    debug("[embeddings] provider is none, skipping preload");
+    return false;
+  }
+  
+  const pipe = await getLocalPipeline();
+  return pipe !== null;
+}
+
 async function getLocalPipeline(): Promise<any> {
   if (localPipeline) return localPipeline;
   

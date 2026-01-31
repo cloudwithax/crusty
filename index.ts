@@ -1,9 +1,18 @@
-import { startBot, cleanupBot, sendMessage, getPairedUserId } from "./telegram/bot.ts";
+import {
+  startBot,
+  cleanupBot,
+  sendMessage,
+  getPairedUserId,
+} from "./telegram/bot.ts";
 import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
 import { startHooks, cleanupHooks } from "./scheduler/hooks.ts";
-import { startReminderScheduler, cleanupReminderScheduler } from "./scheduler/reminders.ts";
+import {
+  startReminderScheduler,
+  cleanupReminderScheduler,
+} from "./scheduler/reminders.ts";
 import { setHookMessageSender } from "./tools/hooks.ts";
 import { closeDatabase } from "./data/db.ts";
+import { preloadEmbeddingModel } from "./memory/embeddings.ts";
 import { debug } from "./utils/debug.ts";
 
 // Handle graceful shutdown
@@ -26,7 +35,10 @@ process.on("SIGTERM", async () => {
 });
 
 // Create heartbeat message sender
-async function sendHeartbeatMessage(text: string, isHeartbeat?: boolean): Promise<void> {
+async function sendHeartbeatMessage(
+  text: string,
+  isHeartbeat?: boolean,
+): Promise<void> {
   const userId = getPairedUserId();
   if (!userId) {
     debug("[heartbeat] no paired user, skipping delivery");
@@ -48,12 +60,20 @@ async function sendHookMessage(text: string, isHook?: boolean): Promise<void> {
 }
 
 // Create reminder message sender
-async function sendReminderMessage(userId: number, text: string): Promise<void> {
+async function sendReminderMessage(
+  userId: number,
+  text: string,
+): Promise<void> {
   await sendMessage(userId, text);
 }
 
 // Start the Telegram bot and heartbeat
 async function main(): Promise<void> {
+  // preload embedding model for faster first chat
+  preloadEmbeddingModel().then((loaded) => {
+    if (loaded) debug("[startup] embedding model preloaded");
+  });
+
   // Start heartbeat scheduler
   await startHeartbeat(sendHeartbeatMessage);
 
