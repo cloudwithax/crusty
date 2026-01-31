@@ -241,19 +241,70 @@ export class Agent {
 
       await rateLimiter.acquire();
 
+      // validate and fix messages before sending to api
+      const validMessages = messagesForModel
+        .map((msg) => {
+          // fix assistant messages with missing content
+          if (msg.role === "assistant") {
+            const hasToolCalls = (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
+            const hasContent = msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true);
+
+            // assistant must have content or tool_calls
+            if (!hasContent && !hasToolCalls) {
+              return null; // drop invalid message
+            }
+
+            // if has tool_calls but no content, set empty string
+            if (hasToolCalls && !msg.content) {
+              return { ...msg, content: "" };
+            }
+          }
+
+          // ensure tool messages have content
+          if (msg.role === "tool" && msg.content === undefined) {
+            return null;
+          }
+
+          return msg;
+        })
+        .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
+
+      if (validMessages.length === 0) {
+        debug("[api] no valid messages to send");
+        break;
+      }
+
       let response;
       try {
         response = await openai.chat.completions.create({
           model: OPENAI_MODEL,
-          messages: messagesForModel,
+          messages: validMessages,
           tools: tools.length > 0 ? tools : undefined,
           tool_choice: tools.length > 0 ? "auto" : undefined,
         });
       } catch (apiError) {
         clearTimeout(statusTimeout);
-        const msg =
-          apiError instanceof Error ? apiError.message : "Unknown error";
-        debug(`[api error: ${msg}]`);
+
+        // extract detailed error info from openai sdk
+        let errorDetails = "unknown error";
+        if (apiError instanceof Error) {
+          errorDetails = apiError.message;
+
+          // openai sdk errors have additional properties
+          const anyError = apiError as any;
+          if (anyError.status) {
+            errorDetails = `${anyError.status} status code`;
+          }
+          if (anyError.error) {
+            // detailed error from api response body
+            const errorBody = typeof anyError.error === 'string'
+              ? anyError.error
+              : JSON.stringify(anyError.error);
+            errorDetails += ` - ${errorBody}`;
+          }
+        }
+
+        debug(`[api error: ${errorDetails}]`);
         return (
           lastTextResponse || "i ran into a connection issue. please try again."
         );
