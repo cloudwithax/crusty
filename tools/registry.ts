@@ -3,6 +3,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { filesystemTools, cleanupFilesystem } from "./filesystem.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
 import { browserTools, cleanupBrowser } from "./browser.ts";
+import { skillTools } from "./skill.ts";
 
 // minimal tool registry - nanocode style
 // filesystem + browser + bash (in docker)
@@ -18,6 +19,7 @@ type ToolDefinition = {
 const toolRegistry: Record<string, ToolDefinition> = {
   ...filesystemTools,
   ...browserTools,
+  ...skillTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
