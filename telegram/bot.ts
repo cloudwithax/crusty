@@ -18,7 +18,7 @@ import {
   cancelWizard,
   processWizardInput,
   writeSkill,
-  listSkillNames,
+  generateSkillContent,
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
 import { fetchAndValidateSkillUrl } from "../core/skill-url.ts";
@@ -114,7 +114,10 @@ async function clearUserSession(userId: number): Promise<void> {
 }
 
 // Telegram API helpers
-async function makeRequest<T>(method: string, body?: Record<string, unknown>): Promise<T> {
+async function makeRequest<T>(
+  method: string,
+  body?: Record<string, unknown>,
+): Promise<T> {
   const url = `${API_BASE}/${method}`;
   const response = await fetch(url, {
     method: body ? "POST" : "GET",
@@ -123,12 +126,20 @@ async function makeRequest<T>(method: string, body?: Record<string, unknown>): P
   });
 
   if (!response.ok) {
-    throw new Error(`Telegram API error: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Telegram API error: ${response.status} ${response.statusText}`,
+    );
   }
 
-  const result = await response.json() as { ok: boolean; result: T; description?: string };
+  const result = (await response.json()) as {
+    ok: boolean;
+    result: T;
+    description?: string;
+  };
   if (!result.ok) {
-    throw new Error(`Telegram API error: ${result.description || "Unknown error"}`);
+    throw new Error(
+      `Telegram API error: ${result.description || "Unknown error"}`,
+    );
   }
 
   return result.result;
@@ -136,7 +147,10 @@ async function makeRequest<T>(method: string, body?: Record<string, unknown>): P
 
 // Delivery gate helper - checks if message should be suppressed
 // Returns true if message was suppressed (heartbeat tick with HEARTBEAT_OK)
-export function shouldSuppressDelivery(text: string, isHeartbeatTick?: boolean): boolean {
+export function shouldSuppressDelivery(
+  text: string,
+  isHeartbeatTick?: boolean,
+): boolean {
   if (!isHeartbeatTick) {
     return false;
   }
@@ -147,7 +161,12 @@ export function shouldSuppressDelivery(text: string, isHeartbeatTick?: boolean):
 export async function sendMessage(
   chatId: number,
   text: string,
-  options?: { reply_markup?: unknown; message_thread_id?: number; parse_mode?: string; isHeartbeat?: boolean }
+  options?: {
+    reply_markup?: unknown;
+    message_thread_id?: number;
+    parse_mode?: string;
+    isHeartbeat?: boolean;
+  },
 ): Promise<TelegramMessage | null> {
   // Check delivery gate for heartbeat messages
   if (shouldSuppressDelivery(text, options?.isHeartbeat)) {
@@ -184,7 +203,7 @@ export async function sendMessage(
 async function sendChatAction(
   chatId: number,
   action: "typing" | "upload_photo" | "upload_document",
-  options?: { message_thread_id?: number }
+  options?: { message_thread_id?: number },
 ): Promise<void> {
   await makeRequest("sendChatAction", {
     chat_id: chatId,
@@ -203,17 +222,22 @@ function truncateMessage(text: string): string {
 // Command handlers
 const commands: Record<
   string,
-  (userId: number, chatId: number, messageThreadId: number | undefined, args: string) => Promise<void>
+  (
+    userId: number,
+    chatId: number,
+    messageThreadId: number | undefined,
+    args: string,
+  ) => Promise<void>
 > = {
   async start(userId, chatId, messageThreadId) {
     if (!(await isSystemPairedAsync())) {
       await sendMessage(
         chatId,
         "🔐 *Pairing Required*\n\n" +
-        "This bot requires a pairing code to start.\n\n" +
-        "Please run `bun run setup` on the server and select \"Generate Pairing Code\"\n" +
-        "Then send the code here as your first message.",
-        { message_thread_id: messageThreadId }
+          "This bot requires a pairing code to start.\n\n" +
+          'Please run `bun run setup` on the server and select "Generate Pairing Code"\n' +
+          "Then send the code here as your first message.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -222,9 +246,9 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 *Already Paired*\n\n" +
-        "This bot is already paired with another user.\n" +
-        "Contact the administrator if you need access.",
-        { message_thread_id: messageThreadId }
+          "This bot is already paired with another user.\n" +
+          "Contact the administrator if you need access.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -232,15 +256,15 @@ const commands: Record<
     await sendMessage(
       chatId,
       "Hey there! I'm Crusty, your friendly neighborhood crab assistant.\n\n" +
-      "I can help you:\n" +
-      "• Scuttle across websites and dig up information\n" +
-      "• Answer questions with fresh data from the web\n" +
-      "• Help with research - I love a good treasure hunt\n\n" +
-      "Just send me a message or ask me to visit a website!\n\n" +
-      "Available commands:\n" +
-      "/clear - Clear our conversation history\n" +
-      "/help - Show this help message",
-      { message_thread_id: messageThreadId }
+        "I can help you:\n" +
+        "• Scuttle across websites and dig up information\n" +
+        "• Answer questions with fresh data from the web\n" +
+        "• Help with research - I love a good treasure hunt\n\n" +
+        "Just send me a message or ask me to visit a website!\n\n" +
+        "Available commands:\n" +
+        "/clear - Clear our conversation history\n" +
+        "/help - Show this help message",
+      { message_thread_id: messageThreadId },
     );
   },
 
@@ -249,8 +273,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -258,25 +282,25 @@ const commands: Record<
     await sendMessage(
       chatId,
       "*Crusty's Commands*\n\n" +
-      "/start - Wake up the crab\n" +
-      "/clear - Clean the shell (clear conversation)\n" +
-      "/memory - View memory stats\n" +
-      "/memory clear - Wipe long-term memory\n" +
-      "/reminders - View pending reminders\n" +
-      "/soul - View current persona\n" +
-      "/soul new - Define a new persona\n" +
-      "/skill - List available skills\n" +
-      "/skill new - Create a new skill\n" +
-      "/skill <name> - View skill details\n" +
-      "/skill <url> - Load skill from URL\n" +
-      "/help - Show this message\n\n" +
-      "You can also just chat with me naturally. I can:\n" +
-      "• Scuttle across websites and summarize content\n" +
-      "• Set reminders (try: \"remind me in 10 minutes to...\")\n" +
-      "• Answer questions with my claws on the keyboard\n" +
-      "• Help with research - digging is my specialty\n\n" +
-      "Try asking: \"What's on example.com?\"",
-      { message_thread_id: messageThreadId }
+        "/start - Wake up the crab\n" +
+        "/clear - Clean the shell (clear conversation)\n" +
+        "/memory - View memory stats\n" +
+        "/memory clear - Wipe long-term memory\n" +
+        "/reminders - View pending reminders\n" +
+        "/soul - View current persona\n" +
+        "/soul new - Define a new persona\n" +
+        "/skill - List available skills\n" +
+        "/skill new - Create a new skill\n" +
+        "/skill <name> - View skill details\n" +
+        "/skill <url> - Load skill from URL\n" +
+        "/help - Show this message\n\n" +
+        "You can also just chat with me naturally. I can:\n" +
+        "• Scuttle across websites and summarize content\n" +
+        '• Set reminders (try: "remind me in 10 minutes to...")\n' +
+        "• Answer questions with my claws on the keyboard\n" +
+        "• Help with research - digging is my specialty\n\n" +
+        'Try asking: "What\'s on example.com?"',
+      { message_thread_id: messageThreadId },
     );
   },
 
@@ -285,14 +309,18 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
 
     await clearUserSession(userId);
-    await sendMessage(chatId, "Shell cleaned! Starting fresh with a blank tide pool.", { message_thread_id: messageThreadId });
+    await sendMessage(
+      chatId,
+      "Shell cleaned! Starting fresh with a blank tide pool.",
+      { message_thread_id: messageThreadId },
+    );
   },
 
   async memory(userId, chatId, messageThreadId, args) {
@@ -300,8 +328,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -310,7 +338,9 @@ const commands: Record<
 
     if (arg === "clear") {
       await memoryService.clearUserMemories(userId);
-      await sendMessage(chatId, "memory banks wiped clean.", { message_thread_id: messageThreadId });
+      await sendMessage(chatId, "memory banks wiped clean.", {
+        message_thread_id: messageThreadId,
+      });
       return;
     }
 
@@ -319,9 +349,9 @@ const commands: Record<
     await sendMessage(
       chatId,
       `*Memory Stats*\n\n` +
-      `total memories: ${stats.total}\n` +
-      `avg emotional weight: ${stats.avgWeight.toFixed(1)}/10`,
-      { message_thread_id: messageThreadId }
+        `total memories: ${stats.total}\n` +
+        `avg emotional weight: ${stats.avgWeight.toFixed(1)}/10`,
+      { message_thread_id: messageThreadId },
     );
   },
 
@@ -330,8 +360,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -343,11 +373,11 @@ const commands: Record<
     await sendMessage(
       chatId,
       `*Context Stats*\n\n` +
-      `messages in context: ${stats.messageCount}\n` +
-      `estimated tokens: ${stats.estimatedTokens}\n` +
-      `has summary: ${stats.hasSummary ? "yes" : "no"}\n` +
-      `summary length: ${stats.summaryLength} chars`,
-      { message_thread_id: messageThreadId }
+        `messages in context: ${stats.messageCount}\n` +
+        `estimated tokens: ${stats.estimatedTokens}\n` +
+        `has summary: ${stats.hasSummary ? "yes" : "no"}\n` +
+        `summary length: ${stats.summaryLength} chars`,
+      { message_thread_id: messageThreadId },
     );
   },
 
@@ -356,8 +386,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "🔐 This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -371,7 +401,7 @@ const commands: Record<
       await sendMessage(
         chatId,
         "okay, what would you like your new soul to be?\n\n(send your persona content as the next message)",
-        { message_thread_id: messageThreadId }
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -380,9 +410,13 @@ const commands: Record<
     if (arg === "cancel") {
       if (awaitingSoulInput.has(userId)) {
         awaitingSoulInput.delete(userId);
-        await sendMessage(chatId, "soul update cancelled.", { message_thread_id: messageThreadId });
+        await sendMessage(chatId, "soul update cancelled.", {
+          message_thread_id: messageThreadId,
+        });
       } else {
-        await sendMessage(chatId, "nothing to cancel.", { message_thread_id: messageThreadId });
+        await sendMessage(chatId, "nothing to cancel.", {
+          message_thread_id: messageThreadId,
+        });
       }
       return;
     }
@@ -390,10 +424,17 @@ const commands: Record<
     // /soul (no args) = show current soul
     try {
       const content = await Bun.file(soulPath).text();
-      const truncated = content.length > 3500 ? content.slice(0, 3500) + "\n\n... [truncated]" : content;
-      await sendMessage(chatId, `*Current Soul:*\n\n${truncated}`, { message_thread_id: messageThreadId });
+      const truncated =
+        content.length > 3500
+          ? content.slice(0, 3500) + "\n\n... [truncated]"
+          : content;
+      await sendMessage(chatId, `*Current Soul:*\n\n${truncated}`, {
+        message_thread_id: messageThreadId,
+      });
     } catch {
-      await sendMessage(chatId, "no soul file found.", { message_thread_id: messageThreadId });
+      await sendMessage(chatId, "no soul file found.", {
+        message_thread_id: messageThreadId,
+      });
     }
   },
 
@@ -402,8 +443,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -413,40 +454,42 @@ const commands: Record<
     if (reminders.length === 0) {
       await sendMessage(
         chatId,
-        "no pending reminders.\n\njust tell me something like \"remind me in 10 minutes to take a break\"",
-        { message_thread_id: messageThreadId }
+        'no pending reminders.\n\njust tell me something like "remind me in 10 minutes to take a break"',
+        { message_thread_id: messageThreadId },
       );
       return;
     }
 
-    const formatted = reminders.map((r) => {
-      const now = Date.now();
-      const remindAtMs = r.remindAt.getTime();
-      const diffMs = remindAtMs - now;
+    const formatted = reminders
+      .map((r) => {
+        const now = Date.now();
+        const remindAtMs = r.remindAt.getTime();
+        const diffMs = remindAtMs - now;
 
-      let relativeTime: string;
-      if (diffMs < 0) {
-        relativeTime = "overdue";
-      } else if (diffMs < 60000) {
-        relativeTime = "in less than a minute";
-      } else if (diffMs < 3600000) {
-        const mins = Math.round(diffMs / 60000);
-        relativeTime = `in ${mins} min`;
-      } else if (diffMs < 86400000) {
-        const hours = Math.round(diffMs / 3600000);
-        relativeTime = `in ${hours}h`;
-      } else {
-        const days = Math.round(diffMs / 86400000);
-        relativeTime = `in ${days}d`;
-      }
+        let relativeTime: string;
+        if (diffMs < 0) {
+          relativeTime = "overdue";
+        } else if (diffMs < 60000) {
+          relativeTime = "in less than a minute";
+        } else if (diffMs < 3600000) {
+          const mins = Math.round(diffMs / 60000);
+          relativeTime = `in ${mins} min`;
+        } else if (diffMs < 86400000) {
+          const hours = Math.round(diffMs / 3600000);
+          relativeTime = `in ${hours}h`;
+        } else {
+          const days = Math.round(diffMs / 86400000);
+          relativeTime = `in ${days}d`;
+        }
 
-      return `- ${r.message} (${relativeTime})`;
-    }).join("\n");
+        return `- ${r.message} (${relativeTime})`;
+      })
+      .join("\n");
 
     await sendMessage(
       chatId,
       `*pending reminders (${reminders.length}):*\n\n${formatted}\n\nto cancel, just ask me to cancel a reminder`,
-      { message_thread_id: messageThreadId }
+      { message_thread_id: messageThreadId },
     );
   },
 
@@ -455,8 +498,8 @@ const commands: Record<
       await sendMessage(
         chatId,
         "This bot is not paired with you.\n" +
-        "Please provide the pairing code first.",
-        { message_thread_id: messageThreadId }
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -470,7 +513,7 @@ const commands: Record<
       await sendMessage(
         chatId,
         `*creating new skill*\n\n${firstQuestion}\n\n(type 'cancel' at any time to abort)`,
-        { message_thread_id: messageThreadId }
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -478,27 +521,31 @@ const commands: Record<
     // /skill cancel - abort wizard
     if (argLower === "cancel") {
       if (cancelWizard(userId)) {
-        await sendMessage(chatId, "skill creation cancelled.", { message_thread_id: messageThreadId });
+        await sendMessage(chatId, "skill creation cancelled.", {
+          message_thread_id: messageThreadId,
+        });
       } else {
-        await sendMessage(chatId, "no skill wizard active.", { message_thread_id: messageThreadId });
+        await sendMessage(chatId, "no skill wizard active.", {
+          message_thread_id: messageThreadId,
+        });
       }
       return;
     }
 
     // /skill list - show available skills
     if (argLower === "list" || argLower === "") {
-      const skills = listSkillNames();
+      const skills = skillRegistry.listSkills();
       if (skills.length === 0) {
         await sendMessage(
           chatId,
           "no skills found.\n\nuse `/skill new` to create one.",
-          { message_thread_id: messageThreadId }
+          { message_thread_id: messageThreadId },
         );
       } else {
         await sendMessage(
           chatId,
-          `*available skills (${skills.length}):*\n\n${skills.map(s => `• ${s}`).join("\n")}\n\nuse \`/skill new\` to create a new one.`,
-          { message_thread_id: messageThreadId }
+          `*available skills (${skills.length}):*\n\n${skills.map((s) => `• ${s}`).join("\n")}\n\nuse \`/skill new\` to create a new one.`,
+          { message_thread_id: messageThreadId },
         );
       }
       return;
@@ -506,16 +553,16 @@ const commands: Record<
 
     // /skill <url> - load skill from url
     if (arg.startsWith("http://") || arg.startsWith("https://")) {
-      await sendMessage(chatId, "validating skill url...", { message_thread_id: messageThreadId });
+      await sendMessage(chatId, "validating skill url...", {
+        message_thread_id: messageThreadId,
+      });
 
       const result = await fetchAndValidateSkillUrl(arg);
 
       if (!result.success) {
-        await sendMessage(
-          chatId,
-          `failed to load skill: ${result.error}`,
-          { message_thread_id: messageThreadId }
-        );
+        await sendMessage(chatId, `failed to load skill: ${result.error}`, {
+          message_thread_id: messageThreadId,
+        });
         return;
       }
 
@@ -524,17 +571,17 @@ const commands: Record<
         await sendMessage(
           chatId,
           `skill "${result.skill!.name}" already exists. remove it first or use a different name.`,
-          { message_thread_id: messageThreadId }
+          { message_thread_id: messageThreadId },
         );
         return;
       }
 
-      // add the skill to the registry
-      const added = skillRegistry.addUrlSkill(
+      // add the skill to the registry and persist to database
+      const added = await skillRegistry.addUrlSkill(
         result.skill!.name,
         result.skill!.description,
         result.skill!.content,
-        arg
+        arg,
       );
 
       if (added) {
@@ -544,16 +591,14 @@ const commands: Record<
         await sendMessage(
           chatId,
           `skill "${result.skill!.name}" loaded successfully.\n\n` +
-          `description: ${result.skill!.description}\n\n` +
-          `the agent now has access to this skill.`,
-          { message_thread_id: messageThreadId }
+            `description: ${result.skill!.description}\n\n` +
+            `the agent now has access to this skill.`,
+          { message_thread_id: messageThreadId },
         );
       } else {
-        await sendMessage(
-          chatId,
-          `failed to add skill to registry.`,
-          { message_thread_id: messageThreadId }
-        );
+        await sendMessage(chatId, `failed to add skill to registry.`, {
+          message_thread_id: messageThreadId,
+        });
       }
       return;
     }
@@ -561,19 +606,20 @@ const commands: Record<
     // /skill <name> - show skill details
     const skill = skillRegistry.getSkill(argLower);
     if (skill) {
-      const truncated = skill.content.length > 3000
-        ? skill.content.slice(0, 3000) + "\n\n... [truncated]"
-        : skill.content;
+      const truncated =
+        skill.content.length > 3000
+          ? skill.content.slice(0, 3000) + "\n\n... [truncated]"
+          : skill.content;
       await sendMessage(
         chatId,
         `*skill: ${skill.meta.name}*\n\n${skill.meta.description}\n\n---\n\n${truncated}`,
-        { message_thread_id: messageThreadId }
+        { message_thread_id: messageThreadId },
       );
     } else {
       await sendMessage(
         chatId,
         `skill "${argLower}" not found.\n\nuse \`/skill list\` to see available skills.`,
-        { message_thread_id: messageThreadId }
+        { message_thread_id: messageThreadId },
       );
     }
   },
@@ -584,7 +630,7 @@ async function handleSoulInput(
   userId: number,
   chatId: number,
   messageThreadId: number | undefined,
-  content: string
+  content: string,
 ): Promise<boolean> {
   if (!awaitingSoulInput.has(userId)) {
     return false;
@@ -603,11 +649,13 @@ async function handleSoulInput(
     await sendMessage(
       chatId,
       `done! new soul has been set (${content.length} chars). further messages will use the new persona.`,
-      { message_thread_id: messageThreadId }
+      { message_thread_id: messageThreadId },
     );
   } catch (error) {
     console.error("[soul] write failed:", error);
-    await sendMessage(chatId, "failed to update soul file.", { message_thread_id: messageThreadId });
+    await sendMessage(chatId, "failed to update soul file.", {
+      message_thread_id: messageThreadId,
+    });
   }
 
   return true;
@@ -618,7 +666,7 @@ async function handleSkillWizardInput(
   userId: number,
   chatId: number,
   messageThreadId: number | undefined,
-  content: string
+  content: string,
 ): Promise<boolean> {
   if (!hasActiveWizard(userId)) {
     return false;
@@ -628,10 +676,18 @@ async function handleSkillWizardInput(
 
   if (result.done) {
     if (result.skill) {
-      // wizard completed successfully, write the skill
+      // wizard completed successfully, write the skill to filesystem
       const writeResult = await writeSkill(result.skill);
 
-      if (writeResult.success) {
+      // also persist to database for docker container restarts
+      const dbSaved = await skillRegistry.addWizardSkill(
+        result.skill.name,
+        result.skill.description,
+        generateSkillContent(result.skill),
+        "MIT",
+      );
+
+      if (writeResult.success || dbSaved) {
         // refresh skill registry to pick up new skill
         await skillRegistry.refresh();
 
@@ -641,22 +697,26 @@ async function handleSkillWizardInput(
         await sendMessage(
           chatId,
           `skill "${result.skill.name}" created!\n\nthe agent will now have access to this skill. you can view it with \`/skill ${result.skill.name}\``,
-          { message_thread_id: messageThreadId }
+          { message_thread_id: messageThreadId },
         );
       } else {
         await sendMessage(
           chatId,
           `failed to create skill: ${writeResult.error}`,
-          { message_thread_id: messageThreadId }
+          { message_thread_id: messageThreadId },
         );
       }
     } else if (result.response) {
       // wizard aborted or error
-      await sendMessage(chatId, result.response, { message_thread_id: messageThreadId });
+      await sendMessage(chatId, result.response, {
+        message_thread_id: messageThreadId,
+      });
     }
   } else {
     // wizard continues, send next question
-    await sendMessage(chatId, result.response, { message_thread_id: messageThreadId });
+    await sendMessage(chatId, result.response, {
+      message_thread_id: messageThreadId,
+    });
   }
 
   return true;
@@ -681,9 +741,9 @@ async function processMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(
         chatId,
         "*Successfully Paired!*\n\n" +
-        "Welcome to the tide pool! You can now start chatting with me.\n" +
-        "Type /start to see what this crab can do!",
-        { message_thread_id: messageThreadId }
+          "Welcome to the tide pool! You can now start chatting with me.\n" +
+          "Type /start to see what this crab can do!",
+        { message_thread_id: messageThreadId },
       );
       return;
     }
@@ -692,9 +752,9 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     await sendMessage(
       chatId,
       "🔐 *Pairing Required*\n\n" +
-      "Please provide the pairing code to continue.\n" +
-      "Run `bun run setup` on the server to generate a code.",
-      { message_thread_id: messageThreadId }
+        "Please provide the pairing code to continue.\n" +
+        "Run `bun run setup` on the server to generate a code.",
+      { message_thread_id: messageThreadId },
     );
     return;
   }
@@ -705,9 +765,9 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     await sendMessage(
       chatId,
       "🔐 *Access Denied*\n\n" +
-      "This bot is already paired with another user.\n" +
-      "Contact the administrator if you need access.",
-      { message_thread_id: messageThreadId }
+        "This bot is already paired with another user.\n" +
+        "Contact the administrator if you need access.",
+      { message_thread_id: messageThreadId },
     );
     return;
   }
@@ -732,7 +792,11 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     if (command) {
       await command(userId, chatId, messageThreadId, args);
     } else {
-      await sendMessage(chatId, "❓ Unknown command. Type /help for available commands.", { message_thread_id: messageThreadId });
+      await sendMessage(
+        chatId,
+        "❓ Unknown command. Type /help for available commands.",
+        { message_thread_id: messageThreadId },
+      );
     }
     return;
   }
@@ -744,24 +808,34 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   // telegram typing indicator lasts ~5 seconds, so we refresh every 4 seconds
   const typingInterval = setInterval(async () => {
     try {
-      await sendChatAction(chatId, "typing", { message_thread_id: messageThreadId });
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
     } catch {
       // ignore errors from typing indicator
     }
   }, 4000);
 
   // send initial typing indicator
-  await sendChatAction(chatId, "typing", { message_thread_id: messageThreadId });
+  await sendChatAction(chatId, "typing", {
+    message_thread_id: messageThreadId,
+  });
 
   // callbacks for the agent to send real-time updates
   const callbacks: AgentCallbacks = {
     onStatusUpdate: async (message: string) => {
-      await sendMessage(chatId, message, { message_thread_id: messageThreadId });
+      await sendMessage(chatId, message, {
+        message_thread_id: messageThreadId,
+      });
       // refresh typing after sending a status message
-      await sendChatAction(chatId, "typing", { message_thread_id: messageThreadId });
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
     },
     onTyping: async () => {
-      await sendChatAction(chatId, "typing", { message_thread_id: messageThreadId });
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
     },
   };
 
@@ -775,7 +849,7 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     await sendMessage(
       chatId,
       "Sorry, I encountered an error processing your message. Please try again.",
-      { message_thread_id: messageThreadId }
+      { message_thread_id: messageThreadId },
     );
   }
 }
@@ -817,7 +891,9 @@ export async function startBot(): Promise<void> {
       console.log("send this code to the bot on telegram to pair");
       console.log("code expires in 60 minutes");
     } else {
-      console.log("bot is not paired - run `bun run setup` to generate pairing code");
+      console.log(
+        "bot is not paired - run `bun run setup` to generate pairing code",
+      );
     }
   }
 
@@ -848,7 +924,9 @@ export async function startBot(): Promise<void> {
         if (update.message) {
           const userId = update.message.from?.id || update.message.chat.id;
           const text = update.message.text || "";
-          debug(`[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`);
+          debug(
+            `[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`,
+          );
 
           // skip if user is already being processed
           if (processingUsers.has(userId)) {
@@ -859,7 +937,12 @@ export async function startBot(): Promise<void> {
           // process message without blocking the polling loop
           processingUsers.add(userId);
           processMessage(update.message)
-            .catch((error) => console.error(`[Error processing message from ${userId}]:`, error))
+            .catch((error) =>
+              console.error(
+                `[Error processing message from ${userId}]:`,
+                error,
+              ),
+            )
             .finally(() => processingUsers.delete(userId));
         }
       }

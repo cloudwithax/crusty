@@ -21,6 +21,7 @@ import { conversationStore } from "./conversation-store";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+const SUMMARIZE_MODEL = process.env.SUMMARIZE_MODEL || OPENAI_MODEL || "gpt-4o";
 const INFERENCE_RPM_LIMIT = parseInt(
   process.env.INFERENCE_RPM_LIMIT || "40",
   10,
@@ -33,7 +34,7 @@ if (!OPENAI_API_KEY) {
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
   baseURL: OPENAI_BASE_URL,
-  timeout: 30 * 1000,
+  timeout: 60 * 1000,
 });
 
 // simple rate limiter
@@ -99,22 +100,37 @@ function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(text));
 }
 
-// whimsical status messages
-const thinkingMessages = [
-  "still crunching on this one...",
-  "the gears are turning...",
-  "hold tight, almost there....",
-  "one sec, gathering my thoughts...",
-  "my claws are typing furiously...",
-  "just a moment, connecting the dots...",
-  "pontificating...",
-  "let me chew on that for a bit...",
-  "hmm... interesting...",
-  "analyzing the bits and bytes...",
-];
+// generates a whimsical thinking status message via the summarize model
+async function generateThinkingMessage(userMessage?: string): Promise<string> {
+  const fallback = "still working on this...";
+  try {
+    const contextHint = userMessage
+      ? `the user asked: "${userMessage.slice(0, 100)}"`
+      : "a complex request";
 
-function getRandomMessage(messages: string[]): string {
-  return messages[Math.floor(Math.random() * messages.length)] || messages[0]!;
+    const response = await openai.chat.completions.create({
+      model: SUMMARIZE_MODEL,
+      messages: [
+        {
+          role: "system",
+          content:
+            "you generate short, whimsical status messages (max 8 words) for an ai assistant while it thinks. be creative, playful, and varied. no emojis. lowercase only. no punctuation except ellipsis. examples: 'the gears are turning...', 'pontificating...', 'hmm interesting...'",
+        },
+        {
+          role: "user",
+          content: `generate a single thinking status message. context: ${contextHint}`,
+        },
+      ],
+      max_tokens: 30,
+      temperature: 1.0,
+    });
+
+    const message = response.choices[0]?.message?.content?.trim();
+    return message ? cleanModelResponse(message) : fallback;
+  } catch (err) {
+    debug(`[thinking message gen failed]: ${err}`);
+    return fallback;
+  }
 }
 
 const MAX_TOOL_ITERATIONS = 25;
@@ -293,7 +309,8 @@ export class Agent {
       let statusSent = false;
       const statusTimeout = setTimeout(async () => {
         if (callbacks?.onStatusUpdate) {
-          await callbacks.onStatusUpdate(getRandomMessage(thinkingMessages));
+          const thinkingMsg = await generateThinkingMessage(userMessage);
+          await callbacks.onStatusUpdate(thinkingMsg);
           statusSent = true;
         }
       }, 3000);

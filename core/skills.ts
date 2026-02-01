@@ -2,6 +2,12 @@ import { existsSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { homedir } from "os";
 import { debug } from "../utils/debug.ts";
+import {
+  saveSkill,
+  loadAllSkills,
+  type SkillRecord,
+  type CreateSkillInput,
+} from "../data/skills.ts";
 
 // skill metadata extracted from frontmatter
 export interface SkillMetadata {
@@ -12,6 +18,9 @@ export interface SkillMetadata {
   metadata?: Record<string, string>;
 }
 
+// source type for tracking how a skill was added
+export type SkillSourceType = "filesystem" | "wizard" | "url" | "imported";
+
 // full skill definition with content
 export interface Skill {
   meta: SkillMetadata;
@@ -19,6 +28,7 @@ export interface Skill {
   path: string;
   directory: string;
   scope: "project" | "global";
+  sourceType: SkillSourceType;
 }
 
 // skill summary for system prompt injection
@@ -160,7 +170,9 @@ async function loadSkill(
     }
 
     // validate name format, fall back to directory name if invalid
-    const validName = isValidSkillName(name) ? name : basename(skillDir).toLowerCase();
+    const validName = isValidSkillName(name)
+      ? name
+      : basename(skillDir).toLowerCase();
 
     const meta: SkillMetadata = {
       name: validName,
@@ -170,8 +182,7 @@ async function loadSkill(
         ? String(frontmatter.compatibility)
         : undefined,
       metadata:
-        frontmatter.metadata &&
-        typeof frontmatter.metadata === "object"
+        frontmatter.metadata && typeof frontmatter.metadata === "object"
           ? (frontmatter.metadata as Record<string, string>)
           : undefined,
     };
@@ -182,6 +193,7 @@ async function loadSkill(
       path: skillPath,
       directory: skillDir,
       scope,
+      sourceType: "filesystem",
     };
   } catch (error) {
     debug(`[Skills] Error loading ${skillPath}:`, error);
@@ -238,9 +250,7 @@ export function getSkillSummaries(skills: Map<string, Skill>): SkillSummary[] {
 }
 
 // build skills section for system prompt
-export function buildSkillsPromptSection(
-  summaries: SkillSummary[],
-): string {
+export function buildSkillsPromptSection(summaries: SkillSummary[]): string {
   if (summaries.length === 0) {
     return "";
   }
@@ -265,13 +275,19 @@ export function buildSkillsPromptSection(
   lines.push("");
   lines.push("## How to Use Skills");
   lines.push("");
-  lines.push("1. BEFORE starting a task, check if it matches any skill description above");
-  lines.push("2. If it matches, call the `skill` tool with the skill name: skill({ name: \"skill-name\" })");
+  lines.push(
+    "1. BEFORE starting a task, check if it matches any skill description above",
+  );
+  lines.push(
+    '2. If it matches, call the `skill` tool with the skill name: skill({ name: "skill-name" })',
+  );
   lines.push("3. Read the returned instructions carefully");
   lines.push("4. Follow those instructions to complete the task");
   lines.push("");
-  lines.push("Example: If the user asks you to run a shell command, first load the bash skill:");
-  lines.push("  -> Call: skill({ name: \"bash\" })");
+  lines.push(
+    "Example: If the user asks you to run a shell command, first load the bash skill:",
+  );
+  lines.push('  -> Call: skill({ name: "bash" })');
   lines.push("  -> Read the instructions");
   lines.push("  -> Then execute the command following the skill's guidance");
 
@@ -286,7 +302,12 @@ class SkillRegistry {
   async initialize(force: boolean = false): Promise<void> {
     if (this.initialized && !force) return;
 
+    // first discover filesystem skills
     this.skills = await discoverSkills();
+
+    // then load database skills (these may override filesystem skills in docker)
+    await this.loadDatabaseSkills();
+
     this.initialized = true;
 
     const count = this.skills.size;
@@ -294,6 +315,31 @@ class SkillRegistry {
       console.log(
         `[Skills] Discovered ${count} skill(s): ${Array.from(this.skills.keys()).join(", ")}`,
       );
+    }
+  }
+
+  // load skills from the database
+  private async loadDatabaseSkills(): Promise<void> {
+    const dbSkills = await loadAllSkills();
+
+    for (const record of dbSkills) {
+      // database skills take precedence over filesystem for same name
+      // this ensures docker containers can persist skills that would otherwise be lost
+      const skill: Skill = {
+        meta: {
+          name: record.name,
+          description: record.description,
+          license: record.license || undefined,
+        },
+        content: record.content,
+        path: record.source_url || `db:${record.name}`,
+        directory: "",
+        scope: "project",
+        sourceType: record.source_type as SkillSourceType,
+      };
+
+      this.skills.set(record.name, skill);
+      debug(`[Skills] Loaded from database: ${record.name}`);
     }
   }
 
@@ -376,8 +422,13 @@ class SkillRegistry {
     }
   }
 
-  // add a skill loaded from a url (no file backing, just in-memory)
-  addUrlSkill(name: string, description: string, content: string, sourceUrl: string): boolean {
+  // add a skill loaded from a url and persist to database
+  async addUrlSkill(
+    name: string,
+    description: string,
+    content: string,
+    sourceUrl: string,
+  ): Promise<boolean> {
     // dont overwrite existing skills
     if (this.skills.has(name)) {
       return false;
@@ -392,10 +443,75 @@ class SkillRegistry {
       path: sourceUrl,
       directory: "",
       scope: "project",
+      sourceType: "url",
     };
 
     this.skills.set(name, skill);
-    debug(`[Skills] Added URL skill: ${name} from ${sourceUrl}`);
+
+    // persist to database for docker container restarts
+    const saved = await saveSkill({
+      name,
+      description,
+      content,
+      sourceType: "url",
+      sourceUrl,
+    });
+
+    if (saved) {
+      debug(
+        `[Skills] Added and persisted URL skill: ${name} from ${sourceUrl}`,
+      );
+    } else {
+      debug(
+        `[Skills] Added URL skill (not persisted): ${name} from ${sourceUrl}`,
+      );
+    }
+
+    return true;
+  }
+
+  // add a skill created via the wizard and persist to database
+  async addWizardSkill(
+    name: string,
+    description: string,
+    content: string,
+    license?: string,
+  ): Promise<boolean> {
+    // dont overwrite existing skills
+    if (this.skills.has(name)) {
+      return false;
+    }
+
+    const skill: Skill = {
+      meta: {
+        name,
+        description,
+        license,
+      },
+      content,
+      path: `wizard:${name}`,
+      directory: "",
+      scope: "project",
+      sourceType: "wizard",
+    };
+
+    this.skills.set(name, skill);
+
+    // persist to database
+    const saved = await saveSkill({
+      name,
+      description,
+      content,
+      sourceType: "wizard",
+      license,
+    });
+
+    if (saved) {
+      debug(`[Skills] Added and persisted wizard skill: ${name}`);
+    } else {
+      debug(`[Skills] Added wizard skill (not persisted): ${name}`);
+    }
+
     return true;
   }
 

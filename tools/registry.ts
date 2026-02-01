@@ -7,6 +7,7 @@ import { skillTools } from "./skill.ts";
 import { todoTools } from "./todo.ts";
 import { reminderTools } from "./reminder.ts";
 import { hookTools } from "./hooks.ts";
+import { memoryTools } from "./memory.ts";
 
 // minimal tool registry - nanocode style
 // filesystem + browser + bash (in docker)
@@ -26,6 +27,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...todoTools,
   ...reminderTools,
   ...hookTools,
+  ...memoryTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
@@ -38,12 +40,18 @@ function zodToOpenAI(schema: z.ZodType): Record<string, unknown> {
   const required: string[] = [];
 
   for (const [key, value] of Object.entries(shape)) {
-    const zodType = value as z.ZodType & { _def?: { typeName?: string; values?: string[] } };
+    const zodType = value as z.ZodType & {
+      _def?: { typeName?: string; values?: string[] };
+    };
     const description = zodType.description;
     const typeName = zodType._def?.typeName;
 
     if (typeName === "ZodEnum") {
-      properties[key] = { type: "string", enum: zodType._def?.values, description };
+      properties[key] = {
+        type: "string",
+        enum: zodType._def?.values,
+        description,
+      };
     } else if (typeName === "ZodNumber") {
       properties[key] = { type: "number", description };
     } else if (typeName === "ZodBoolean") {
@@ -81,7 +89,10 @@ export function generateOpenAITools(): ChatCompletionTool[] {
 
 // sanitize and coerce argument values to fix common model quirks
 // handles: type coercion, leading colons, malformed urls, escaped quotes, etc
-function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<string, unknown> {
+function sanitizeArgs(
+  args: Record<string, unknown>,
+  toolName?: string,
+): Record<string, unknown> {
   const result = { ...args };
   const keysToDelete: string[] = [];
 
@@ -123,7 +134,10 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
       const trimmed = cmd.trim();
       if (trimmed.length >= 2) {
         const quote = trimmed[0];
-        if ((quote === "\"" || quote === "'") && trimmed[trimmed.length - 1] === quote) {
+        if (
+          (quote === '"' || quote === "'") &&
+          trimmed[trimmed.length - 1] === quote
+        ) {
           const inner = trimmed.slice(1, -1);
           if (!inner.includes(quote)) {
             cmd = inner;
@@ -161,7 +175,9 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
     // remove leading garbage before urls
     const urlPrefixMatch = cleaned.match(/^[^a-zA-Z]*(https?:\/\/)/i);
     if (urlPrefixMatch?.[1] && urlPrefixMatch[0] !== urlPrefixMatch[1]) {
-      cleaned = cleaned.slice(urlPrefixMatch[0].length - urlPrefixMatch[1].length);
+      cleaned = cleaned.slice(
+        urlPrefixMatch[0].length - urlPrefixMatch[1].length,
+      );
     }
 
     // remove wrapping quotes from urls
@@ -195,17 +211,29 @@ function sanitizeArgs(args: Record<string, unknown>, toolName?: string): Record<
 
 // attempt to recover valid json from malformed tool arguments
 // assistantText can be used to extract intent when args are completely garbage
-function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantText?: string): Record<string, unknown> {
-  const directionMatch = brokenArgs.match(/"?direction"?\s*[:=]\s*"?(up|down)/i);
+function recoverMalformedArgs(
+  toolName: string,
+  brokenArgs: string,
+  assistantText?: string,
+): Record<string, unknown> {
+  const directionMatch = brokenArgs.match(
+    /"?direction"?\s*[:=]\s*"?(up|down)/i,
+  );
   // url extraction: handle quoted, unquoted, and protocol-relative urls
-  const urlMatch = brokenArgs.match(/"?url"?\s*[:=]\s*"?((?:https?:)?\/\/[^"}\s]+|[^"}\s]+\.[a-z]{2,}[^"}\s]*)/i);
+  const urlMatch = brokenArgs.match(
+    /"?url"?\s*[:=]\s*"?((?:https?:)?\/\/[^"}\s]+|[^"}\s]+\.[a-z]{2,}[^"}\s]*)/i,
+  );
   const selectorMatch = brokenArgs.match(/"?selector"?\s*[:=]\s*"([^"]+)"/i);
   const textMatch = brokenArgs.match(/"?text"?\s*[:=]\s*"([^"]+)"/i);
   // query extraction: handle both quoted and unquoted values
-  const queryMatch = brokenArgs.match(/"?query"?\s*[:=]\s*"?([^"{}]+?)(?:"|,|\s*}|$)/i);
+  const queryMatch = brokenArgs.match(
+    /"?query"?\s*[:=]\s*"?([^"{}]+?)(?:"|,|\s*}|$)/i,
+  );
   const pathMatch = brokenArgs.match(/"?path"?\s*[:=]\s*"([^"]+)"/i);
   const commandMatch = brokenArgs.match(/"?command"?\s*[:=]\s*"([^"]+)"/i);
-  const contentMatch = brokenArgs.match(/"?content"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
+  const contentMatch = brokenArgs.match(
+    /"?content"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i,
+  );
 
   // try to parse the original args to preserve any valid fields
   let originalArgs: Record<string, unknown> = {};
@@ -229,7 +257,9 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
       return { ...originalArgs, url };
     }
     // fallback: find ANY url-like pattern in the args
-    const anyUrl = brokenArgs.match(/((?:https?:)?\/\/[^\s"'<>]+|[a-z0-9][-a-z0-9]*\.[a-z]{2,}[^\s"'<>]*)/i);
+    const anyUrl = brokenArgs.match(
+      /((?:https?:)?\/\/[^\s"'<>]+|[a-z0-9][-a-z0-9]*\.[a-z]{2,}[^\s"'<>]*)/i,
+    );
     if (anyUrl) {
       let url = anyUrl[1]!.trim();
       if (url.startsWith("//")) url = `https:${url}`;
@@ -353,7 +383,8 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
 
       // last resort: look for bare URLs in assistant text and construct a curl command
       // handles cases like "let me hit wttr.in" or "going to example.com"
-      const urlPattern = /\b((?:https?:\/\/)?[a-z0-9][-a-z0-9]*(?:\.[a-z]{2,})+(?:\/[^\s"`,;:]*)?)\b/i;
+      const urlPattern =
+        /\b((?:https?:\/\/)?[a-z0-9][-a-z0-9]*(?:\.[a-z]{2,})+(?:\/[^\s"`,;:]*)?)\b/i;
       const urlMatch = assistantText.match(urlPattern);
       if (urlMatch) {
         let url = urlMatch[1]!;
@@ -369,7 +400,11 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
     return { ...originalArgs, path: pathMatch[1]!.replace(/^:\s*/, "") };
   }
   if ((toolName === "bash_write_file" || toolName === "write") && pathMatch) {
-    return { ...originalArgs, path: pathMatch[1]!.replace(/^:\s*/, ""), content: contentMatch?.[1] ?? "" };
+    return {
+      ...originalArgs,
+      path: pathMatch[1]!.replace(/^:\s*/, ""),
+      content: contentMatch?.[1] ?? "",
+    };
   }
   if (toolName === "bash_list_dir" && pathMatch) {
     return { ...originalArgs, path: pathMatch[1]!.replace(/^:\s*/, "") };
@@ -379,7 +414,12 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
   if (toolName === "edit" && pathMatch) {
     const oldMatch = brokenArgs.match(/"?old"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
     const newMatch = brokenArgs.match(/"?new"?\s*[:=]\s*"([\s\S]*?)(?:"|$)/i);
-    return { ...originalArgs, path: pathMatch[1], old: oldMatch?.[1] ?? "", new: newMatch?.[1] ?? "" };
+    return {
+      ...originalArgs,
+      path: pathMatch[1],
+      old: oldMatch?.[1] ?? "",
+      new: newMatch?.[1] ?? "",
+    };
   }
   if (toolName === "glob") {
     const patMatch = brokenArgs.match(/"?pat"?\s*[:=]\s*"([^"]+)"/i);
@@ -387,7 +427,8 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
   }
   if (toolName === "grep") {
     const patMatch = brokenArgs.match(/"?pat"?\s*[:=]\s*"([^"]+)"/i);
-    if (patMatch) return { ...originalArgs, pat: patMatch[1], path: pathMatch?.[1] };
+    if (patMatch)
+      return { ...originalArgs, pat: patMatch[1], path: pathMatch?.[1] };
   }
 
   // no recovery possible - preserve whatever we could parse
@@ -395,7 +436,10 @@ function recoverMalformedArgs(toolName: string, brokenArgs: string, assistantTex
 }
 
 // detect if parsed args look like garbage (model hallucination)
-function isGarbageArgs(parsed: Record<string, unknown>, toolName: string): boolean {
+function isGarbageArgs(
+  parsed: Record<string, unknown>,
+  toolName: string,
+): boolean {
   if (toolName === "bash_execute") {
     const cmd = parsed.command;
     // command should be a string with actual command characters
@@ -409,7 +453,12 @@ function isGarbageArgs(parsed: Record<string, unknown>, toolName: string): boole
   return false;
 }
 
-export async function executeTool(name: string, args: string, userId: number = 0, assistantText?: string): Promise<string> {
+export async function executeTool(
+  name: string,
+  args: string,
+  userId: number = 0,
+  assistantText?: string,
+): Promise<string> {
   const tool = toolRegistry[name];
   if (!tool) {
     return `error: unknown tool "${name}". available: ${Object.keys(toolRegistry).join(", ")}`;

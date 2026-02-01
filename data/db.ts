@@ -68,8 +68,10 @@ class SQLiteAdapter implements DatabaseAdapter {
   query<T>(sql: string): QueryHandle<T> {
     const stmt = this.db.query(sql);
     return {
-      get: (...params: unknown[]): T | null => stmt.get(...(params as SQLQueryBindings[])) as T | null,
-      all: (...params: unknown[]): T[] => stmt.all(...(params as SQLQueryBindings[])) as T[],
+      get: (...params: unknown[]): T | null =>
+        stmt.get(...(params as SQLQueryBindings[])) as T | null,
+      all: (...params: unknown[]): T[] =>
+        stmt.all(...(params as SQLQueryBindings[])) as T[],
     };
   }
 
@@ -84,7 +86,10 @@ class SQLiteAdapter implements DatabaseAdapter {
 class PostgresAdapter implements DatabaseAdapter {
   private sql: postgres.Sql;
   readonly type = "postgres" as const;
-  private queryCache: Map<string, { result: unknown[]; params: string; time: number }> = new Map();
+  private queryCache: Map<
+    string,
+    { result: unknown[]; params: string; time: number }
+  > = new Map();
   private cacheTimeout = 50; // ms
   private initialized = false;
   private initPromise: Promise<void> | null = null;
@@ -258,7 +263,9 @@ class PostgresAdapter implements DatabaseAdapter {
   }
 
   close(): void {
-    this.sql.end().catch((err) => console.error("[db:postgres] close error:", err));
+    this.sql
+      .end()
+      .catch((err) => console.error("[db:postgres] close error:", err));
   }
 
   // async close
@@ -309,8 +316,10 @@ export function getAsyncDatabase(): PostgresAsyncMethods | null {
   return {
     type: "postgres" as const,
     run: (sql: string, params?: unknown[]) => adapter.runAsync(sql, params),
-    get: <T>(sql: string, ...params: unknown[]) => adapter.get<T>(sql, ...params),
-    all: <T>(sql: string, ...params: unknown[]) => adapter.all<T>(sql, ...params),
+    get: <T>(sql: string, ...params: unknown[]) =>
+      adapter.get<T>(sql, ...params),
+    all: <T>(sql: string, ...params: unknown[]) =>
+      adapter.all<T>(sql, ...params),
   };
 }
 
@@ -388,12 +397,22 @@ function initTables(): void {
   `);
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`,
+  );
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS blocked_skill_urls (
@@ -405,7 +424,26 @@ function initTables(): void {
     )
   `);
 
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`,
+  );
+
+  // skills table for persisting dynamically created or url-loaded skills
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('wizard', 'url', 'imported')),
+      source_url TEXT,
+      license TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name)`);
 
   debug("[db] tables initialized");
 }
@@ -482,13 +520,27 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`);
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`);
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_self_review_date ON self_review(date)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_memories_keywords ON memories(keywords)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
 
   await pgAdapter.execAsync(`
     CREATE TABLE IF NOT EXISTS blocked_skill_urls (
@@ -500,7 +552,28 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
-  await pgAdapter.execAsync(`CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`);
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_blocked_skill_urls_hash ON blocked_skill_urls(url_hash)`,
+  );
+
+  // skills table for persisting dynamically created or url-loaded skills
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('wizard', 'url', 'imported')),
+      source_url TEXT,
+      license TEXT,
+      created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+      updated_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
+
+  await pgAdapter.execAsync(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name)`,
+  );
 
   debug("[db] postgres tables initialized");
 }

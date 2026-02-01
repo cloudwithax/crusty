@@ -30,7 +30,8 @@ const activeWizards = new Map<number, WizardState>();
 // wizard steps in order (max 5 questions)
 const WIZARD_STEPS: WizardStep[] = [
   {
-    question: "what should this skill be named?\n\n(use lowercase with hyphens, eg: code-review, git-release)",
+    question:
+      "what should this skill be named?\n\n(use lowercase with hyphens, eg: code-review, git-release)",
     field: "name",
     validate: (input) => {
       const name = input.trim().toLowerCase();
@@ -48,17 +49,20 @@ const WIZARD_STEPS: WizardStep[] = [
     },
   },
   {
-    question: "what should this skill do?\n\n(describe the core functionality in a sentence or two)",
+    question:
+      "what should this skill do?\n\n(describe the core functionality in a sentence or two)",
     field: "description",
     validate: (input) => {
       const desc = input.trim();
       if (!desc) return "description cannot be empty";
-      if (desc.length > 500) return "description should be under 500 characters";
+      if (desc.length > 500)
+        return "description should be under 500 characters";
       return null;
     },
   },
   {
-    question: "when should this skill be used?\n\n(describe the triggers or situations that call for this skill)",
+    question:
+      "when should this skill be used?\n\n(describe the triggers or situations that call for this skill)",
     field: "whenToUse",
     validate: (input) => {
       if (!input.trim()) return "please provide some usage guidance";
@@ -66,11 +70,13 @@ const WIZARD_STEPS: WizardStep[] = [
     },
   },
   {
-    question: "what workflow or steps should the skill follow?\n\n(list the key steps, or type 'skip' to leave blank)",
+    question:
+      "what workflow or steps should the skill follow?\n\n(list the key steps, or type 'skip' to leave blank)",
     field: "workflow",
   },
   {
-    question: "any tips or best practices to include?\n\n(type 'skip' to leave blank, or 'done' to finish early)",
+    question:
+      "any tips or best practices to include?\n\n(type 'skip' to leave blank, or 'done' to finish early)",
     field: "tips",
   },
 ];
@@ -103,13 +109,19 @@ export function processWizardInput(
 ): { done: boolean; response: string; skill?: SkillDraft } {
   const state = activeWizards.get(userId);
   if (!state) {
-    return { done: true, response: "no active skill wizard. use /skill new to start." };
+    return {
+      done: true,
+      response: "no active skill wizard. use /skill new to start.",
+    };
   }
 
   const currentStep = WIZARD_STEPS[state.step];
   if (!currentStep) {
     activeWizards.delete(userId);
-    return { done: true, response: "wizard error - please start over with /skill new" };
+    return {
+      done: true,
+      response: "wizard error - please start over with /skill new",
+    };
   }
 
   const trimmedInput = input.trim();
@@ -121,9 +133,16 @@ export function processWizardInput(
   }
 
   // handle skip/done on optional fields
-  const isOptionalField = currentStep.field === "workflow" || currentStep.field === "tips";
-  if (isOptionalField && ["skip", "done"].includes(trimmedInput.toLowerCase())) {
-    if (trimmedInput.toLowerCase() === "done" || state.step === WIZARD_STEPS.length - 1) {
+  const isOptionalField =
+    currentStep.field === "workflow" || currentStep.field === "tips";
+  if (
+    isOptionalField &&
+    ["skip", "done"].includes(trimmedInput.toLowerCase())
+  ) {
+    if (
+      trimmedInput.toLowerCase() === "done" ||
+      state.step === WIZARD_STEPS.length - 1
+    ) {
       // finish early
       return finishWizard(userId, state);
     }
@@ -173,7 +192,8 @@ function finishWizard(
   if (!draft.name || !draft.description) {
     return {
       done: true,
-      response: "skill creation incomplete - missing name or description. use /skill new to start over.",
+      response:
+        "skill creation incomplete - missing name or description. use /skill new to start over.",
     };
   }
 
@@ -218,12 +238,24 @@ export function generateSkillContent(skill: SkillDraft): string {
   return lines.join("\n");
 }
 
+// check if running inside a docker container
+function isRunningInDocker(): boolean {
+  return process.env.CRUSTY_DOCKER === "true";
+}
+
 // create the skill directory and write SKILL.md
-export async function writeSkill(skill: SkillDraft): Promise<{ success: boolean; path: string; error?: string }> {
+// in docker containers, this will attempt to write to filesystem but may fail
+// the skill-wizard handler in telegram/bot.ts will also persist to database
+export async function writeSkill(
+  skill: SkillDraft,
+): Promise<{ success: boolean; path: string; error?: string }> {
   const skillsDir = join(process.cwd(), "cogs", "skills");
   const skillDir = join(skillsDir, skill.name);
   const skillPath = join(skillDir, "SKILL.md");
 
+  // in docker, filesystem writes may not persist across restarts
+  // but we still try so the skill is immediately available
+  // the telegram bot handler will also persist to database as a backup
   try {
     // ensure directories exist
     if (!existsSync(skillsDir)) {
@@ -240,6 +272,16 @@ export async function writeSkill(skill: SkillDraft): Promise<{ success: boolean;
     return { success: true, path: skillPath };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+
+    // in docker, filesystem errors are expected - return soft failure
+    if (isRunningInDocker()) {
+      return {
+        success: true,
+        path: "db:" + skill.name,
+        error: `filesystem write failed (expected in docker): ${message}`,
+      };
+    }
+
     return { success: false, path: skillPath, error: message };
   }
 }
@@ -256,7 +298,10 @@ export function listSkillNames(): string[] {
     const entries = readdirSync(skillsDir) as string[];
     return entries.filter((entry: string) => {
       const entryPath = join(skillsDir, entry);
-      return statSync(entryPath).isDirectory() && existsSync(join(entryPath, "SKILL.md"));
+      return (
+        statSync(entryPath).isDirectory() &&
+        existsSync(join(entryPath, "SKILL.md"))
+      );
     });
   } catch {
     return [];
