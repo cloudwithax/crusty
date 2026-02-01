@@ -553,7 +553,17 @@ function validateUrl(url: string): { valid: boolean; error?: string } {
 // Tool definitions using a common format
 export const browserTools = {
   browser_navigate: {
-    description: "Navigate to a specific URL in the browser. Use this when you already know the exact URL to visit (e.g., user gives you a link, you found a URL in search results, or you want to go to a specific website like amazon.com or target.com). ALWAYS use web_search first if you need to find URLs. After navigating, use browser_get_content to read the page.",
+    description: `Navigate to a URL. The "url" field must be a complete URL starting with https://
+
+FORMAT: {"url": "https://example.com"}
+
+CORRECT:
+{"url": "https://wttr.in"}
+{"url": "https://google.com"}
+
+WRONG:
+{"url": ","} - cannot be punctuation
+{"url": ".in"} - must be full domain with https://`,
     schema: NavigateSchema,
     handler: async (args: z.infer<typeof NavigateSchema>, _userId: number) => {
       // validate url before attempting navigation

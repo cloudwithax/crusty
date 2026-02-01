@@ -3,8 +3,12 @@ import { spawn } from "child_process";
 import { accessSync, constants, existsSync } from "fs";
 import { debug } from "../utils/debug.ts";
 
-// only enable when running inside docker container
-export const DOCKER_ENV = process.env.CRUSTY_DOCKER === "true";
+// enable shell access in docker, or locally on linux if explicitly allowed
+const isLinux = process.platform === "linux";
+const isDocker = process.env.CRUSTY_DOCKER === "true";
+const localShellAllowed = process.env.CRUSTY_LOCAL_SHELL === "true" && isLinux;
+
+export const DOCKER_ENV = isDocker || localShellAllowed;
 
 // blocked commands and patterns - destructive or privilege escalation
 const BLOCKED_PATTERNS = [
@@ -210,28 +214,28 @@ function truncateOutput(output: string, maxLength: number = 4000): string {
 
 export const bashTools = {
   bash_execute: {
-    description: `Execute an arbitrary shell command in the terminal (prefers bash when available, falls back to sh). This is your primary tool for running shell commands, scripts, and system utilities.
+    description: `Execute a shell command. IMPORTANT: The "command" field must contain the FULL shell command as a single string.
 
-WHEN TO USE:
-- Running programs or scripts (python, node, bun, etc.)
-- Installing packages (apt install, bun add, pip install)
-- Searching file contents (grep, find, etc.)
-- Checking system state (ps, df, free, env)
-- Chaining multiple commands together with && or |
-- Any command not covered by the specialized file tools below
+FORMAT: {"command": "your shell command here"}
+
+CORRECT EXAMPLES:
+{"command": "curl https://wttr.in"}
+{"command": "ls -la /app"}
+{"command": "grep -r TODO ."}
+{"command": "cat package.json"}
+{"command": "echo hello world"}
+{"command": "ps aux | grep node"}
+
+WRONG (do not do this):
+{"command": ","} - command cannot be punctuation
+{"command": ""} - command cannot be empty
 
 PARAMETERS:
-- command (required): The full bash command to run. Can include pipes, redirects, and chained commands.
-- timeout (optional): Max execution time in ms. Default 30000 (30s), max 120000 (2min). Use higher values for long-running tasks.
-- workdir (optional): Directory to run the command in. Default is /app (the project root directory).
+- command (required): The full bash command as a string
+- timeout (optional): Max ms, default 30000
+- workdir (optional): Directory, default /app
 
-BLOCKED: sudo, rm -rf, reboot, shutdown, and other destructive/privilege escalation commands are blocked for safety.
-
-EXAMPLES:
-- "grep -r 'TODO' ." to search for TODOs
-- "bun run build" to run a build script
-- "ps aux | grep node" to find node processes
-- "cat package.json | jq '.dependencies'" to inspect JSON`,
+BLOCKED: sudo, rm -rf, reboot, shutdown`,
     schema: BashExecuteSchema,
     handler: async (args: z.infer<typeof BashExecuteSchema>, _userId: number) => {
       if (!DOCKER_ENV) {

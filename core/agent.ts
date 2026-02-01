@@ -117,7 +117,7 @@ function getRandomMessage(messages: string[]): string {
   return messages[Math.floor(Math.random() * messages.length)] || messages[0]!;
 }
 
-const MAX_TOOL_ITERATIONS = 8;
+const MAX_TOOL_ITERATIONS = 25;
 const MAX_REPEAT_ASSISTANT_MESSAGES = 2;
 const MAX_REPEAT_TOOL_SIGNATURES = 2;
 
@@ -305,8 +305,11 @@ export class Agent {
         .map((msg) => {
           // fix assistant messages with missing content
           if (msg.role === "assistant") {
-            const hasToolCalls = (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
-            const hasContent = msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true);
+            const hasToolCalls =
+              (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
+            const hasContent =
+              msg.content &&
+              (typeof msg.content === "string" ? msg.content.trim() : true);
 
             // assistant must have content or tool_calls
             if (!hasContent && !hasToolCalls) {
@@ -356,9 +359,10 @@ export class Agent {
           }
           if (anyError.error) {
             // detailed error from api response body
-            const errorBody = typeof anyError.error === 'string'
-              ? anyError.error
-              : JSON.stringify(anyError.error);
+            const errorBody =
+              typeof anyError.error === "string"
+                ? anyError.error
+                : JSON.stringify(anyError.error);
             errorDetails += ` - ${errorBody}`;
           }
         }
@@ -452,18 +456,39 @@ export class Agent {
       for (const toolCall of toolCalls) {
         if (callbacks?.onTyping) await callbacks.onTyping();
 
-        const fn = (toolCall as { function: { name: string; arguments: string } }).function;
-        const name = fn.name;
-        const args = fn.arguments;
+        // handle both standard function type and custom/alternative formats
+        let name: string;
+        let args: string;
+
+        if (toolCall.type === "function" && toolCall.function) {
+          name = toolCall.function.name;
+          args = toolCall.function.arguments ?? "";
+        } else {
+          // fallback for non-standard tool call formats (some providers use different structures)
+          const anyCall = toolCall as unknown as Record<string, unknown>;
+          const fn = anyCall.function as
+            | { name?: string; arguments?: string }
+            | undefined;
+          const custom = anyCall.custom as
+            | { name?: string; input?: string }
+            | undefined;
+
+          name = fn?.name ?? custom?.name ?? String(anyCall.name ?? "unknown");
+          args =
+            fn?.arguments ??
+            custom?.input ??
+            String(anyCall.arguments ?? anyCall.input ?? "{}");
+        }
 
         debug(`[tool: ${name}]`);
+        debug(`[args raw]: ${args.slice(0, 500)}`);
 
         // show tool execution to user
         if (callbacks?.onStatusUpdate && content.trim()) {
           await callbacks.onStatusUpdate(cleanModelResponse(content));
         }
 
-        const result = await executeTool(name, args, this.userId);
+        const result = await executeTool(name, args, this.userId, content);
         debug(`[result]: ${result.slice(0, 200)}...`);
 
         this._messages.push({
