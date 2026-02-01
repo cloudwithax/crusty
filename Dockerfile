@@ -36,6 +36,10 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
+    python3 \
+    python3-pip \
+    python3-venv \
+    openssh-client \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
