@@ -445,6 +445,28 @@ function initTables(): void {
 
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name)`);
 
+  // hooks table for persisting dynamically created hooks
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hooks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      content TEXT NOT NULL,
+      every TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      timezone TEXT,
+      days TEXT,
+      start_time TEXT,
+      end_time TEXT,
+      source_type TEXT NOT NULL CHECK (source_type IN ('filesystem', 'wizard', 'url', 'imported')),
+      source_url TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`);
+
   debug("[db] tables initialized");
 }
 
@@ -573,6 +595,30 @@ async function initTablesAsync(): Promise<void> {
 
   await pgAdapter.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name)`,
+  );
+
+  // hooks table for persisting dynamically created hooks
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS hooks (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      content TEXT NOT NULL,
+      every TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      timezone TEXT,
+      days TEXT,
+      start_time TEXT,
+      end_time TEXT,
+      source_type TEXT NOT NULL CHECK (source_type IN ('filesystem', 'wizard', 'url', 'imported')),
+      source_url TEXT,
+      created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()),
+      updated_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
+
+  await pgAdapter.execAsync(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`,
   );
 
   debug("[db] postgres tables initialized");

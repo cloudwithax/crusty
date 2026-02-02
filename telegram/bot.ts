@@ -22,6 +22,8 @@ import {
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
 import { fetchAndValidateSkillUrl } from "../core/skill-url.ts";
+import { getRunningHooks } from "../scheduler/hooks.ts";
+import { getDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 
 // Environment configuration
@@ -874,6 +876,18 @@ export async function startBot(): Promise<void> {
   } catch (error) {
     console.error("failed to connect to telegram:", error);
     process.exit(1);
+  }
+
+  // ensure database is initialized before any commands run
+  getDatabase();
+
+  // initialize skill registry so /skills works before any agent is created
+  await skillRegistry.initialize();
+
+  // verify hooks are running (they should already be started from index.ts)
+  const runningHooks = getRunningHooks();
+  if (runningHooks.length > 0) {
+    console.log(`[hooks] ${runningHooks.length} hook(s) running`);
   }
 
   // check pairing status

@@ -1,7 +1,13 @@
-import { existsSync, readdirSync, readFileSync, appendFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, appendFileSync, statSync } from "fs";
 import { join, basename } from "path";
+import { homedir } from "os";
 import { OpenAI } from "openai";
 import { debug } from "../utils/debug.ts";
+import {
+  loadAllHooks as loadAllHooksFromDb,
+  type HookRecord,
+  type HookSourceType,
+} from "../data/hooks.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -39,17 +45,40 @@ export interface Hook {
   config: HookConfig;
   content: string; // the markdown content after frontmatter
   intervalMs: number;
+  scope: "project" | "global";
+  sourceType: HookSourceType;
 }
 
-// runtime state for a hook
+// hook discovery locations in priority order (project takes precedence)
+const HOOK_LOCATIONS = [
+  // project-local locations
+  { path: ".crusty/hooks", scope: "project" as const },
+  { path: "cogs/hooks", scope: "project" as const },
+  { path: ".claude/hooks", scope: "project" as const },
+  // global locations
+  {
+    path: join(homedir(), ".config", "crusty", "hooks"),
+    scope: "global" as const,
+    absolute: true,
+  },
+  {
+    path: join(homedir(), ".claude", "hooks"),
+    scope: "global" as const,
+    absolute: true,
+  },
+];
+
+// re-export the source type
+export type { HookSourceType } from "../data/hooks.ts";
+
 interface HookRuntime {
   hook: Hook;
   timer: Timer | null;
   lastRun: Date | null;
 }
 
-// paths
-const HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
+// legacy path for backwards compatibility
+const LEGACY_HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
 const HOOKS_LOG_PATH = join(process.cwd(), "hooks.log");
 
 // parse duration string to milliseconds
@@ -247,7 +276,10 @@ function parseFrontmatter(content: string): { config: Partial<HookConfig>; body:
 }
 
 // load a single hook from a markdown file
-function loadHook(filePath: string): Hook | null {
+function loadHook(
+  filePath: string,
+  scope: "project" | "global" = "project",
+): Hook | null {
   try {
     const content = readFileSync(filePath, "utf-8");
     const { config, body } = parseFrontmatter(content);
@@ -279,6 +311,8 @@ function loadHook(filePath: string): Hook | null {
       },
       content: body,
       intervalMs,
+      scope,
+      sourceType: "filesystem",
     };
 
     return hook;
@@ -288,29 +322,109 @@ function loadHook(filePath: string): Hook | null {
   }
 }
 
-// discover all hooks in the hooks directory
-export function discoverHooks(): Hook[] {
-  if (!existsSync(HOOKS_DIR)) {
-    debug("[hooks] hooks directory does not exist");
-    return [];
-  }
-
+// discover all hooks from filesystem locations
+function discoverFilesystemHooks(): Hook[] {
   const hooks: Hook[] = [];
-  const files = readdirSync(HOOKS_DIR);
+  const seenIds = new Set<string>();
 
-  for (const file of files) {
-    if (!file.endsWith(".md")) continue;
+  for (const location of HOOK_LOCATIONS) {
+    const dirPath = location.absolute
+      ? location.path
+      : join(process.cwd(), location.path);
 
-    const filePath = join(HOOKS_DIR, file);
-    const hook = loadHook(filePath);
+    if (!existsSync(dirPath)) {
+      continue;
+    }
 
-    if (hook && hook.config.enabled) {
-      hooks.push(hook);
+    try {
+      const stat = statSync(dirPath);
+      if (!stat.isDirectory()) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    const files = readdirSync(dirPath);
+
+    for (const file of files) {
+      if (!file.endsWith(".md")) continue;
+      if (file.toUpperCase() === "EXAMPLE.MD") continue;
+
+      const filePath = join(dirPath, file);
+      const hook = loadHook(filePath, location.scope);
+
+      // skip if already found (project takes precedence over global)
+      if (hook && hook.config.enabled && !seenIds.has(hook.id)) {
+        hooks.push(hook);
+        seenIds.add(hook.id);
+      }
     }
   }
 
-  debug(`[hooks] discovered ${hooks.length} enabled hooks`);
   return hooks;
+}
+
+// convert database record to hook object
+function hookRecordToHook(record: HookRecord): Hook | null {
+  const intervalMs = parseHookDuration(record.every);
+  if (intervalMs === 0) {
+    debug(`[hooks] skipping db hook ${record.name}: interval is 0 or invalid`);
+    return null;
+  }
+
+  let activeHours: HookConfig["activeHours"] | undefined;
+  if (record.timezone || record.days || record.start_time || record.end_time) {
+    const days = record.days
+      ? record.days.split(",").map((d) => parseInt(d.trim(), 10)).filter((d) => !isNaN(d))
+      : [0, 1, 2, 3, 4, 5, 6];
+
+    activeHours = {
+      timezone: record.timezone || "UTC",
+      days,
+      start: record.start_time || "00:00",
+      end: record.end_time || "23:59",
+    };
+  }
+
+  return {
+    id: record.name,
+    filePath: `db:${record.name}`, // virtual path for database hooks
+    config: {
+      name: record.name,
+      description: record.description || undefined,
+      every: record.every,
+      enabled: record.enabled === 1,
+      activeHours,
+    },
+    content: record.content,
+    intervalMs,
+    scope: "project", // db hooks are always project-scoped
+    sourceType: record.source_type,
+  };
+}
+
+// discover all hooks from both filesystem and database
+export async function discoverHooks(): Promise<Hook[]> {
+  const filesystemHooks = discoverFilesystemHooks();
+  const seenIds = new Set(filesystemHooks.map((h) => h.id));
+
+  // load hooks from database (only add if not already found in filesystem)
+  let dbHooks: Hook[] = [];
+  try {
+    const records = await loadAllHooksFromDb();
+    dbHooks = records
+      .filter((r) => r.enabled === 1)
+      .map(hookRecordToHook)
+      .filter((h): h is Hook => h !== null && !seenIds.has(h.id));
+  } catch (error) {
+    debug("[hooks] error loading hooks from database:", error);
+  }
+
+  const allHooks = [...filesystemHooks, ...dbHooks];
+  debug(`[hooks] discovered ${allHooks.length} enabled hooks (${filesystemHooks.length} filesystem, ${dbHooks.length} database)`);
+
+  return allHooks;
 }
 
 // write audit log entry
@@ -444,7 +558,7 @@ export async function startHooks(
     return;
   }
 
-  const hooks = discoverHooks();
+  const hooks = await discoverHooks();
 
   if (hooks.length === 0) {
     debug("[hooks] no hooks to start");

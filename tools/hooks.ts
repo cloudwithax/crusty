@@ -1,22 +1,47 @@
 import { z } from "zod";
-import { existsSync, unlinkSync, readdirSync } from "fs";
+import { existsSync, unlinkSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
+import { homedir } from "os";
 import {
   discoverHooks,
   getRunningHooks,
   reloadHooks,
   type Hook,
+  type HookSourceType,
 } from "../scheduler/hooks.ts";
+import {
+  saveHook,
+  deleteHook as deleteHookFromDb,
+  updateHookEnabled,
+  getHookByName,
+} from "../data/hooks.ts";
 import { debug } from "../utils/debug.ts";
 
-// paths
-const HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
+// hook discovery locations matching scheduler/hooks.ts
+const HOOK_LOCATIONS = [
+  { path: ".crusty/hooks", scope: "project" as const },
+  { path: "cogs/hooks", scope: "project" as const },
+  { path: ".claude/hooks", scope: "project" as const },
+  {
+    path: join(homedir(), ".config", "crusty", "hooks"),
+    scope: "global" as const,
+    absolute: true,
+  },
+  {
+    path: join(homedir(), ".claude", "hooks"),
+    scope: "global" as const,
+    absolute: true,
+  },
+];
+
+// primary hooks directory for creating new hooks
+const PRIMARY_HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
 
 // ensure hooks directory exists
 function ensureHooksDir(): void {
-  if (!existsSync(HOOKS_DIR)) {
+  if (!existsSync(PRIMARY_HOOKS_DIR)) {
     const fs = require("fs");
-    fs.mkdirSync(HOOKS_DIR, { recursive: true });
+    fs.mkdirSync(PRIMARY_HOOKS_DIR, { recursive: true });
   }
 }
 
@@ -30,6 +55,7 @@ const createHookSchema = z.object({
   days: z.string().optional().describe("comma-separated days to run (0=Sunday, 6=Saturday). e.g. 1,2,3,4,5 for weekdays. omit for all days."),
   start: z.string().optional().describe("start time in 24h format (e.g. 09:00). omit for always active."),
   end: z.string().optional().describe("end time in 24h format (e.g. 17:00). omit for always active."),
+  storage: z.enum(["filesystem", "database"]).optional().describe("where to store the hook. 'filesystem' creates a markdown file, 'database' stores in db. default: database"),
 });
 
 // schema for removing a hook
@@ -96,9 +122,7 @@ function generateHookContent(args: {
 
 // handler for creating a hook
 async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise<string> {
-  ensureHooksDir();
-  
-  // sanitize name for filename
+  // sanitize name for id
   const safeName = args.name
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
@@ -109,44 +133,118 @@ async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise
     return `[Error] Invalid hook name. Use lowercase letters, numbers, and hyphens.`;
   }
   
-  const filePath = join(HOOKS_DIR, `${safeName}.md`);
-  
-  // check if hook already exists
-  if (existsSync(filePath)) {
-    return `[Error] A hook named "${safeName}" already exists. Remove it first or use a different name.`;
-  }
-  
   // validate interval format
   const intervalMatch = args.every.match(/^(\d+)([smhd])$/);
   if (!intervalMatch) {
     return `[Error] Invalid interval format "${args.every}". Use format like: 5m, 1h, 30s, 1d`;
   }
+
+  // check if hook already exists in any location
+  const existingHooks = await discoverHooks();
+  if (existingHooks.some((h) => h.id === safeName)) {
+    return `[Error] A hook named "${safeName}" already exists. Remove it first or use a different name.`;
+  }
   
-  // generate and write hook file
-  const content = generateHookContent({
-    name: safeName,
-    description: args.description,
-    every: args.every,
-    instructions: args.instructions,
-    timezone: args.timezone,
-    days: args.days,
-    start: args.start,
-    end: args.end,
-  });
+  // default to database storage for new hooks
+  const useDatabase = args.storage !== "filesystem";
   
-  try {
-    await Bun.write(filePath, content);
-    debug(`[hooks] created hook: ${safeName}`);
+  if (useDatabase) {
+    // save to database
+    try {
+      const saved = await saveHook({
+        name: safeName,
+        description: args.description,
+        content: args.instructions,
+        every: args.every,
+        enabled: true,
+        timezone: args.timezone,
+        days: args.days,
+        startTime: args.start,
+        endTime: args.end,
+        sourceType: "wizard",
+      });
+      
+      if (!saved) {
+        return `[Error] Failed to save hook to database.`;
+      }
+      
+      debug(`[hooks] created hook in database: ${safeName}`);
+      
+      // reload hooks to pick up the new one
+      if (hookMessageSender) {
+        await reloadHooks(hookMessageSender);
+      }
+      
+      return `Hook "${safeName}" created successfully (stored in database). It will run every ${args.every}.${args.description ? ` Description: ${args.description}` : ""}`;
+    } catch (error) {
+      return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else {
+    // filesystem storage (legacy behavior)
+    ensureHooksDir();
     
-    // reload hooks to pick up the new one
-    if (hookMessageSender) {
-      await reloadHooks(hookMessageSender);
+    const filePath = join(PRIMARY_HOOKS_DIR, `${safeName}.md`);
+    
+    // check if file already exists
+    if (existsSync(filePath)) {
+      return `[Error] A hook file named "${safeName}.md" already exists. Remove it first or use a different name.`;
     }
     
-    return `Hook "${safeName}" created successfully. It will run every ${args.every}.${args.description ? ` Description: ${args.description}` : ""}`;
-  } catch (error) {
-    return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
+    // generate and write hook file
+    const content = generateHookContent({
+      name: safeName,
+      description: args.description,
+      every: args.every,
+      instructions: args.instructions,
+      timezone: args.timezone,
+      days: args.days,
+      start: args.start,
+      end: args.end,
+    });
+    
+    try {
+      await Bun.write(filePath, content);
+      debug(`[hooks] created hook file: ${safeName}`);
+      
+      // reload hooks to pick up the new one
+      if (hookMessageSender) {
+        await reloadHooks(hookMessageSender);
+      }
+      
+      return `Hook "${safeName}" created successfully (stored as file). It will run every ${args.every}.${args.description ? ` Description: ${args.description}` : ""}`;
+    } catch (error) {
+      return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
+}
+
+// find a hook file across all locations
+function findHookFile(name: string): string | null {
+  const safeName = name
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  
+  for (const location of HOOK_LOCATIONS) {
+    const dirPath = location.absolute
+      ? location.path
+      : join(process.cwd(), location.path);
+    
+    // try sanitized name
+    const filePath = join(dirPath, `${safeName}.md`);
+    if (existsSync(filePath)) {
+      return filePath;
+    }
+    
+    // try original name as fallback
+    const exactPath = join(dirPath, `${name}.md`);
+    if (existsSync(exactPath)) {
+      return exactPath;
+    }
+  }
+  
+  return null;
 }
 
 // handler for removing a hook
@@ -157,37 +255,39 @@ async function handleRemoveHook(args: z.infer<typeof removeHookSchema>): Promise
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   
-  const filePath = join(HOOKS_DIR, `${safeName}.md`);
-  
-  if (!existsSync(filePath)) {
-    // try exact name as fallback
-    const exactPath = join(HOOKS_DIR, `${args.name}.md`);
-    if (existsSync(exactPath)) {
-      try {
-        unlinkSync(exactPath);
-        debug(`[hooks] removed hook: ${args.name}`);
-        
-        if (hookMessageSender) {
-          await reloadHooks(hookMessageSender);
-        }
-        
-        return `Hook "${args.name}" has been removed.`;
-      } catch (error) {
-        return `[Error] Failed to remove hook: ${error instanceof Error ? error.message : String(error)}`;
+  // check if hook exists in database
+  const dbHook = await getHookByName(safeName);
+  if (dbHook) {
+    try {
+      await deleteHookFromDb(safeName);
+      debug(`[hooks] removed hook from database: ${safeName}`);
+      
+      if (hookMessageSender) {
+        await reloadHooks(hookMessageSender);
       }
+      
+      return `Hook "${safeName}" has been removed from the database.`;
+    } catch (error) {
+      return `[Error] Failed to remove hook: ${error instanceof Error ? error.message : String(error)}`;
     }
-    return `[Error] Hook "${args.name}" not found.`;
+  }
+  
+  // check filesystem locations
+  const filePath = findHookFile(args.name);
+  
+  if (!filePath) {
+    return `[Error] Hook "${args.name}" not found in filesystem or database.`;
   }
   
   try {
     unlinkSync(filePath);
-    debug(`[hooks] removed hook: ${safeName}`);
+    debug(`[hooks] removed hook file: ${filePath}`);
     
     if (hookMessageSender) {
       await reloadHooks(hookMessageSender);
     }
     
-    return `Hook "${safeName}" has been removed.`;
+    return `Hook "${args.name}" has been removed.`;
   } catch (error) {
     return `[Error] Failed to remove hook: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -195,35 +295,47 @@ async function handleRemoveHook(args: z.infer<typeof removeHookSchema>): Promise
 
 // handler for listing hooks
 async function handleListHooks(): Promise<string> {
-  if (!existsSync(HOOKS_DIR)) {
-    return "No hooks directory found. No hooks are configured.";
-  }
-  
-  const files = readdirSync(HOOKS_DIR).filter(f => f.endsWith(".md") && f !== "EXAMPLE.md");
-  
-  if (files.length === 0) {
-    return "No hooks configured. Use create_hook to add one.";
-  }
-  
-  const hooks = discoverHooks();
+  const hooks = await discoverHooks();
   const running = getRunningHooks();
   const runningIds = new Set(running.map(r => r.id));
   
+  if (hooks.length === 0) {
+    return "No hooks configured. Use create_hook to add one.";
+  }
+  
   const lines: string[] = ["**Configured Hooks:**", ""];
   
-  for (const file of files) {
-    const id = basename(file, ".md").toLowerCase();
-    const hook = hooks.find(h => h.id === id);
-    const isRunning = runningIds.has(id);
-    
-    if (hook) {
+  // group by source type
+  const filesystemHooks = hooks.filter(h => h.sourceType === "filesystem");
+  const dbHooks = hooks.filter(h => h.sourceType !== "filesystem");
+  
+  if (filesystemHooks.length > 0) {
+    lines.push("*Filesystem:*");
+    for (const hook of filesystemHooks) {
+      const isRunning = runningIds.has(hook.id);
       const status = isRunning ? "running" : (hook.config.enabled ? "enabled" : "disabled");
-      lines.push(`- **${hook.config.name}** (${hook.config.every}) - ${status}`);
+      const scope = hook.scope === "global" ? " (global)" : "";
+      lines.push(`- **${hook.config.name}** (${hook.config.every}) - ${status}${scope}`);
       if (hook.config.description) {
         lines.push(`  ${hook.config.description}`);
       }
-    } else {
-      lines.push(`- **${id}** - not loaded (check file for errors)`);
+    }
+    lines.push("");
+  }
+  
+  if (dbHooks.length > 0) {
+    lines.push("*Database:*");
+    for (const hook of dbHooks) {
+      const isRunning = runningIds.has(hook.id);
+      const status = isRunning ? "running" : (hook.config.enabled ? "enabled" : "disabled");
+      const sourceLabel = hook.sourceType === "wizard" ? " (created)" 
+        : hook.sourceType === "url" ? " (url)" 
+        : hook.sourceType === "imported" ? " (imported)" 
+        : "";
+      lines.push(`- **${hook.config.name}** (${hook.config.every}) - ${status}${sourceLabel}`);
+      if (hook.config.description) {
+        lines.push(`  ${hook.config.description}`);
+      }
     }
   }
   
@@ -238,13 +350,28 @@ async function handleToggleHook(args: z.infer<typeof toggleHookSchema>): Promise
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   
-  let filePath = join(HOOKS_DIR, `${safeName}.md`);
-  
-  if (!existsSync(filePath)) {
-    filePath = join(HOOKS_DIR, `${args.name}.md`);
-    if (!existsSync(filePath)) {
-      return `[Error] Hook "${args.name}" not found.`;
+  // check if hook exists in database
+  const dbHook = await getHookByName(safeName);
+  if (dbHook) {
+    try {
+      await updateHookEnabled(safeName, args.enabled);
+      debug(`[hooks] ${args.enabled ? "enabled" : "disabled"} db hook: ${safeName}`);
+      
+      if (hookMessageSender) {
+        await reloadHooks(hookMessageSender);
+      }
+      
+      return `Hook "${safeName}" has been ${args.enabled ? "enabled" : "disabled"}.`;
+    } catch (error) {
+      return `[Error] Failed to update hook: ${error instanceof Error ? error.message : String(error)}`;
     }
+  }
+  
+  // check filesystem locations
+  const filePath = findHookFile(args.name);
+  
+  if (!filePath) {
+    return `[Error] Hook "${args.name}" not found.`;
   }
   
   try {
