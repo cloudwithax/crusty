@@ -47,15 +47,51 @@ function ensureHooksDir(): void {
 
 // schema for creating a hook
 const createHookSchema = z.object({
-  name: z.string().describe("unique identifier for the hook (lowercase, no spaces, use hyphens)"),
-  description: z.string().optional().describe("brief description of what this hook does"),
-  every: z.string().describe("how often to run: Xs (seconds), Xm (minutes), Xh (hours), Xd (days). examples: 5m, 1h, 30s"),
-  instructions: z.string().describe("the instructions for what the hook should do when it runs. be specific and actionable."),
-  timezone: z.string().optional().describe("timezone for active hours (e.g. America/New_York). omit for always active."),
-  days: z.string().optional().describe("comma-separated days to run (0=Sunday, 6=Saturday). e.g. 1,2,3,4,5 for weekdays. omit for all days."),
-  start: z.string().optional().describe("start time in 24h format (e.g. 09:00). omit for always active."),
-  end: z.string().optional().describe("end time in 24h format (e.g. 17:00). omit for always active."),
-  storage: z.enum(["filesystem", "database"]).optional().describe("where to store the hook. 'filesystem' creates a markdown file, 'database' stores in db. default: database"),
+  name: z
+    .string()
+    .describe(
+      "unique identifier for the hook (lowercase, no spaces, use hyphens)",
+    ),
+  description: z
+    .string()
+    .optional()
+    .describe("brief description of what this hook does"),
+  every: z
+    .string()
+    .describe(
+      "how often to run: Xs (seconds), Xm (minutes), Xh (hours), Xd (days). examples: 5m, 1h, 30s",
+    ),
+  instructions: z
+    .string()
+    .describe(
+      "the instructions for what the hook should do when it runs. be specific and actionable.",
+    ),
+  timezone: z
+    .string()
+    .optional()
+    .describe(
+      "timezone for active hours (e.g. America/New_York). omit for always active.",
+    ),
+  days: z
+    .string()
+    .optional()
+    .describe(
+      "comma-separated days to run (0=Sunday, 6=Saturday). e.g. 1,2,3,4,5 for weekdays. omit for all days.",
+    ),
+  start: z
+    .string()
+    .optional()
+    .describe("start time in 24h format (e.g. 09:00). omit for always active."),
+  end: z
+    .string()
+    .optional()
+    .describe("end time in 24h format (e.g. 17:00). omit for always active."),
+  storage: z
+    .enum(["filesystem", "database"])
+    .optional()
+    .describe(
+      "where to store the hook. 'filesystem' creates a markdown file, 'database' stores in db. default: database",
+    ),
 });
 
 // schema for removing a hook
@@ -73,10 +109,14 @@ const toggleHookSchema = z.object({
 });
 
 // message sender reference - will be set by bot on startup
-let hookMessageSender: ((text: string, isHook?: boolean) => Promise<void>) | null = null;
+let hookMessageSender:
+  | ((text: string, isHook?: boolean) => Promise<void>)
+  | null = null;
 
 // set the message sender for hook reload
-export function setHookMessageSender(sender: (text: string, isHook?: boolean) => Promise<void>): void {
+export function setHookMessageSender(
+  sender: (text: string, isHook?: boolean) => Promise<void>,
+): void {
   hookMessageSender = sender;
 }
 
@@ -92,14 +132,14 @@ function generateHookContent(args: {
   end?: string;
 }): string {
   const lines: string[] = ["---"];
-  
+
   lines.push(`name: ${args.name}`);
   if (args.description) {
     lines.push(`description: ${args.description}`);
   }
   lines.push(`every: ${args.every}`);
   lines.push(`enabled: true`);
-  
+
   if (args.timezone) {
     lines.push(`timezone: ${args.timezone}`);
   }
@@ -112,27 +152,29 @@ function generateHookContent(args: {
   if (args.end) {
     lines.push(`end: ${args.end}`);
   }
-  
+
   lines.push("---");
   lines.push("");
   lines.push(args.instructions);
-  
+
   return lines.join("\n");
 }
 
 // handler for creating a hook
-async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise<string> {
+async function handleCreateHook(
+  args: z.infer<typeof createHookSchema>,
+): Promise<string> {
   // sanitize name for id
   const safeName = args.name
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  
+
   if (!safeName) {
     return `[Error] Invalid hook name. Use lowercase letters, numbers, and hyphens.`;
   }
-  
+
   // validate interval format
   const intervalMatch = args.every.match(/^(\d+)([smhd])$/);
   if (!intervalMatch) {
@@ -144,10 +186,10 @@ async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise
   if (existingHooks.some((h) => h.id === safeName)) {
     return `[Error] A hook named "${safeName}" already exists. Remove it first or use a different name.`;
   }
-  
+
   // default to database storage for new hooks
   const useDatabase = args.storage !== "filesystem";
-  
+
   if (useDatabase) {
     // save to database
     try {
@@ -163,18 +205,18 @@ async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise
         endTime: args.end,
         sourceType: "wizard",
       });
-      
+
       if (!saved) {
         return `[Error] Failed to save hook to database.`;
       }
-      
+
       debug(`[hooks] created hook in database: ${safeName}`);
-      
+
       // reload hooks to pick up the new one
       if (hookMessageSender) {
         await reloadHooks(hookMessageSender);
       }
-      
+
       return `Hook "${safeName}" created successfully (stored in database). It will run every ${args.every}.${args.description ? ` Description: ${args.description}` : ""}`;
     } catch (error) {
       return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
@@ -182,14 +224,14 @@ async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise
   } else {
     // filesystem storage (legacy behavior)
     ensureHooksDir();
-    
+
     const filePath = join(PRIMARY_HOOKS_DIR, `${safeName}.md`);
-    
+
     // check if file already exists
     if (existsSync(filePath)) {
       return `[Error] A hook file named "${safeName}.md" already exists. Remove it first or use a different name.`;
     }
-    
+
     // generate and write hook file
     const content = generateHookContent({
       name: safeName,
@@ -201,16 +243,16 @@ async function handleCreateHook(args: z.infer<typeof createHookSchema>): Promise
       start: args.start,
       end: args.end,
     });
-    
+
     try {
       await Bun.write(filePath, content);
       debug(`[hooks] created hook file: ${safeName}`);
-      
+
       // reload hooks to pick up the new one
       if (hookMessageSender) {
         await reloadHooks(hookMessageSender);
       }
-      
+
       return `Hook "${safeName}" created successfully (stored as file). It will run every ${args.every}.${args.description ? ` Description: ${args.description}` : ""}`;
     } catch (error) {
       return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
@@ -225,68 +267,70 @@ function findHookFile(name: string): string | null {
     .replace(/[^a-z0-9-_]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  
+
   for (const location of HOOK_LOCATIONS) {
     const dirPath = location.absolute
       ? location.path
       : join(process.cwd(), location.path);
-    
+
     // try sanitized name
     const filePath = join(dirPath, `${safeName}.md`);
     if (existsSync(filePath)) {
       return filePath;
     }
-    
+
     // try original name as fallback
     const exactPath = join(dirPath, `${name}.md`);
     if (existsSync(exactPath)) {
       return exactPath;
     }
   }
-  
+
   return null;
 }
 
 // handler for removing a hook
-async function handleRemoveHook(args: z.infer<typeof removeHookSchema>): Promise<string> {
+async function handleRemoveHook(
+  args: z.infer<typeof removeHookSchema>,
+): Promise<string> {
   const safeName = args.name
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  
+
   // check if hook exists in database
   const dbHook = await getHookByName(safeName);
   if (dbHook) {
     try {
       await deleteHookFromDb(safeName);
       debug(`[hooks] removed hook from database: ${safeName}`);
-      
+
       if (hookMessageSender) {
         await reloadHooks(hookMessageSender);
       }
-      
+
       return `Hook "${safeName}" has been removed from the database.`;
     } catch (error) {
       return `[Error] Failed to remove hook: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
-  
+
   // check filesystem locations
   const filePath = findHookFile(args.name);
-  
+
   if (!filePath) {
     return `[Error] Hook "${args.name}" not found in filesystem or database.`;
   }
-  
+
   try {
     unlinkSync(filePath);
     debug(`[hooks] removed hook file: ${filePath}`);
-    
+
     if (hookMessageSender) {
       await reloadHooks(hookMessageSender);
     }
-    
+
     return `Hook "${args.name}" has been removed.`;
   } catch (error) {
     return `[Error] Failed to remove hook: ${error instanceof Error ? error.message : String(error)}`;
@@ -297,92 +341,112 @@ async function handleRemoveHook(args: z.infer<typeof removeHookSchema>): Promise
 async function handleListHooks(): Promise<string> {
   const hooks = await discoverHooks();
   const running = getRunningHooks();
-  const runningIds = new Set(running.map(r => r.id));
-  
+  const runningIds = new Set(running.map((r) => r.id));
+
   if (hooks.length === 0) {
     return "No hooks configured. Use create_hook to add one.";
   }
-  
+
   const lines: string[] = ["**Configured Hooks:**", ""];
-  
+
   // group by source type
-  const filesystemHooks = hooks.filter(h => h.sourceType === "filesystem");
-  const dbHooks = hooks.filter(h => h.sourceType !== "filesystem");
-  
+  const filesystemHooks = hooks.filter((h) => h.sourceType === "filesystem");
+  const dbHooks = hooks.filter((h) => h.sourceType !== "filesystem");
+
   if (filesystemHooks.length > 0) {
     lines.push("*Filesystem:*");
     for (const hook of filesystemHooks) {
       const isRunning = runningIds.has(hook.id);
-      const status = isRunning ? "running" : (hook.config.enabled ? "enabled" : "disabled");
+      const status = isRunning
+        ? "running"
+        : hook.config.enabled
+          ? "enabled"
+          : "disabled";
       const scope = hook.scope === "global" ? " (global)" : "";
-      lines.push(`- **${hook.config.name}** (${hook.config.every}) - ${status}${scope}`);
+      lines.push(
+        `- **${hook.config.name}** (${hook.config.every}) - ${status}${scope}`,
+      );
       if (hook.config.description) {
         lines.push(`  ${hook.config.description}`);
       }
     }
     lines.push("");
   }
-  
+
   if (dbHooks.length > 0) {
     lines.push("*Database:*");
     for (const hook of dbHooks) {
       const isRunning = runningIds.has(hook.id);
-      const status = isRunning ? "running" : (hook.config.enabled ? "enabled" : "disabled");
-      const sourceLabel = hook.sourceType === "wizard" ? " (created)" 
-        : hook.sourceType === "url" ? " (url)" 
-        : hook.sourceType === "imported" ? " (imported)" 
-        : "";
-      lines.push(`- **${hook.config.name}** (${hook.config.every}) - ${status}${sourceLabel}`);
+      const status = isRunning
+        ? "running"
+        : hook.config.enabled
+          ? "enabled"
+          : "disabled";
+      const sourceLabel =
+        hook.sourceType === "wizard"
+          ? " (created)"
+          : hook.sourceType === "url"
+            ? " (url)"
+            : hook.sourceType === "imported"
+              ? " (imported)"
+              : "";
+      lines.push(
+        `- **${hook.config.name}** (${hook.config.every}) - ${status}${sourceLabel}`,
+      );
       if (hook.config.description) {
         lines.push(`  ${hook.config.description}`);
       }
     }
   }
-  
+
   return lines.join("\n");
 }
 
 // handler for toggling hook enabled state
-async function handleToggleHook(args: z.infer<typeof toggleHookSchema>): Promise<string> {
+async function handleToggleHook(
+  args: z.infer<typeof toggleHookSchema>,
+): Promise<string> {
   const safeName = args.name
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  
+
   // check if hook exists in database
   const dbHook = await getHookByName(safeName);
   if (dbHook) {
     try {
       await updateHookEnabled(safeName, args.enabled);
-      debug(`[hooks] ${args.enabled ? "enabled" : "disabled"} db hook: ${safeName}`);
-      
+      debug(
+        `[hooks] ${args.enabled ? "enabled" : "disabled"} db hook: ${safeName}`,
+      );
+
       if (hookMessageSender) {
         await reloadHooks(hookMessageSender);
       }
-      
+
       return `Hook "${safeName}" has been ${args.enabled ? "enabled" : "disabled"}.`;
     } catch (error) {
       return `[Error] Failed to update hook: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
-  
+
   // check filesystem locations
   const filePath = findHookFile(args.name);
-  
+
   if (!filePath) {
     return `[Error] Hook "${args.name}" not found.`;
   }
-  
+
   try {
     const content = await Bun.file(filePath).text();
-    
+
     // update the enabled field in frontmatter
     const updatedContent = content.replace(
       /^enabled:\s*(true|false)\s*$/m,
-      `enabled: ${args.enabled}`
+      `enabled: ${args.enabled}`,
     );
-    
+
     // if no enabled field found, add it after the first ---
     if (updatedContent === content && !content.includes("enabled:")) {
       const parts = content.split("---");
@@ -393,13 +457,15 @@ async function handleToggleHook(args: z.infer<typeof toggleHookSchema>): Promise
     } else {
       await Bun.write(filePath, updatedContent);
     }
-    
-    debug(`[hooks] ${args.enabled ? "enabled" : "disabled"} hook: ${args.name}`);
-    
+
+    debug(
+      `[hooks] ${args.enabled ? "enabled" : "disabled"} hook: ${args.name}`,
+    );
+
     if (hookMessageSender) {
       await reloadHooks(hookMessageSender);
     }
-    
+
     return `Hook "${args.name}" has been ${args.enabled ? "enabled" : "disabled"}.`;
   } catch (error) {
     return `[Error] Failed to update hook: ${error instanceof Error ? error.message : String(error)}`;
@@ -430,7 +496,7 @@ The hook will be created and start running immediately.`,
     schema: createHookSchema,
     handler: handleCreateHook,
   },
-  
+
   remove_hook: {
     description: `Remove/delete a scheduled hook. Use when a hook is no longer needed.
 
@@ -439,13 +505,13 @@ PARAMETERS:
     schema: removeHookSchema,
     handler: handleRemoveHook,
   },
-  
+
   list_hooks: {
     description: `List all configured hooks and their status. Shows which hooks exist, their intervals, and whether they're running.`,
     schema: listHooksSchema,
     handler: handleListHooks,
   },
-  
+
   toggle_hook: {
     description: `Enable or disable a hook without deleting it. Disabled hooks won't run but can be re-enabled later.
 

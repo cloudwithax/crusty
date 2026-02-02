@@ -1,4 +1,10 @@
-import { existsSync, readdirSync, readFileSync, appendFileSync, statSync } from "fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  appendFileSync,
+  statSync,
+} from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import { OpenAI } from "openai";
@@ -86,7 +92,13 @@ const HOOKS_LOG_PATH = join(process.cwd(), "hooks.log");
 function parseHookDuration(duration: string): number {
   const trimmed = duration.trim().toLowerCase();
 
-  if (trimmed === "0m" || trimmed === "0h" || trimmed === "0d" || trimmed === "0s" || trimmed === "0") {
+  if (
+    trimmed === "0m" ||
+    trimmed === "0h" ||
+    trimmed === "0d" ||
+    trimmed === "0s" ||
+    trimmed === "0"
+  ) {
     return 0;
   }
 
@@ -139,7 +151,10 @@ function getDayOfWeekInTimezone(date: Date, timezone: string): number {
 
   const parts = formatter.formatToParts(date);
   const year = parseInt(parts.find((p) => p.type === "year")?.value || "0", 10);
-  const month = parseInt(parts.find((p) => p.type === "month")?.value || "0", 10);
+  const month = parseInt(
+    parts.find((p) => p.type === "month")?.value || "0",
+    10,
+  );
   const day = parseInt(parts.find((p) => p.type === "day")?.value || "0", 10);
 
   const targetDate = new Date(Date.UTC(year, month - 1, day));
@@ -147,7 +162,9 @@ function getDayOfWeekInTimezone(date: Date, timezone: string): number {
 }
 
 // check if current time is within active hours for a hook
-function isWithinHookActiveHours(activeHours: HookConfig["activeHours"]): boolean {
+function isWithinHookActiveHours(
+  activeHours: HookConfig["activeHours"],
+): boolean {
   if (!activeHours) {
     return true; // no restrictions
   }
@@ -163,8 +180,14 @@ function isWithinHookActiveHours(activeHours: HookConfig["activeHours"]): boolea
     });
 
     const timeParts = timeFormatter.formatToParts(now);
-    const hour = parseInt(timeParts.find((p) => p.type === "hour")?.value || "0", 10);
-    const minute = parseInt(timeParts.find((p) => p.type === "minute")?.value || "0", 10);
+    const hour = parseInt(
+      timeParts.find((p) => p.type === "hour")?.value || "0",
+      10,
+    );
+    const minute = parseInt(
+      timeParts.find((p) => p.type === "minute")?.value || "0",
+      10,
+    );
 
     const dayOfWeek = getDayOfWeekInTimezone(now, activeHours.timezone);
 
@@ -195,9 +218,12 @@ function isWithinHookActiveHours(activeHours: HookConfig["activeHours"]): boolea
 // every: 30m
 // enabled: true
 // ---
-function parseFrontmatter(content: string): { config: Partial<HookConfig>; body: string } {
+function parseFrontmatter(content: string): {
+  config: Partial<HookConfig>;
+  body: string;
+} {
   const lines = content.split("\n");
-  
+
   if (lines[0]?.trim() !== "---") {
     return { config: {}, body: content };
   }
@@ -215,7 +241,10 @@ function parseFrontmatter(content: string): { config: Partial<HookConfig>; body:
   }
 
   const frontmatterLines = lines.slice(1, endIndex);
-  const body = lines.slice(endIndex + 1).join("\n").trim();
+  const body = lines
+    .slice(endIndex + 1)
+    .join("\n")
+    .trim();
 
   const config: Partial<HookConfig> = {};
 
@@ -241,30 +270,53 @@ function parseFrontmatter(content: string): { config: Partial<HookConfig>; body:
         break;
       case "timezone":
         if (!config.activeHours) {
-          config.activeHours = { timezone: value, days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "23:59" };
+          config.activeHours = {
+            timezone: value,
+            days: [0, 1, 2, 3, 4, 5, 6],
+            start: "00:00",
+            end: "23:59",
+          };
         } else {
           config.activeHours.timezone = value;
         }
         break;
       case "days":
         // parse comma-separated list of day numbers
-        const days = value.split(",").map((d) => parseInt(d.trim(), 10)).filter((d) => !isNaN(d));
+        const days = value
+          .split(",")
+          .map((d) => parseInt(d.trim(), 10))
+          .filter((d) => !isNaN(d));
         if (!config.activeHours) {
-          config.activeHours = { timezone: "UTC", days, start: "00:00", end: "23:59" };
+          config.activeHours = {
+            timezone: "UTC",
+            days,
+            start: "00:00",
+            end: "23:59",
+          };
         } else {
           config.activeHours.days = days;
         }
         break;
       case "start":
         if (!config.activeHours) {
-          config.activeHours = { timezone: "UTC", days: [0, 1, 2, 3, 4, 5, 6], start: value, end: "23:59" };
+          config.activeHours = {
+            timezone: "UTC",
+            days: [0, 1, 2, 3, 4, 5, 6],
+            start: value,
+            end: "23:59",
+          };
         } else {
           config.activeHours.start = value;
         }
         break;
       case "end":
         if (!config.activeHours) {
-          config.activeHours = { timezone: "UTC", days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: value };
+          config.activeHours = {
+            timezone: "UTC",
+            days: [0, 1, 2, 3, 4, 5, 6],
+            start: "00:00",
+            end: value,
+          };
         } else {
           config.activeHours.end = value;
         }
@@ -297,7 +349,9 @@ function loadHook(
     }
 
     // generate id from filename
-    const id = basename(filePath, ".md").toLowerCase().replace(/[^a-z0-9-_]/g, "-");
+    const id = basename(filePath, ".md")
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]/g, "-");
 
     const hook: Hook = {
       id,
@@ -376,7 +430,10 @@ function hookRecordToHook(record: HookRecord): Hook | null {
   let activeHours: HookConfig["activeHours"] | undefined;
   if (record.timezone || record.days || record.start_time || record.end_time) {
     const days = record.days
-      ? record.days.split(",").map((d) => parseInt(d.trim(), 10)).filter((d) => !isNaN(d))
+      ? record.days
+          .split(",")
+          .map((d) => parseInt(d.trim(), 10))
+          .filter((d) => !isNaN(d))
       : [0, 1, 2, 3, 4, 5, 6];
 
     activeHours = {
@@ -422,7 +479,9 @@ export async function discoverHooks(): Promise<Hook[]> {
   }
 
   const allHooks = [...filesystemHooks, ...dbHooks];
-  debug(`[hooks] discovered ${allHooks.length} enabled hooks (${filesystemHooks.length} filesystem, ${dbHooks.length} database)`);
+  debug(
+    `[hooks] discovered ${allHooks.length} enabled hooks (${filesystemHooks.length} filesystem, ${dbHooks.length} database)`,
+  );
 
   return allHooks;
 }
@@ -495,12 +554,17 @@ Be concise and direct.`;
     // deliver message
     const formattedOutput = `**[${hook.config.name}]**\n${output}`;
     await sendMessage(formattedOutput, true);
-    writeHookLog(hook.id, `DELIVERED: ${output.substring(0, 100)}${output.length > 100 ? "..." : ""}`);
+    writeHookLog(
+      hook.id,
+      `DELIVERED: ${output.substring(0, 100)}${output.length > 100 ? "..." : ""}`,
+    );
     debug(`[hooks] ${hook.id}: delivered message`);
-
   } catch (error) {
     console.error(`[hooks] ${hook.id}: error during execution:`, error);
-    writeHookLog(hook.id, `ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    writeHookLog(
+      hook.id,
+      `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -518,7 +582,9 @@ function startHookScheduler(
     return;
   }
 
-  debug(`[hooks] ${hook.id}: starting with interval ${hook.config.every} (${hook.intervalMs}ms)`);
+  debug(
+    `[hooks] ${hook.id}: starting with interval ${hook.config.every} (${hook.intervalMs}ms)`,
+  );
 
   // run immediately
   executeHook(hook, sendMessage).catch((error) => {
@@ -591,7 +657,11 @@ export async function reloadHooks(
 }
 
 // get list of running hooks
-export function getRunningHooks(): { id: string; name: string; interval: string }[] {
+export function getRunningHooks(): {
+  id: string;
+  name: string;
+  interval: string;
+}[] {
   return Array.from(hookRuntimes.values()).map((runtime) => ({
     id: runtime.hook.id,
     name: runtime.hook.config.name,

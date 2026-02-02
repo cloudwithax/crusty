@@ -233,7 +233,10 @@ export async function deleteHook(name: string): Promise<boolean> {
 }
 
 // update hook enabled status
-export async function updateHookEnabled(name: string, enabled: boolean): Promise<boolean> {
+export async function updateHookEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<boolean> {
   const asyncDb = getAsyncDatabase();
 
   try {
