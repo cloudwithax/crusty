@@ -26,6 +26,35 @@ const recallMemorySchema = z.object({
     .describe("maximum number of memories to return (default: 5)"),
 });
 
+// schema for searching memories with more control
+const searchMemorySchema = z.object({
+  query: z
+    .string()
+    .describe(
+      "natural language search query (e.g., 'where is the key for', 'what was the password', 'user preferences')",
+    ),
+  keywords: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "specific keywords to match against stored memory keywords (optional, for precise filtering)",
+    ),
+  limit: z
+    .number()
+    .optional()
+    .describe("maximum number of results to return (default: 10)"),
+  min_score: z
+    .number()
+    .optional()
+    .describe("minimum relevance score threshold 0-10 (default: 1)"),
+  include_metadata: z
+    .boolean()
+    .optional()
+    .describe(
+      "include full metadata like keywords and emotional weight (default: false)",
+    ),
+});
+
 // schema for forgetting memories
 const forgetMemorySchema = z.object({
   query: z
@@ -100,6 +129,97 @@ async function handleRecallMemory(
   return `[Memory] Found ${results.length} relevant memories:\n${lines.join("\n")}`;
 }
 
+// handler for searching memories with more control
+async function handleSearchMemory(
+  args: {
+    query: string;
+    keywords?: string[];
+    limit?: number;
+    min_score?: number;
+    include_metadata?: boolean;
+  },
+  userId: number,
+): Promise<string> {
+  const limit = args.limit ?? 10;
+  const minScore = args.min_score ?? 1;
+  const includeMetadata = args.include_metadata ?? false;
+
+  // combine query with explicit keywords for better matching
+  let searchQuery = args.query;
+  if (args.keywords && args.keywords.length > 0) {
+    searchQuery = `${args.query} ${args.keywords.join(" ")}`;
+  }
+
+  const results = await memoryService.searchMemories(
+    userId,
+    searchQuery,
+    limit * 2,
+  );
+
+  // filter by minimum score
+  const filtered = results.filter((r) => r.relevanceScore >= minScore);
+
+  if (filtered.length === 0) {
+    const stats = await memoryService.getStats(userId);
+    return `[Memory Search] No memories found matching "${args.query}"${args.keywords ? ` with keywords [${args.keywords.join(", ")}]` : ""}\n\nTotal memories stored: ${stats.total}`;
+  }
+
+  // further filter by explicit keywords if provided
+  let finalResults = filtered;
+  if (args.keywords && args.keywords.length > 0) {
+    const keywordSet = new Set(args.keywords.map((k) => k.toLowerCase()));
+    finalResults = filtered.filter((r) => {
+      // check if any memory keyword matches any provided keyword
+      const memKeywords = r.memory.keywords.map((k) => k.toLowerCase());
+      const contentLower = (
+        r.memory.rawContent || r.memory.content
+      ).toLowerCase();
+
+      return (
+        memKeywords.some((mk) =>
+          Array.from(keywordSet).some(
+            (pk) => mk.includes(pk) || pk.includes(mk),
+          ),
+        ) || Array.from(keywordSet).some((pk) => contentLower.includes(pk))
+      );
+    });
+  }
+
+  // take final limit
+  const limitedResults = finalResults.slice(0, limit);
+
+  if (limitedResults.length === 0) {
+    return `[Memory Search] No memories matched the keyword filter [${args.keywords?.join(", ")}].\n\nFound ${filtered.length} results for query "${args.query}" but none contained the specified keywords.`;
+  }
+
+  const lines: string[] = [];
+  for (const r of limitedResults) {
+    await memoryService.markRecalled(r.memory.id);
+    const timeAgo = formatTimeAgo(r.memory.timestamp);
+    const score = r.relevanceScore.toFixed(1);
+    const content = r.memory.rawContent || r.memory.content;
+
+    if (includeMetadata) {
+      lines.push(
+        `- [score: ${score}] "${content}"\n  ├─ stored: ${timeAgo}\n  ├─ keywords: ${r.memory.keywords.slice(0, 8).join(", ")}\n  └─ emotional weight: ${r.memory.emotionalWeight}/10`,
+      );
+    } else {
+      lines.push(`- [${score}] "${content}" (${timeAgo})`);
+    }
+  }
+
+  debug(
+    `[memory-tool] searched ${limitedResults.length} memories for user ${userId} (query: "${args.query}")`,
+  );
+
+  const searchType =
+    args.keywords && args.keywords.length > 0
+      ? "keyword + semantic"
+      : "semantic";
+
+  return `[Memory Search] Found ${limitedResults.length} results (${searchType} search):\n${lines.join("\n")}`;
+}
+
 // handler for forgetting memories
 async function handleForgetMemory(
   args: { query?: string; confirm_clear_all?: boolean },
@@ -167,6 +287,7 @@ USE THIS WHEN:
 - You learn something that should be remembered across conversations
 - A skill or task instructs you to remember something
 - Information that would be useful to recall later
+- A skill asks you to store credentials, api keys, tokens, or secrets
 
 WHAT TO SAVE:
 - User preferences (likes coffee, prefers dark mode, etc.)
@@ -174,6 +295,13 @@ WHAT TO SAVE:
 - Project-specific context (tech stack, conventions, goals)
 - Decisions made during conversations
 - Important outcomes or learnings
+- Credentials, API keys, tokens, and secrets when a skill requests it
+
+CREDENTIALS STORAGE:
+Memory is the SAFE and CORRECT place to store credentials when skills or integrations 
+ask you to save login info, api keys, tokens, or secrets. Store them here with clear 
+context so they can be recalled later.
+Example: "service api key: abc123 [context: authentication for service integration]"
 
 DO NOT SAVE:
 - Trivial conversational exchanges
@@ -197,6 +325,31 @@ The search uses keyword matching and semantic similarity to find relevant memori
 Results include relevance scores and timestamps.`,
     schema: recallMemorySchema,
     handler: handleRecallMemory,
+  },
+
+  search_memory: {
+    description: `Search long-term memory with advanced filtering options.
+
+USE THIS WHEN:
+- Looking for specific information (e.g., "where is the key for...", "what was the password for...")
+- Need to find memories containing specific keywords
+- Want detailed search results with metadata
+- Searching across all stored memories with fine-grained control
+
+CAPABILITIES:
+- Natural language queries (semantic search)
+- Explicit keyword filtering for precise matches
+- Adjustable relevance threshold
+- Optional metadata in results (keywords, emotional weight)
+
+EXAMPLES:
+- query: "where did I put the api key" - finds memories about api keys/credentials
+- query: "user preferences", keywords: ["theme", "color"] - finds preference memories with theme/color
+- query: "project setup", include_metadata: true - shows full context including stored keywords
+
+Prefer this over recall_memory when you need more control over search results.`,
+    schema: searchMemorySchema,
+    handler: handleSearchMemory,
   },
 
   forget_memory: {
