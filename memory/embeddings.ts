@@ -7,11 +7,16 @@ import { debug } from "../utils/debug";
 // embedding provider: local or none
 // local uses transformers.js with all-MiniLM-L6-v2 (384 dimensions, runs on cpu)
 type EmbeddingProvider = "local" | "none";
-const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER || "local") as EmbeddingProvider;
+const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER ||
+  "local") as EmbeddingProvider;
 
 // local model config
-const LOCAL_EMBEDDING_MODEL = process.env.LOCAL_EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
-const LOCAL_EMBEDDING_DIMENSION = parseInt(process.env.LOCAL_EMBEDDING_DIMENSION || "384", 10);
+const LOCAL_EMBEDDING_MODEL =
+  process.env.LOCAL_EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
+const LOCAL_EMBEDDING_DIMENSION = parseInt(
+  process.env.LOCAL_EMBEDDING_DIMENSION || "384",
+  10,
+);
 
 // get the dimension for current provider
 function getEmbeddingDimension(): number {
@@ -29,28 +34,32 @@ export async function preloadEmbeddingModel(): Promise<boolean> {
     debug("[embeddings] provider is none, skipping preload");
     return false;
   }
-  
+
   const pipe = await getLocalPipeline();
   return pipe !== null;
 }
 
 async function getLocalPipeline(): Promise<any> {
   if (localPipeline) return localPipeline;
-  
+
   if (localPipelineLoading) {
     return localPipelineLoading;
   }
-  
+
   localPipelineLoading = (async () => {
     try {
       debug(`[embeddings] loading local model: ${LOCAL_EMBEDDING_MODEL}`);
       const { pipeline } = await import("@huggingface/transformers");
-      
+
       // feature-extraction pipeline for embeddings
-      localPipeline = await pipeline("feature-extraction", LOCAL_EMBEDDING_MODEL, {
-        dtype: "fp32", // use fp32 for cpu compatibility
-      });
-      
+      localPipeline = await pipeline(
+        "feature-extraction",
+        LOCAL_EMBEDDING_MODEL,
+        {
+          dtype: "fp32", // use fp32 for cpu compatibility
+        },
+      );
+
       debug(`[embeddings] local model loaded`);
       return localPipeline;
     } catch (err) {
@@ -59,7 +68,7 @@ async function getLocalPipeline(): Promise<any> {
       return null;
     }
   })();
-  
+
   return localPipelineLoading;
 }
 
@@ -94,6 +103,9 @@ async function ensurePgvector(): Promise<boolean> {
   const dimension = getEmbeddingDimension();
 
   try {
+    // suppress postgres NOTICE messages for "already exists, skipping"
+    await asyncDb.run(`SET client_min_messages TO WARNING`);
+
     // try to create pgvector extension
     await asyncDb.run(`CREATE EXTENSION IF NOT EXISTS vector`);
 
@@ -116,8 +128,13 @@ async function ensurePgvector(): Promise<boolean> {
       debug("[embeddings] ivfflat index creation deferred (need more rows)");
     }
 
+    // restore default message level
+    await asyncDb.run(`SET client_min_messages TO NOTICE`);
+
     pgvectorAvailable = true;
-    debug(`[embeddings] pgvector initialized (provider: ${EMBEDDING_PROVIDER}, dim: ${dimension})`);
+    debug(
+      `[embeddings] pgvector initialized (provider: ${EMBEDDING_PROVIDER}, dim: ${dimension})`,
+    );
   } catch (err) {
     debug("[embeddings] pgvector not available:", err);
     pgvectorAvailable = false;
@@ -135,10 +152,10 @@ async function generateLocalEmbedding(text: string): Promise<number[] | null> {
 
     // truncate text for local model (smaller context window)
     const truncated = text.substring(0, 512);
-    
+
     // run inference
     const output = await pipe(truncated, { pooling: "mean", normalize: true });
-    
+
     // extract embedding from tensor
     const embedding = Array.from(output.data as Float32Array);
     return embedding;
@@ -149,11 +166,13 @@ async function generateLocalEmbedding(text: string): Promise<number[] | null> {
 }
 
 // generate embedding for text
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+export async function generateEmbedding(
+  text: string,
+): Promise<number[] | null> {
   if (EMBEDDING_PROVIDER === "none") {
     return null;
   }
-  
+
   return generateLocalEmbedding(text);
 }
 
@@ -165,7 +184,7 @@ function formatEmbedding(embedding: number[]): string {
 // store memory with embedding
 export async function storeMemoryWithEmbedding(
   memoryId: string,
-  content: string
+  content: string,
 ): Promise<boolean> {
   const available = await ensurePgvector();
   if (!available) return false;
@@ -179,7 +198,7 @@ export async function storeMemoryWithEmbedding(
   try {
     await asyncDb.run(
       `UPDATE memories SET embedding = $1::vector WHERE id = $2`,
-      [formatEmbedding(embedding), memoryId]
+      [formatEmbedding(embedding), memoryId],
     );
     debug(`[embeddings] stored embedding for memory ${memoryId}`);
     return true;
@@ -204,7 +223,7 @@ export interface EmbeddingSearchResult {
 export async function searchByEmbedding(
   userId: number,
   queryText: string,
-  limit: number = 5
+  limit: number = 5,
 ): Promise<EmbeddingSearchResult[]> {
   const available = await ensurePgvector();
   if (!available) return [];
@@ -237,7 +256,7 @@ export async function searchByEmbedding(
       LIMIT $3`,
       formatEmbedding(queryEmbedding),
       userId,
-      limit
+      limit,
     );
 
     return rows.map((row) => ({
@@ -259,7 +278,7 @@ export async function searchByEmbedding(
 // backfill embeddings for existing memories without them
 export async function backfillEmbeddings(
   userId?: number,
-  batchSize: number = 50
+  batchSize: number = 50,
 ): Promise<number> {
   const available = await ensurePgvector();
   if (!available) return 0;
@@ -274,7 +293,7 @@ export async function backfillEmbeddings(
     `SELECT id, content FROM memories 
      WHERE ${whereClause} embedding IS NULL 
      LIMIT ${userId !== undefined ? "$2" : "$1"}`,
-    ...params
+    ...params,
   );
 
   let count = 0;
@@ -305,7 +324,7 @@ export function getEmbeddingProviderInfo(): {
       dimension: LOCAL_EMBEDDING_DIMENSION,
     };
   }
-  
+
   return {
     provider: "none",
     model: "none",
@@ -334,7 +353,7 @@ export async function getEmbeddingStats(userId: number): Promise<{
       COUNT(*) as total,
       COUNT(embedding) as with_embedding
     FROM memories WHERE user_id = $1`,
-    userId
+    userId,
   );
 
   const total = row?.total || 0;

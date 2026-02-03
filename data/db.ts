@@ -482,6 +482,9 @@ function initTables(): void {
 async function initTablesAsync(): Promise<void> {
   if (!pgAdapter) return;
 
+  // suppress postgres NOTICE messages for "already exists, skipping"
+  await pgAdapter.execAsync(`SET client_min_messages TO WARNING`);
+
   await pgAdapter.execAsync(`
     CREATE TABLE IF NOT EXISTS pairing (
       id INTEGER PRIMARY KEY,
@@ -638,6 +641,9 @@ async function initTablesAsync(): Promise<void> {
       created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
     )
   `);
+
+  // restore default message level
+  await pgAdapter.execAsync(`SET client_min_messages TO NOTICE`);
 
   debug("[db] postgres tables initialized");
 }

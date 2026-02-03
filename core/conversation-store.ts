@@ -13,7 +13,11 @@ export interface StoredConversation {
 
 export interface ConversationStore {
   load(userId: number): Promise<StoredConversation | null>;
-  save(userId: number, messages: ChatCompletionMessageParam[], summary?: string): Promise<void>;
+  save(
+    userId: number,
+    messages: ChatCompletionMessageParam[],
+    summary?: string,
+  ): Promise<void>;
   clear(userId: number): Promise<void>;
 }
 
@@ -25,6 +29,8 @@ async function ensureTables(): Promise<void> {
 
   const asyncDb = getAsyncDatabase();
   if (asyncDb) {
+    // suppress postgres NOTICE messages for "already exists, skipping"
+    await asyncDb.run(`SET client_min_messages TO WARNING`);
     await asyncDb.run(`
       CREATE TABLE IF NOT EXISTS conversations (
         user_id BIGINT PRIMARY KEY,
@@ -33,6 +39,8 @@ async function ensureTables(): Promise<void> {
         updated_at BIGINT NOT NULL
       )
     `);
+    // restore default message level
+    await asyncDb.run(`SET client_min_messages TO NOTICE`);
   } else {
     const db = getDatabase();
     db.exec(`
@@ -54,29 +62,42 @@ class SqliteConversationStore implements ConversationStore {
   async load(userId: number): Promise<StoredConversation | null> {
     await ensureTables();
     const db = getDatabase();
-    
-    const row = db.query<{
-      messages_json: string;
-      summary: string | null;
-      updated_at: number;
-    }>(`SELECT messages_json, summary, updated_at FROM conversations WHERE user_id = ?`).get(userId);
+
+    const row = db
+      .query<{
+        messages_json: string;
+        summary: string | null;
+        updated_at: number;
+      }>(
+        `SELECT messages_json, summary, updated_at FROM conversations WHERE user_id = ?`,
+      )
+      .get(userId);
 
     if (!row) return null;
 
     try {
-      const messages = JSON.parse(row.messages_json) as ChatCompletionMessageParam[];
+      const messages = JSON.parse(
+        row.messages_json,
+      ) as ChatCompletionMessageParam[];
       return {
         messages,
         summary: row.summary || undefined,
         updatedAt: row.updated_at,
       };
     } catch (err) {
-      debug(`[conversation-store] failed to parse messages for user ${userId}:`, err);
+      debug(
+        `[conversation-store] failed to parse messages for user ${userId}:`,
+        err,
+      );
       return null;
     }
   }
 
-  async save(userId: number, messages: ChatCompletionMessageParam[], summary?: string): Promise<void> {
+  async save(
+    userId: number,
+    messages: ChatCompletionMessageParam[],
+    summary?: string,
+  ): Promise<void> {
     await ensureTables();
     const db = getDatabase();
     const messagesJson = JSON.stringify(messages);
@@ -89,10 +110,12 @@ class SqliteConversationStore implements ConversationStore {
          messages_json = excluded.messages_json,
          summary = excluded.summary,
          updated_at = excluded.updated_at`,
-      [userId, messagesJson, summary || null, now]
+      [userId, messagesJson, summary || null, now],
     );
 
-    debug(`[conversation-store] saved ${messages.length} messages for user ${userId}`);
+    debug(
+      `[conversation-store] saved ${messages.length} messages for user ${userId}`,
+    );
   }
 
   async clear(userId: number): Promise<void> {
@@ -114,28 +137,40 @@ class PostgresConversationStore implements ConversationStore {
       messages_json: unknown;
       summary: string | null;
       updated_at: number;
-    }>(`SELECT messages_json, summary, updated_at FROM conversations WHERE user_id = $1`, userId);
+    }>(
+      `SELECT messages_json, summary, updated_at FROM conversations WHERE user_id = $1`,
+      userId,
+    );
 
     if (!row) return null;
 
     try {
       // postgres returns jsonb as object, not string
-      const messages = (typeof row.messages_json === "string"
-        ? JSON.parse(row.messages_json)
-        : row.messages_json) as ChatCompletionMessageParam[];
-      
+      const messages = (
+        typeof row.messages_json === "string"
+          ? JSON.parse(row.messages_json)
+          : row.messages_json
+      ) as ChatCompletionMessageParam[];
+
       return {
         messages,
         summary: row.summary || undefined,
         updatedAt: row.updated_at,
       };
     } catch (err) {
-      debug(`[conversation-store] failed to parse messages for user ${userId}:`, err);
+      debug(
+        `[conversation-store] failed to parse messages for user ${userId}:`,
+        err,
+      );
       return null;
     }
   }
 
-  async save(userId: number, messages: ChatCompletionMessageParam[], summary?: string): Promise<void> {
+  async save(
+    userId: number,
+    messages: ChatCompletionMessageParam[],
+    summary?: string,
+  ): Promise<void> {
     await ensureTables();
     const asyncDb = getAsyncDatabase();
     if (!asyncDb) return;
@@ -150,10 +185,12 @@ class PostgresConversationStore implements ConversationStore {
          messages_json = EXCLUDED.messages_json,
          summary = EXCLUDED.summary,
          updated_at = EXCLUDED.updated_at`,
-      [userId, messagesJson, summary || null, now]
+      [userId, messagesJson, summary || null, now],
     );
 
-    debug(`[conversation-store] saved ${messages.length} messages for user ${userId}`);
+    debug(
+      `[conversation-store] saved ${messages.length} messages for user ${userId}`,
+    );
   }
 
   async clear(userId: number): Promise<void> {
