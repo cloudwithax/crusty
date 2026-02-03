@@ -221,7 +221,7 @@ function getThinkingMessage(): string {
   return pickRandom(BEGINNING_OF_TASK_PHRASES);
 }
 
-const MAX_TOOL_ITERATIONS = 25;
+const MAX_TOOL_ITERATIONS = 50;
 const MAX_REPEAT_ASSISTANT_MESSAGES = 2;
 const MAX_REPEAT_TOOL_SIGNATURES = 2;
 
