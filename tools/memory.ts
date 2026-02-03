@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
+import {
+  searchSessions,
+  getRecentSessions,
+  getSessionStats,
+  type SessionSearchResult,
+} from "../memory/session-memory.ts";
 
 // schema for saving a memory
 const saveMemorySchema = z.object({
@@ -260,11 +266,14 @@ async function handleMemoryStats(
   _args: Record<string, never>,
   userId: number,
 ): Promise<string> {
-  const stats = await memoryService.getStats(userId);
+  const stats = await memoryService.getComprehensiveStats(userId);
 
   return `[Memory Stats]
-- Total memories: ${stats.total}
-- Average emotional weight: ${stats.avgWeight.toFixed(1)}/10`;
+- Total memories: ${stats.memories.total}
+- Average emotional weight: ${stats.memories.avgWeight.toFixed(1)}/10
+- Search mode: ${stats.searchMode}
+- Hybrid config: vector=${(stats.hybridSearch.vectorWeight * 100).toFixed(0)}% / text=${(stats.hybridSearch.textWeight * 100).toFixed(0)}%
+- Embedding cache: ${stats.embeddingCache.totalEntries} entries (${Math.round(stats.embeddingCache.totalSize / 1024)}KB)`;
 }
 
 // utility to format time ago
@@ -275,6 +284,78 @@ function formatTimeAgo(timestamp: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// schema for searching past sessions
+const searchSessionsSchema = z.object({
+  query: z
+    .string()
+    .describe("search query to find relevant past conversations"),
+  limit: z
+    .number()
+    .optional()
+    .describe("maximum number of sessions to return (default: 5)"),
+});
+
+// schema for listing recent sessions
+const listSessionsSchema = z.object({
+  limit: z
+    .number()
+    .optional()
+    .describe("maximum number of recent sessions to list (default: 10)"),
+});
+
+// handler for searching past sessions
+async function handleSearchSessions(
+  args: { query: string; limit?: number },
+  userId: number,
+): Promise<string> {
+  const limit = args.limit ?? 5;
+  const results = await searchSessions(userId, args.query, limit);
+
+  if (results.length === 0) {
+    return `[Session Search] No past conversations found matching "${args.query}"`;
+  }
+
+  const lines = results.map((r) => {
+    const date = new Date(r.timestamp).toISOString().split("T")[0];
+    const score = r.score.toFixed(2);
+    return `- [${score}] ${r.title} (${date})\n  └─ "${r.snippet}"`;
+  });
+
+  debug(
+    `[memory-tool] found ${results.length} sessions for query "${args.query}"`,
+  );
+
+  return `[Session Search] Found ${results.length} past conversations:\n${lines.join("\n")}`;
+}
+
+// handler for listing recent sessions
+async function handleListSessions(
+  args: { limit?: number },
+  userId: number,
+): Promise<string> {
+  const limit = args.limit ?? 10;
+  const sessions = await getRecentSessions(userId, limit);
+
+  if (sessions.length === 0) {
+    return `[Sessions] No past conversations found.`;
+  }
+
+  const stats = await getSessionStats(userId);
+
+  const lines = sessions.map((s) => {
+    const date = new Date(s.startTime).toISOString().split("T")[0];
+    const duration = Math.round((s.endTime - s.startTime) / (1000 * 60));
+    return `- ${s.title} (${date}, ${s.messageCount} msgs, ~${duration}min)`;
+  });
+
+  debug(`[memory-tool] listed ${sessions.length} recent sessions`);
+
+  return `[Sessions] ${stats.totalSessions} total conversations, ${stats.totalMessages} total messages
+
+Recent sessions:
+${lines.join("\n")}`;
 }
 
 // export tool definitions
@@ -368,9 +449,34 @@ CAUTION: Memory deletion cannot be undone. Always confirm with the user before c
   memory_stats: {
     description: `Get statistics about stored memories.
 
-Returns the total number of memories and average emotional weight.
-Useful for understanding what has been remembered and its importance.`,
+Returns the total number of memories, average emotional weight, search mode info,
+hybrid search configuration, and embedding cache statistics.
+Useful for understanding the memory system's current state.`,
     schema: memoryStatsSchema,
     handler: handleMemoryStats,
+  },
+
+  search_sessions: {
+    description: `Search past conversation sessions for relevant context.
+
+USE THIS WHEN:
+- Looking for a decision or discussion from a previous conversation
+- Need to recall when something was discussed
+- Want to find context from past interactions
+- User asks "when did we talk about..." or "what was that conversation about..."
+
+Sessions are indexed for full-text search and return snippets with relevance scores.
+This is separate from memory storage - sessions are full conversation archives.`,
+    schema: searchSessionsSchema,
+    handler: handleSearchSessions,
+  },
+
+  list_sessions: {
+    description: `List recent conversation sessions.
+
+Returns a summary of recent conversations with titles, dates, and message counts.
+Use this to see what conversations have occurred and get an overview of session history.`,
+    schema: listSessionsSchema,
+    handler: handleListSessions,
   },
 };

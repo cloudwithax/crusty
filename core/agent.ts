@@ -29,6 +29,13 @@ import {
   formatLearningsForContext,
   captureToolFailure,
 } from "../tools/learnings.ts";
+import {
+  shouldTriggerFlush,
+  markFlushPerformed,
+  getMemoryFlushConfig,
+  archiveConversation,
+  isFlushResponse,
+} from "../memory/memory-flush.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -404,6 +411,27 @@ export class Agent {
         throw new AgentInterruptedError();
       }
     };
+
+    // pre-compaction memory flush
+    // triggered when approaching context limit to preserve important information
+    const flushConfig = getMemoryFlushConfig();
+    if (
+      flushConfig.enabled &&
+      shouldTriggerFlush(this.userId, this._messages, flushConfig)
+    ) {
+      debug(`[agent] triggering pre-compaction memory flush`);
+
+      // archive the current conversation before compaction
+      await archiveConversation(this.userId, this._messages);
+      markFlushPerformed(this.userId);
+
+      // notify via status callback if available
+      if (callbacks?.onStatusUpdate) {
+        await callbacks.onStatusUpdate(
+          "archiving conversation to session memory...",
+        );
+      }
+    }
 
     // context management
     const { summarized, messagesToDrop } =

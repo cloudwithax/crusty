@@ -5,7 +5,18 @@ import {
   storeMemoryWithEmbedding,
   searchByEmbedding,
   isEmbeddingsAvailable,
+  generateEmbedding,
 } from "./embeddings";
+import {
+  chunkText,
+  indexChunk,
+  searchBm25,
+  getOrCreateEmbedding,
+  mergeHybridResults,
+  getHybridConfig,
+  getEmbeddingCacheStats,
+  type HybridCandidate,
+} from "./hybrid-search";
 
 export interface Memory {
   id: string;
@@ -27,38 +38,229 @@ export interface MemorySearchResult {
 
 // stop words to filter out common words that don't carry meaning
 const STOP_WORDS = new Set([
-  "i", "me", "my", "myself", "we", "our", "ours", "ourselves",
-  "you", "your", "yours", "yourself", "yourselves",
-  "he", "him", "his", "himself", "she", "her", "hers", "herself",
-  "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
-  "what", "which", "who", "whom", "this", "that", "these", "those",
-  "am", "is", "are", "was", "were", "be", "been", "being",
-  "have", "has", "had", "having", "do", "does", "did", "doing",
-  "a", "an", "the", "and", "but", "if", "or", "because", "as",
-  "until", "while", "of", "at", "by", "for", "with", "about",
-  "against", "between", "into", "through", "during", "before", "after",
-  "above", "below", "to", "from", "up", "down", "in", "out", "on", "off",
-  "over", "under", "again", "further", "then", "once", "here", "there",
-  "when", "where", "why", "how", "all", "each", "few", "more", "most",
-  "other", "some", "such", "no", "nor", "not", "only", "own", "same",
-  "so", "than", "too", "very", "s", "t", "can", "will", "just", "don",
-  "should", "now", "d", "ll", "m", "o", "re", "ve", "y", "ain",
-  "aren", "couldn", "didn", "doesn", "hadn", "hasn", "haven", "isn",
-  "ma", "mightn", "mustn", "needn", "shan", "shouldn", "wasn", "weren",
-  "won", "wouldn", "yeah", "yes", "oh", "um", "uh", "like", "really",
-  "actually", "gonna", "wanna", "gotta", "kinda", "sorta", "maybe",
-  "probably", "definitely", "lol", "haha", "hmm", "okay", "ok", "well",
-  "hey", "hi", "hello", "bye",
+  "i",
+  "me",
+  "my",
+  "myself",
+  "we",
+  "our",
+  "ours",
+  "ourselves",
+  "you",
+  "your",
+  "yours",
+  "yourself",
+  "yourselves",
+  "he",
+  "him",
+  "his",
+  "himself",
+  "she",
+  "her",
+  "hers",
+  "herself",
+  "it",
+  "its",
+  "itself",
+  "they",
+  "them",
+  "their",
+  "theirs",
+  "themselves",
+  "what",
+  "which",
+  "who",
+  "whom",
+  "this",
+  "that",
+  "these",
+  "those",
+  "am",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "having",
+  "do",
+  "does",
+  "did",
+  "doing",
+  "a",
+  "an",
+  "the",
+  "and",
+  "but",
+  "if",
+  "or",
+  "because",
+  "as",
+  "until",
+  "while",
+  "of",
+  "at",
+  "by",
+  "for",
+  "with",
+  "about",
+  "against",
+  "between",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "above",
+  "below",
+  "to",
+  "from",
+  "up",
+  "down",
+  "in",
+  "out",
+  "on",
+  "off",
+  "over",
+  "under",
+  "again",
+  "further",
+  "then",
+  "once",
+  "here",
+  "there",
+  "when",
+  "where",
+  "why",
+  "how",
+  "all",
+  "each",
+  "few",
+  "more",
+  "most",
+  "other",
+  "some",
+  "such",
+  "no",
+  "nor",
+  "not",
+  "only",
+  "own",
+  "same",
+  "so",
+  "than",
+  "too",
+  "very",
+  "s",
+  "t",
+  "can",
+  "will",
+  "just",
+  "don",
+  "should",
+  "now",
+  "d",
+  "ll",
+  "m",
+  "o",
+  "re",
+  "ve",
+  "y",
+  "ain",
+  "aren",
+  "couldn",
+  "didn",
+  "doesn",
+  "hadn",
+  "hasn",
+  "haven",
+  "isn",
+  "ma",
+  "mightn",
+  "mustn",
+  "needn",
+  "shan",
+  "shouldn",
+  "wasn",
+  "weren",
+  "won",
+  "wouldn",
+  "yeah",
+  "yes",
+  "oh",
+  "um",
+  "uh",
+  "like",
+  "really",
+  "actually",
+  "gonna",
+  "wanna",
+  "gotta",
+  "kinda",
+  "sorta",
+  "maybe",
+  "probably",
+  "definitely",
+  "lol",
+  "haha",
+  "hmm",
+  "okay",
+  "ok",
+  "well",
+  "hey",
+  "hi",
+  "hello",
+  "bye",
 ]);
 
 // emotional indicators that boost memory importance
 const EMOTIONAL_MARKERS = [
-  "love", "hate", "fear", "scared", "happy", "sad", "angry", "excited",
-  "worried", "anxious", "proud", "ashamed", "guilty", "jealous", "hurt",
-  "painful", "amazing", "terrible", "wonderful", "awful", "best", "worst",
-  "favorite", "remember", "forgot", "miss", "wish", "hope", "dream",
-  "nightmare", "secret", "confession", "admit", "honestly", "truth",
-  "never", "always", "forever", "first", "last", "only", "important",
+  "love",
+  "hate",
+  "fear",
+  "scared",
+  "happy",
+  "sad",
+  "angry",
+  "excited",
+  "worried",
+  "anxious",
+  "proud",
+  "ashamed",
+  "guilty",
+  "jealous",
+  "hurt",
+  "painful",
+  "amazing",
+  "terrible",
+  "wonderful",
+  "awful",
+  "best",
+  "worst",
+  "favorite",
+  "remember",
+  "forgot",
+  "miss",
+  "wish",
+  "hope",
+  "dream",
+  "nightmare",
+  "secret",
+  "confession",
+  "admit",
+  "honestly",
+  "truth",
+  "never",
+  "always",
+  "forever",
+  "first",
+  "last",
+  "only",
+  "important",
 ];
 
 export class MemoryService {
@@ -95,7 +297,12 @@ export class MemoryService {
 
       const w1 = word1.replace(/[^\w']/g, "");
       const w2 = word2.replace(/[^\w']/g, "");
-      if (w1.length > 2 && w2.length > 2 && !STOP_WORDS.has(w1) && !STOP_WORDS.has(w2)) {
+      if (
+        w1.length > 2 &&
+        w2.length > 2 &&
+        !STOP_WORDS.has(w1) &&
+        !STOP_WORDS.has(w2)
+      ) {
         phrases.push(`${w1}_${w2}`);
       }
     }
@@ -161,7 +368,7 @@ export class MemoryService {
           memory.emotionalWeight,
           memory.timestamp,
           memory.recallCount,
-        ]
+        ],
       );
     } else {
       const db = getDatabase();
@@ -177,11 +384,13 @@ export class MemoryService {
           memory.emotionalWeight,
           memory.timestamp,
           memory.recallCount,
-        ]
+        ],
       );
     }
 
-    debug(`[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`);
+    debug(
+      `[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`,
+    );
 
     // async store embedding if postgres/pgvector available
     // dont await - fire and forget to avoid slowing down the response
@@ -195,42 +404,83 @@ export class MemoryService {
   }
 
   // search for relevant memories based on query text
-  // uses embedding search if available (postgres + pgvector), falls back to keyword
-  async searchMemories(userId: number, queryText: string, limit: number = 5): Promise<MemorySearchResult[]> {
+  // uses hybrid search (bm25 + vector) when available, with intelligent fallbacks
+  async searchMemories(
+    userId: number,
+    queryText: string,
+    limit: number = 5,
+  ): Promise<MemorySearchResult[]> {
     this.ensureTable();
 
-    // try embedding search first if available
+    const config = getHybridConfig();
+
+    // try hybrid search first (combines bm25 + vector for best results)
     const embeddingsAvailable = await isEmbeddingsAvailable();
+
     if (embeddingsAvailable) {
-      const embeddingResults = await searchByEmbedding(userId, queryText, limit);
-      
-      if (embeddingResults.length > 0) {
-        debug(`[memory] using embedding search (${embeddingResults.length} results)`);
-        
-        return embeddingResults
-          .filter((r) => r.similarity > 0.3) // filter low similarity
-          .map((r) => {
-            const hoursSince = (Date.now() - r.timestamp) / (1000 * 60 * 60);
-            return {
-              memory: {
-                id: r.id,
-                userId: r.userId,
-                content: r.content,
-                rawContent: r.rawContent,
-                keywords: [], // not used for embedding results
-                emotionalWeight: r.emotionalWeight,
-                timestamp: r.timestamp,
-                recallCount: r.recallCount,
-              },
-              relevanceScore: r.similarity * 10, // scale to match keyword scoring
-              isRecent: hoursSince < 1,
-            };
+      // vector search via pgvector
+      const vectorResults = await searchByEmbedding(
+        userId,
+        queryText,
+        limit * config.candidateMultiplier,
+      );
+
+      // if we have vector results, try to merge with bm25
+      if (vectorResults.length > 0) {
+        // attempt bm25 search for exact token matching
+        const bm25Results = await searchBm25(
+          queryText,
+          limit * config.candidateMultiplier,
+        );
+
+        // merge results using hybrid scoring
+        const hybridCandidates = mergeHybridResults(
+          vectorResults.map((r) => ({ id: r.id, vectorScore: r.similarity })),
+          bm25Results,
+          config,
+        );
+
+        debug(
+          `[memory] using hybrid search (vector: ${vectorResults.length}, bm25: ${bm25Results.length})`,
+        );
+
+        // map candidates back to full memory objects
+        const memoryMap = new Map(vectorResults.map((r) => [r.id, r]));
+        const results: MemorySearchResult[] = [];
+
+        for (const candidate of hybridCandidates.slice(0, limit)) {
+          const embeddingResult = memoryMap.get(candidate.id);
+          if (!embeddingResult) continue;
+
+          // skip low combined scores
+          if (candidate.combinedScore < config.minScore) continue;
+
+          const hoursSince =
+            (Date.now() - embeddingResult.timestamp) / (1000 * 60 * 60);
+          results.push({
+            memory: {
+              id: embeddingResult.id,
+              userId: embeddingResult.userId,
+              content: embeddingResult.content,
+              rawContent: embeddingResult.rawContent,
+              keywords: [],
+              emotionalWeight: embeddingResult.emotionalWeight,
+              timestamp: embeddingResult.timestamp,
+              recallCount: embeddingResult.recallCount,
+            },
+            relevanceScore: candidate.combinedScore * 10, // scale to match legacy scoring
+            isRecent: hoursSince < 1,
           });
+        }
+
+        if (results.length > 0) {
+          return results;
+        }
       }
     }
 
-    // fallback to keyword search
-    debug(`[memory] using keyword search`);
+    // fallback to pure keyword search (sqlite mode or no results from hybrid)
+    debug(`[memory] using keyword search fallback`);
 
     const queryKeywords = this.extractKeywords(queryText);
     if (queryKeywords.length === 0) return [];
@@ -240,12 +490,14 @@ export class MemoryService {
     if (asyncDb) {
       rows = await asyncDb.all(
         `SELECT * FROM memories WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 100`,
-        userId
+        userId,
       );
     } else {
       const db = getDatabase();
       rows = db
-        .query(`SELECT * FROM memories WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100`)
+        .query(
+          `SELECT * FROM memories WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100`,
+        )
         .all(userId) as any[];
     }
 
@@ -309,13 +561,13 @@ export class MemoryService {
     if (asyncDb) {
       await asyncDb.run(
         `UPDATE memories SET last_recalled = $1, recall_count = recall_count + 1 WHERE id = $2`,
-        [Date.now(), memoryId]
+        [Date.now(), memoryId],
       );
     } else {
       const db = getDatabase();
       db.run(
         `UPDATE memories SET last_recalled = ?, recall_count = recall_count + 1 WHERE id = ?`,
-        [Date.now(), memoryId]
+        [Date.now(), memoryId],
       );
     }
   }
@@ -333,7 +585,8 @@ export class MemoryService {
          AND (last_recalled IS NULL OR last_recalled < $2)
          ORDER BY RANDOM()
          LIMIT 1`,
-        userId, Date.now() - 1000 * 60 * 30
+        userId,
+        Date.now() - 1000 * 60 * 30,
       );
     } else {
       const db = getDatabase();
@@ -343,7 +596,7 @@ export class MemoryService {
            WHERE user_id = ?
            AND (last_recalled IS NULL OR last_recalled < ?)
            ORDER BY RANDOM()
-           LIMIT 1`
+           LIMIT 1`,
         )
         .get(userId, Date.now() - 1000 * 60 * 30) as any;
     }
@@ -364,7 +617,10 @@ export class MemoryService {
   }
 
   // build memory context for agent prompt
-  async buildMemoryContext(userId: number, currentMessage: string): Promise<string> {
+  async buildMemoryContext(
+    userId: number,
+    currentMessage: string,
+  ): Promise<string> {
     const results = await this.searchMemories(userId, currentMessage, 3);
 
     if (results.length === 0) {
@@ -389,7 +645,9 @@ Use this to subtly influence your response, but don't quote it directly.
     for (const r of relevantMemories) {
       await this.markRecalled(r.memory.id);
       const timeAgo = this.formatTimeAgo(r.memory.timestamp);
-      memoryLines.push(`- "${r.memory.rawContent || r.memory.content}" (${timeAgo})`);
+      memoryLines.push(
+        `- "${r.memory.rawContent || r.memory.content}" (${timeAgo})`,
+      );
     }
 
     return `\n<memory type="relevant-recall">
@@ -409,7 +667,9 @@ Use this context to inform your response naturally, without explicitly mentionin
   }
 
   // get memory stats for a user
-  async getStats(userId: number): Promise<{ total: number; avgWeight: number }> {
+  async getStats(
+    userId: number,
+  ): Promise<{ total: number; avgWeight: number }> {
     this.ensureTable();
 
     const asyncDb = getAsyncDatabase();
@@ -417,7 +677,7 @@ Use this context to inform your response naturally, without explicitly mentionin
       const row = await asyncDb.get<{ total: number; avg_weight: number }>(
         `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
          FROM memories WHERE user_id = $1`,
-        userId
+        userId,
       );
       return {
         total: row?.total || 0,
@@ -429,7 +689,7 @@ Use this context to inform your response naturally, without explicitly mentionin
     const row = db
       .query<{ total: number; avg_weight: number }>(
         `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
-         FROM memories WHERE user_id = ?`
+         FROM memories WHERE user_id = ?`,
       )
       .get(userId);
 
@@ -465,6 +725,50 @@ Use this context to inform your response naturally, without explicitly mentionin
       db.run(`DELETE FROM memories`);
     }
     debug("[memory] cleared all memories");
+  }
+
+  // get comprehensive memory system stats
+  async getComprehensiveStats(userId: number): Promise<{
+    memories: { total: number; avgWeight: number };
+    hybridSearch: {
+      vectorWeight: number;
+      textWeight: number;
+      minScore: number;
+    };
+    embeddingCache: { totalEntries: number; totalSize: number };
+    searchMode: "hybrid" | "vector-only" | "keyword-only";
+  }> {
+    const basicStats = await this.getStats(userId);
+    const hybridConfig = getHybridConfig();
+    const embeddingsAvailable = await isEmbeddingsAvailable();
+    const cacheStats = await getEmbeddingCacheStats();
+
+    let searchMode: "hybrid" | "vector-only" | "keyword-only" = "keyword-only";
+    if (embeddingsAvailable) {
+      // check if fts5 is available for hybrid
+      const db = getDatabase();
+      if (db && !isUsingPostgres()) {
+        try {
+          db.query(`SELECT 1 FROM memory_chunks_fts LIMIT 1`).get();
+          searchMode = "hybrid";
+        } catch {
+          searchMode = "vector-only";
+        }
+      } else {
+        searchMode = "vector-only";
+      }
+    }
+
+    return {
+      memories: basicStats,
+      hybridSearch: {
+        vectorWeight: hybridConfig.vectorWeight,
+        textWeight: hybridConfig.textWeight,
+        minScore: hybridConfig.minScore,
+      },
+      embeddingCache: cacheStats,
+      searchMode,
+    };
   }
 }
 
