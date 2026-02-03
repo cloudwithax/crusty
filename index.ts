@@ -15,9 +15,9 @@ import { closeDatabase } from "./data/db.ts";
 import { preloadEmbeddingModel } from "./memory/embeddings.ts";
 import { debug } from "./utils/debug.ts";
 
-// Handle graceful shutdown
+// handle graceful shutdown
 process.on("SIGINT", async () => {
-  cleanupHeartbeat();
+  await cleanupHeartbeat();
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();
@@ -26,7 +26,7 @@ process.on("SIGINT", async () => {
 });
 
 process.on("SIGTERM", async () => {
-  cleanupHeartbeat();
+  await cleanupHeartbeat();
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
 
 main().catch(async (error) => {
   console.error("Fatal error:", error);
-  cleanupHeartbeat();
+  await cleanupHeartbeat();
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();

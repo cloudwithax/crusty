@@ -467,6 +467,15 @@ function initTables(): void {
 
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`);
 
+  // heartbeat items table for user-customizable actionable items
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS heartbeat_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
   debug("[db] tables initialized");
 }
 
@@ -620,6 +629,15 @@ async function initTablesAsync(): Promise<void> {
   await pgAdapter.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`,
   );
+
+  // heartbeat items table for user-customizable actionable items
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS heartbeat_items (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
 
   debug("[db] postgres tables initialized");
 }

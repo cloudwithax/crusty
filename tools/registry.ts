@@ -8,6 +8,7 @@ import { todoTools } from "./todo.ts";
 import { reminderTools } from "./reminder.ts";
 import { hookTools } from "./hooks.ts";
 import { memoryTools } from "./memory.ts";
+import { heartbeatTools } from "./heartbeat.ts";
 
 // minimal tool registry - nanocode style
 // filesystem + browser + bash (in docker)
@@ -28,52 +29,115 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...reminderTools,
   ...hookTools,
   ...memoryTools,
+  ...heartbeatTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
-// convert zod schema to openai parameters
+// convert zod schema to openai parameters with full type support
 function zodToOpenAI(schema: z.ZodType): Record<string, unknown> {
-  const shape = (schema as { shape?: Record<string, z.ZodType> }).shape;
-  if (!shape) return { type: "object", properties: {} };
+  return zodTypeToOpenAI(schema);
+}
 
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (zodType as any)._def;
+  if (!def) return { type: "string" };
 
-  for (const [key, value] of Object.entries(shape)) {
-    const zodType = value as z.ZodType & {
-      _def?: { typeName?: string; values?: string[] };
-    };
-    const description = zodType.description;
-    const typeName = zodType._def?.typeName;
+  const typeName = def.typeName as string;
+  const description = zodType.description;
 
-    if (typeName === "ZodEnum") {
-      properties[key] = {
-        type: "string",
-        enum: zodType._def?.values,
-        description,
-      };
-    } else if (typeName === "ZodNumber") {
-      properties[key] = { type: "number", description };
-    } else if (typeName === "ZodBoolean") {
-      properties[key] = { type: "boolean", description };
-    } else if (typeName === "ZodArray") {
-      properties[key] = { type: "array", description };
-    } else if (typeName === "ZodObject") {
-      properties[key] = { type: "object", description };
-    } else {
-      properties[key] = { type: "string", description };
+  // unwrap wrapper types
+  if (typeName === "ZodOptional" || typeName === "ZodNullable") {
+    const inner = zodTypeToOpenAI(def.innerType);
+    return { ...inner, description: description || inner.description };
+  }
+
+  if (typeName === "ZodDefault") {
+    const inner = zodTypeToOpenAI(def.innerType);
+    return { ...inner, description: description || inner.description };
+  }
+
+  // primitive types
+  if (typeName === "ZodString") {
+    return { type: "string", description };
+  }
+
+  if (typeName === "ZodNumber") {
+    return { type: "number", description };
+  }
+
+  if (typeName === "ZodBoolean") {
+    return { type: "boolean", description };
+  }
+
+  // enum
+  if (typeName === "ZodEnum") {
+    return { type: "string", enum: def.values, description };
+  }
+
+  // literal
+  if (typeName === "ZodLiteral") {
+    const value = def.value;
+    return { type: typeof value, enum: [value], description };
+  }
+
+  // array with item type
+  if (typeName === "ZodArray") {
+    const itemType = def.type ? zodTypeToOpenAI(def.type) : { type: "string" };
+    return { type: "array", items: itemType, description };
+  }
+
+  // object with properties
+  if (typeName === "ZodObject") {
+    const shape = def.shape?.() || def.shape || {};
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+
+    for (const [key, value] of Object.entries(shape)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fieldDef = (value as any)._def;
+      const fieldTypeName = fieldDef?.typeName as string;
+
+      properties[key] = zodTypeToOpenAI(value as z.ZodType);
+
+      // track required fields (not optional/nullable/default)
+      if (
+        fieldTypeName !== "ZodOptional" &&
+        fieldTypeName !== "ZodNullable" &&
+        fieldTypeName !== "ZodDefault"
+      ) {
+        required.push(key);
+      }
     }
 
-    if (typeName !== "ZodOptional") {
-      required.push(key);
+    return {
+      type: "object",
+      properties,
+      required: required.length > 0 ? required : undefined,
+      description,
+    };
+  }
+
+  // union (first type as fallback)
+  if (typeName === "ZodUnion") {
+    const options = def.options;
+    if (options && options.length > 0) {
+      return zodTypeToOpenAI(options[0]);
     }
   }
 
-  return {
-    type: "object",
-    properties,
-    required: required.length > 0 ? required : undefined,
-  };
+  // record/map
+  if (typeName === "ZodRecord") {
+    return { type: "object", description };
+  }
+
+  // any/unknown
+  if (typeName === "ZodAny" || typeName === "ZodUnknown") {
+    return { type: "string", description };
+  }
+
+  // fallback
+  return { type: "string", description };
 }
 
 export function generateOpenAITools(): ChatCompletionTool[] {
@@ -85,6 +149,21 @@ export function generateOpenAITools(): ChatCompletionTool[] {
       parameters: zodToOpenAI(tool.schema),
     },
   }));
+}
+
+// cache tool schema at module init - regenerating per request is wasteful
+let _cachedTools: ChatCompletionTool[] | null = null;
+
+export function getOpenAITools(): ChatCompletionTool[] {
+  if (!_cachedTools) {
+    _cachedTools = generateOpenAITools();
+  }
+  return _cachedTools;
+}
+
+// force regeneration if tools change at runtime (rare)
+export function invalidateToolCache(): void {
+  _cachedTools = null;
 }
 
 // sanitize and coerce argument values to fix common model quirks

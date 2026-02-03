@@ -1,4 +1,8 @@
-import { Agent, type AgentCallbacks } from "../core/agent.ts";
+import {
+  Agent,
+  AgentInterruptedError,
+  type AgentCallbacks,
+} from "../core/agent.ts";
 import { cleanupTools } from "../tools/registry.ts";
 import {
   isValidPairingCodeAsync,
@@ -50,6 +54,7 @@ interface TelegramMessage {
   message_thread_id?: number;
   text?: string;
   entities?: TelegramMessageEntity[];
+  reply_to_message?: TelegramMessage;
 }
 
 interface TelegramCallbackQuery {
@@ -85,8 +90,11 @@ interface TelegramMessageEntity {
 // Session management - one agent per user (only for paired users)
 const userSessions = new Map<number, Agent>();
 
-// track which users are currently being processed to prevent race conditions
-const processingUsers = new Set<number>();
+// track which users are currently being processed with their abort controllers
+const processingUsers = new Map<number, AbortController>();
+
+// queue for interrupt messages (new message while processing)
+const interruptQueue = new Map<number, TelegramMessage>();
 
 // track users awaiting soul content input
 const awaitingSoulInput = new Set<number>();
@@ -806,6 +814,18 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   // Regular message - process with agent
   const agent = getOrCreateAgent(userId);
 
+  // check if this is a reply to an assistant message
+  let replyContext: string | undefined;
+  if (message.reply_to_message?.text && message.reply_to_message.from?.is_bot) {
+    // user is replying to a bot message, use it as context
+    replyContext = message.reply_to_message.text.slice(0, 500);
+    debug(`[bot] reply context: ${replyContext.slice(0, 100)}...`);
+  }
+
+  // create abort controller for this request
+  const abortController = new AbortController();
+  processingUsers.set(userId, abortController);
+
   // set up continuous typing indicator polling
   // telegram typing indicator lasts ~5 seconds, so we refresh every 4 seconds
   const typingInterval = setInterval(async () => {
@@ -839,14 +859,39 @@ async function processMessage(message: TelegramMessage): Promise<void> {
         message_thread_id: messageThreadId,
       });
     },
+    abortSignal: abortController.signal,
   };
 
   try {
-    const response = await agent.chat(text, callbacks);
+    const response = await agent.chat(text, callbacks, replyContext);
     clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    // check if there was an interrupt queued while we finished
+    const queuedMessage = interruptQueue.get(userId);
+    if (queuedMessage) {
+      interruptQueue.delete(userId);
+      // process the queued message now
+      await processMessage(queuedMessage);
+      return;
+    }
+
     await sendMessage(chatId, response, { message_thread_id: messageThreadId });
   } catch (error) {
     clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    // if interrupted, the new message handler will take over
+    if (error instanceof AgentInterruptedError) {
+      debug(`[bot] agent interrupted for user ${userId}, handing off to new message`);
+      const queuedMessage = interruptQueue.get(userId);
+      if (queuedMessage) {
+        interruptQueue.delete(userId);
+        await processMessage(queuedMessage);
+      }
+      return;
+    }
+
     console.error("Error processing message:", error);
     await sendMessage(
       chatId,
@@ -942,22 +987,23 @@ export async function startBot(): Promise<void> {
             `[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`,
           );
 
-          // skip if user is already being processed
-          if (processingUsers.has(userId)) {
-            debug(`[User ${userId} is busy, queuing will happen on next poll]`);
+          // check if user is already being processed
+          const existingController = processingUsers.get(userId);
+          if (existingController) {
+            // interrupt the current processing and queue new message
+            debug(`[User ${userId} is busy, interrupting and queuing new message]`);
+            interruptQueue.set(userId, update.message);
+            existingController.abort();
             continue;
           }
 
           // process message without blocking the polling loop
-          processingUsers.add(userId);
-          processMessage(update.message)
-            .catch((error) =>
-              console.error(
-                `[Error processing message from ${userId}]:`,
-                error,
-              ),
-            )
-            .finally(() => processingUsers.delete(userId));
+          processMessage(update.message).catch((error) =>
+            console.error(
+              `[Error processing message from ${userId}]:`,
+              error,
+            ),
+          );
         }
       }
     } catch (error) {

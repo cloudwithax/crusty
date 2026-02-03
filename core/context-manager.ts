@@ -4,11 +4,11 @@
 import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
-  MAX_CONTEXT_TOKENS,
+  getMaxContextTokens,
   RESERVED_COMPLETION_TOKENS,
   MAX_TURNS,
-  SUMMARIZE_TRIGGER_TOKENS,
-  SUMMARIZE_TARGET_TOKENS,
+  getSummarizeTriggerTokens,
+  getSummarizeTargetTokens,
   MIN_RECENT_MESSAGES,
   estimateMessageTokens,
   estimateTotalTokens,
@@ -52,7 +52,7 @@ export class ContextManager {
   ): ChatCompletionMessageParam[] {
     if (allMessages.length === 0) return [];
 
-    const budget = MAX_CONTEXT_TOKENS - RESERVED_COMPLETION_TOKENS;
+    const budget = getMaxContextTokens() - RESERVED_COMPLETION_TOKENS;
 
     // identify system message (always first)
     const systemMessage = allMessages[0]?.role === "system" ? allMessages[0] : null;
@@ -127,12 +127,13 @@ export class ContextManager {
 
     const totalTokens = estimateTotalTokens(messages);
 
-    if (totalTokens < SUMMARIZE_TRIGGER_TOKENS) {
+    const triggerTokens = getSummarizeTriggerTokens();
+    if (totalTokens < triggerTokens) {
       return { summarized: false, messagesToDrop: 0 };
     }
 
     debug(
-      `[context-manager] triggering summarization (${totalTokens} tokens > ${SUMMARIZE_TRIGGER_TOKENS} trigger)`
+      `[context-manager] triggering summarization (${totalTokens} tokens > ${triggerTokens} trigger)`
     );
 
     // figure out how many messages to summarize

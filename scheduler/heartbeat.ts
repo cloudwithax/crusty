@@ -1,25 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from "fs";
+import { appendFileSync } from "fs";
 import { join } from "path";
-import { OpenAI } from "openai";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { initSelfReview, selfReviewCycle, cleanupSelfReview } from "./self-review.ts";
 import { debug } from "../utils/debug.ts";
-
-// Environment configuration
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
-
-if (!OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY environment variable is required for heartbeat");
-}
-
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 10 * 1000,
-});
+import { getFullHeartbeatContent, getActionableItems } from "../tools/heartbeat.ts";
+import { Agent } from "../core/agent.ts";
 
 // Heartbeat configuration types
 export interface HeartbeatActiveHours {
@@ -180,60 +164,10 @@ function loadConfig(): HeartbeatConfig {
   return { every, maxAckChars, activeHours };
 }
 
-// Path to HEARTBEAT.md file
-const HEARTBEAT_MD_PATH = join(import.meta.dir, "cogs", "HEARTBEAT.md");
+// Path to audit log
 const AUDIT_LOG_PATH = join(import.meta.dir, "heartbeat.log");
 
-// Template content that indicates no actionable items
-const TEMPLATE_INDICATORS = [
-  "<!-- add your actionable items here -->",
-  "# Heartbeat",
-  "this file controls automated heartbeat behavior",
-];
-
-// Check if content is template-only (no actionable items)
-function isTemplateOnly(content: string): boolean {
-  const normalized = content.toLowerCase().trim();
-
-  // If it's just the header and placeholder, it's template-only
-  const lines = normalized.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-
-  // Check if all non-empty lines are template indicators
-  for (const line of lines) {
-    const isTemplateLine = TEMPLATE_INDICATORS.some((indicator) =>
-      line.includes(indicator.toLowerCase())
-    );
-    if (!isTemplateLine) {
-      // This line has actual content
-      return false;
-    }
-  }
-
-  return true;
-}
-
-// Read and validate HEARTBEAT.md
-// Returns null if file doesn't exist, is empty, or is template-only
-function readHeartbeatFile(): string | null {
-  if (!existsSync(HEARTBEAT_MD_PATH)) {
-    return null;
-  }
-
-  const content = readFileSync(HEARTBEAT_MD_PATH, "utf-8");
-  const trimmed = content.trim();
-
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  if (isTemplateOnly(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
-}
-
-// Write audit log entry
+// write audit log entry
 function writeAuditLog(entry: string): void {
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${entry}\n`;
@@ -245,35 +179,28 @@ function writeAuditLog(entry: string): void {
   }
 }
 
-// recent context buffer for self-review (stores last few interactions)
-let recentContextBuffer: string[] = [];
-const MAX_CONTEXT_ENTRIES = 10;
+// re-export context buffer functions for backward compatibility
+export { addRecentContext, clearRecentContext, getRecentContext } from "./context-buffer.ts";
+import { getRecentContext, clearRecentContext } from "./context-buffer.ts";
 
-// add context to the buffer (call this from agent after interactions)
-export function addRecentContext(context: string): void {
-  recentContextBuffer.push(context);
-  if (recentContextBuffer.length > MAX_CONTEXT_ENTRIES) {
-    recentContextBuffer.shift();
+// dedicated agent instance for heartbeat tasks (user id 0 = system)
+let heartbeatAgent: Agent | null = null;
+
+async function getHeartbeatAgent(): Promise<Agent> {
+  if (!heartbeatAgent) {
+    heartbeatAgent = new Agent(0);
+    await heartbeatAgent.initialize();
   }
+  return heartbeatAgent;
 }
 
-// get the recent context as a single string
-function getRecentContext(): string {
-  return recentContextBuffer.join("\n\n---\n\n");
-}
-
-// clear recent context buffer
-export function clearRecentContext(): void {
-  recentContextBuffer = [];
-}
-
-// Heartbeat tick function
-// Called on each interval to process heartbeat
+// heartbeat tick function
+// runs actionable items through the agent silently in background
 export async function heartbeatTick(
-  sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
+  _sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
   config: HeartbeatConfig = loadConfig()
 ): Promise<void> {
-  // Check if within active hours
+  // check if within active hours
   if (!isWithinActiveHours(config.activeHours)) {
     debug("[heartbeat] outside active hours, skipping");
     return;
@@ -290,65 +217,44 @@ export async function heartbeatTick(
     }
   }
 
-  // Read and validate HEARTBEAT.md
-  const heartbeatContent = readHeartbeatFile();
+  // get actionable items from database
+  const items = getActionableItems();
 
-  if (!heartbeatContent) {
-    debug("[heartbeat] skipped (empty or template-only)");
+  if (items.length === 0) {
+    debug("[heartbeat] no actionable items, skipping");
     return;
   }
 
-  debug("[heartbeat] processing...");
+  debug(`[heartbeat] processing ${items.length} actionable items...`);
 
   try {
-    // Build system prompt for heartbeat
-    const systemPrompt = `You are an automated heartbeat processor. Your task is to review the following instructions and determine if any action is needed.
+    const agent = await getHeartbeatAgent();
 
-Instructions from HEARTBEAT.md:
-${heartbeatContent}
+    // build task prompt from actionable items
+    const taskPrompt = `You are running as a background heartbeat process. Execute the following actionable items silently. Do not message the user - just complete the tasks using your available tools. When finished, respond with HEARTBEAT_COMPLETE.
 
-If no action is needed, respond with exactly: HEARTBEAT_OK
-If action is needed, provide a brief summary of what should be done.
+## Actionable Items
 
-Be concise. Only respond with HEARTBEAT_OK if there are truly no pending tasks or actions required.`;
+${items.map((item, i) => `${i + 1}. ${item}`).join("\n")}
 
-    // Call the model
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: "Process heartbeat tick" },
-      ],
-      temperature: 0.3,
-    });
+## Instructions
 
-    const output = response.choices[0]?.message?.content?.trim() || "";
+- Execute each item using the appropriate tools
+- Work silently - no user notifications
+- If a task cannot be completed, log the issue and continue
+- When all tasks are done or attempted, respond with: HEARTBEAT_COMPLETE`;
 
-    debug("[heartbeat] model output:", output.substring(0, 100));
+    // run agent silently (no callbacks = no user notifications)
+    const result = await agent.chat(taskPrompt);
 
-    // Check if output is HEARTBEAT_OK
-    if (output === "HEARTBEAT_OK") {
-      // Suppress outbound delivery and write audit log
-      writeAuditLog("HEARTBEAT_OK - no action needed");
-      debug("[heartbeat] HEARTBEAT_OK - suppressed delivery");
-      return;
-    }
+    debug(`[heartbeat] agent result: ${result.slice(0, 100)}...`);
+    writeAuditLog(`EXECUTED: ${items.length} items - ${result.slice(0, 100)}`);
 
-    // Check if output exceeds maxAckChars for HEARTBEAT_OK
-    // This shouldn't happen since we checked exact match, but handle edge cases
-    if (output.length <= config.maxAckChars && output.toUpperCase() === "HEARTBEAT_OK") {
-      writeAuditLog("HEARTBEAT_OK (case variant) - no action needed");
-      debug("[heartbeat] HEARTBEAT_OK variant - suppressed delivery");
-      return;
-    }
-
-    // Deliver via normal outbound channel
-    await sendMessage(output, true);
-    writeAuditLog(`DELIVERED: ${output.substring(0, 100)}${output.length > 100 ? "..." : ""}`);
-    debug("[heartbeat] delivered message");
+    // clear agent memory after heartbeat to avoid context buildup
+    agent.clearMemory();
 
   } catch (error) {
-    console.error("[heartbeat] error during tick:", error);
+    console.error("[heartbeat] agent execution failed:", error);
     writeAuditLog(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
@@ -405,11 +311,17 @@ export function stopHeartbeat(): void {
   debug("[heartbeat] stopped");
 }
 
-// Cleanup function for graceful shutdown
-export function cleanupHeartbeat(): void {
+// cleanup function for graceful shutdown
+export async function cleanupHeartbeat(): Promise<void> {
   stopHeartbeat();
   cleanupSelfReview();
   clearRecentContext();
+
+  // cleanup heartbeat agent if it exists
+  if (heartbeatAgent) {
+    await heartbeatAgent.cleanup();
+    heartbeatAgent = null;
+  }
 }
 
 // Check if heartbeat is currently running

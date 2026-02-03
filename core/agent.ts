@@ -5,17 +5,22 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import {
-  generateOpenAITools,
+  getOpenAITools,
+  getAvailableTools,
   executeTool,
   cleanupTools,
 } from "../tools/registry.ts";
 import { loadBootstrapSystem } from "./bootstrap.ts";
-import { addRecentContext } from "../scheduler/heartbeat.ts";
+import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
 import { stripReasoningTags } from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
+import { withRetry, isRetryableError } from "../utils/retry.ts";
+import { compressToolOutput } from "../utils/compress.ts";
+import { shouldStoreMemory, shouldSuppressRandomRecall } from "../memory/gating.ts";
+import { createPlan, classifyIntent, type TaskPlan } from "./planner.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -37,7 +42,7 @@ const openai = new OpenAI({
   timeout: 60 * 1000,
 });
 
-// simple rate limiter
+// simple rate limiter with iterative wait loop (avoids stack growth)
 class RateLimiter {
   private timestamps: number[] = [];
   private maxRequests: number;
@@ -49,18 +54,20 @@ class RateLimiter {
   }
 
   async acquire(): Promise<void> {
-    const now = Date.now();
-    this.timestamps = this.timestamps.filter((ts) => now - ts < this.windowMs);
+    while (true) {
+      const now = Date.now();
+      this.timestamps = this.timestamps.filter((ts) => now - ts < this.windowMs);
 
-    if (this.timestamps.length >= this.maxRequests) {
+      if (this.timestamps.length < this.maxRequests) {
+        this.timestamps.push(now);
+        return;
+      }
+
       const oldestTimestamp = this.timestamps[0]!;
       const waitTime = this.windowMs - (now - oldestTimestamp) + 10;
       debug(`[rate limit] waiting ${waitTime}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitTime));
-      return this.acquire();
     }
-
-    this.timestamps.push(now);
   }
 }
 
@@ -100,37 +107,24 @@ function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(text));
 }
 
-// generates a whimsical thinking status message via the summarize model
-async function generateThinkingMessage(userMessage?: string): Promise<string> {
-  const fallback = "still working on this...";
-  try {
-    const contextHint = userMessage
-      ? `the user asked: "${userMessage.slice(0, 100)}"`
-      : "a complex request";
+// fixed thinking status phrases (avoids extra API call per request)
+const THINKING_PHRASES = [
+  "pondering...",
+  "mulling this over...",
+  "thinking...",
+  "working on it...",
+  "processing...",
+  "let me think...",
+  "considering options...",
+  "figuring this out...",
+  "one moment...",
+  "hmm interesting...",
+  "looking into it...",
+  "on it...",
+];
 
-    const response = await openai.chat.completions.create({
-      model: SUMMARIZE_MODEL,
-      messages: [
-        {
-          role: "system",
-          content:
-            "you generate short, whimsical status messages (max 8 words) for an ai assistant while it thinks. be creative, playful, and varied. no emojis. lowercase only. no punctuation except ellipsis. examples: 'the gears are turning...', 'pontificating...', 'hmm interesting...'",
-        },
-        {
-          role: "user",
-          content: `generate a single thinking status message. context: ${contextHint}`,
-        },
-      ],
-      max_tokens: 30,
-      temperature: 1.0,
-    });
-
-    const message = response.choices[0]?.message?.content?.trim();
-    return message ? cleanModelResponse(message) : fallback;
-  } catch (err) {
-    debug(`[thinking message gen failed]: ${err}`);
-    return fallback;
-  }
+function getThinkingMessage(): string {
+  return THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)]!;
 }
 
 const MAX_TOOL_ITERATIONS = 25;
@@ -195,6 +189,15 @@ function buildToolSignature(
 export interface AgentCallbacks {
   onStatusUpdate?: (message: string) => Promise<void>;
   onTyping?: () => Promise<void>;
+  abortSignal?: AbortSignal;
+}
+
+// error thrown when agent loop is interrupted by a new user message
+export class AgentInterruptedError extends Error {
+  constructor() {
+    super("agent interrupted by user");
+    this.name = "AgentInterruptedError";
+  }
 }
 
 export class Agent {
@@ -261,9 +264,21 @@ export class Agent {
     );
   }
 
-  // nanocode-style agentic loop: call api until no more tools
-  async chat(userMessage: string, callbacks?: AgentCallbacks): Promise<string> {
+  // enhanced agentic loop with planning, retry, and compression
+  async chat(
+    userMessage: string,
+    callbacks?: AgentCallbacks,
+    replyContext?: string
+  ): Promise<string> {
     await this.initialize();
+
+    // helper to check if we should abort
+    const checkAbort = () => {
+      if (callbacks?.abortSignal?.aborted) {
+        debug(`[agent] interrupted by user`);
+        throw new AgentInterruptedError();
+      }
+    };
 
     // context management
     const { summarized, messagesToDrop } =
@@ -276,17 +291,65 @@ export class Agent {
       debug(`[agent] context pruned`);
     }
 
-    // memory integration
-    const memoryContext = await memoryService.buildMemoryContext(
-      this.userId,
-      userMessage,
-    );
-    await memoryService.storeMemory(this.userId, userMessage);
+    // selective memory integration with gating
+    const suppressRandomRecall = shouldSuppressRandomRecall(userMessage);
+    let memoryContext = "";
+    if (!suppressRandomRecall) {
+      memoryContext = await memoryService.buildMemoryContext(
+        this.userId,
+        userMessage,
+      );
+    }
+    
+    // gated memory storage - only store durable facts
+    const gatingResult = shouldStoreMemory({ 
+      content: userMessage, 
+      role: "user", 
+      hasToolContext: false 
+    });
+    if (gatingResult.shouldStore) {
+      await memoryService.storeMemory(
+        this.userId, 
+        gatingResult.cleanedContent || userMessage
+      );
+    }
 
-    this._messages.push({ role: "user", content: userMessage });
+    // build the user message with optional reply context
+    let messageContent = userMessage;
+    if (replyContext) {
+      messageContent = `[replying to your previous message: "${replyContext}"]\n\n${userMessage}`;
+      debug(`[agent] reply context attached`);
+    }
+
+    this._messages.push({ role: "user", content: messageContent });
     this.scheduleSave();
 
-    const tools = generateOpenAITools();
+    // optional planning for complex tasks
+    const intent = classifyIntent(userMessage);
+    let taskPlan: TaskPlan | null = null;
+    
+    if (intent === "task" || intent === "command") {
+      // build recent context for planning
+      const recentContext = this._messages
+        .slice(-6)
+        .filter(m => m.role !== "system")
+        .map(m => `${m.role}: ${String(m.content).slice(0, 200)}`)
+        .join("\n");
+      
+      taskPlan = await createPlan(userMessage, recentContext, getAvailableTools());
+      
+      // if planner says clarification needed, ask before proceeding
+      if (taskPlan?.needs_clarification && taskPlan.clarifying_question) {
+        this._messages.push({ 
+          role: "assistant", 
+          content: taskPlan.clarifying_question 
+        });
+        this.scheduleSave();
+        return taskPlan.clarifying_question;
+      }
+    }
+
+    const tools = getOpenAITools();
     let lastTextResponse = "";
     let toolIterationCount = 0;
     let lastAssistantText = "";
@@ -294,9 +357,13 @@ export class Agent {
     let lastToolSignature = "";
     let repeatToolCount = 0;
     let loopGuardMessage: string | null = null;
+    const toolResults: string[] = []; // track for verification
 
     // agentic loop: keep calling api until no more tool calls
     while (true) {
+      // check for interrupt at start of each iteration
+      checkAbort();
+
       if (callbacks?.onTyping) await callbacks.onTyping();
 
       // build messages with context window management
@@ -305,12 +372,11 @@ export class Agent {
         memoryContext || undefined,
       );
 
-      // status update for slow api calls
+      // status update for slow api calls (using fixed phrases)
       let statusSent = false;
       const statusTimeout = setTimeout(async () => {
         if (callbacks?.onStatusUpdate) {
-          const thinkingMsg = await generateThinkingMessage(userMessage);
-          await callbacks.onStatusUpdate(thinkingMsg);
+          await callbacks.onStatusUpdate(getThinkingMessage());
           statusSent = true;
         }
       }, 3000);
@@ -355,12 +421,16 @@ export class Agent {
 
       let response;
       try {
-        response = await openai.chat.completions.create({
-          model: OPENAI_MODEL,
-          messages: validMessages,
-          tools: tools.length > 0 ? tools : undefined,
-          tool_choice: tools.length > 0 ? "auto" : undefined,
-        });
+        // api call with automatic retry for transient errors
+        response = await withRetry(
+          () => openai.chat.completions.create({
+            model: OPENAI_MODEL,
+            messages: validMessages,
+            tools: tools.length > 0 ? tools : undefined,
+            tool_choice: tools.length > 0 ? "auto" : undefined,
+          }),
+          { maxRetries: 2, baseDelayMs: 1000 }
+        );
       } catch (apiError) {
         clearTimeout(statusTimeout);
 
@@ -393,6 +463,9 @@ export class Agent {
       clearTimeout(statusTimeout);
       if (statusSent && callbacks?.onTyping) await callbacks.onTyping();
 
+      // check for interrupt after api call completes
+      checkAbort();
+
       const choice = response.choices[0];
       if (!choice) {
         debug("[no choice in response]");
@@ -409,10 +482,11 @@ export class Agent {
         debug(`[text]: ${lastTextResponse.slice(0, 100)}...`);
       }
 
-      // add assistant message to history
+      // add assistant message to history (strip reasoning tags to reduce context bloat)
+      const cleanedContent = stripReasoningTags(content);
       this._messages.push({
         role: "assistant",
-        content: content,
+        content: cleanedContent,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
 
@@ -471,6 +545,9 @@ export class Agent {
 
       // execute tools and collect results
       for (const toolCall of toolCalls) {
+        // check for interrupt before each tool execution
+        checkAbort();
+
         if (callbacks?.onTyping) await callbacks.onTyping();
 
         // handle both standard function type and custom/alternative formats
@@ -507,10 +584,15 @@ export class Agent {
 
         const result = await executeTool(name, args, this.userId, content);
         debug(`[result]: ${result.slice(0, 200)}...`);
+        
+        // track results for potential verification
+        toolResults.push(result.slice(0, 500));
 
+        // compress large tool outputs before storing in context
+        const compressedResult = compressToolOutput(result, name);
         this._messages.push({
           role: "tool",
-          content: result,
+          content: compressedResult,
           tool_call_id: toolCall.id,
         });
       }
@@ -518,6 +600,11 @@ export class Agent {
 
     if (loopGuardMessage) {
       this._messages.push({ role: "assistant", content: loopGuardMessage });
+    }
+
+    // log plan outcome for future reference
+    if (taskPlan) {
+      debug(`[planner] completed: ${taskPlan.intent} (${toolResults.length} tool results)`);
     }
 
     // log for self-review

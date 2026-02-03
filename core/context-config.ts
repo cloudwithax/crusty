@@ -2,15 +2,70 @@
 // controls how conversation history is managed to stay within model limits
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import {
+  getModelContextLength,
+  getModelContextLengthSync,
+  prefetchModelInfo,
+} from "./model-info";
 
-// model context limits (conservative defaults for gpt-4o class models)
-export const MAX_CONTEXT_TOKENS = parseInt(process.env.MAX_CONTEXT_TOKENS || "24000", 10);
-export const RESERVED_COMPLETION_TOKENS = parseInt(process.env.RESERVED_COMPLETION_TOKENS || "2000", 10);
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+
+// reserved tokens for completion (response)
+export const RESERVED_COMPLETION_TOKENS = parseInt(
+  process.env.RESERVED_COMPLETION_TOKENS || "4000",
+  10
+);
+
+// dynamic context limit - fetched from openrouter or fallback
+let _maxContextTokens: number | null = null;
+
+export function getMaxContextTokens(): number {
+  // if env var is set, use that as override
+  if (process.env.MAX_CONTEXT_TOKENS) {
+    return parseInt(process.env.MAX_CONTEXT_TOKENS, 10);
+  }
+
+  // use cached value if available
+  if (_maxContextTokens !== null) {
+    return _maxContextTokens;
+  }
+
+  // sync fallback until async fetch completes
+  return getModelContextLengthSync(OPENAI_MODEL);
+}
+
+export async function initializeContextLimits(): Promise<void> {
+  if (process.env.MAX_CONTEXT_TOKENS) {
+    _maxContextTokens = parseInt(process.env.MAX_CONTEXT_TOKENS, 10);
+    return;
+  }
+
+  _maxContextTokens = await getModelContextLength(OPENAI_MODEL);
+}
+
+// prefetch on module load (non-blocking)
+prefetchModelInfo(OPENAI_MODEL).then((len) => {
+  if (!process.env.MAX_CONTEXT_TOKENS && len !== undefined) {
+    // already handled by getModelContextLength
+  }
+});
+
+// backwards compat export (use getMaxContextTokens() for dynamic value)
+export const MAX_CONTEXT_TOKENS = getModelContextLengthSync(OPENAI_MODEL);
 
 // message count limits (backup when token estimation fails)
 export const MAX_TURNS = parseInt(process.env.MAX_TURNS || "40", 10);
 
-// summarization thresholds
+// summarization thresholds (dynamic based on model context)
+export function getSummarizeTriggerTokens(): number {
+  return Math.floor(getMaxContextTokens() * 0.75);
+}
+
+export function getSummarizeTargetTokens(): number {
+  return Math.floor(getMaxContextTokens() * 0.45);
+}
+
+// backwards compat static exports (deprecated, use functions above)
 export const SUMMARIZE_TRIGGER_TOKENS = Math.floor(MAX_CONTEXT_TOKENS * 0.75);
 export const SUMMARIZE_TARGET_TOKENS = Math.floor(MAX_CONTEXT_TOKENS * 0.45);
 
