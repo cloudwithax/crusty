@@ -19,7 +19,10 @@ import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
 import { withRetry, isRetryableError } from "../utils/retry.ts";
 import { compressToolOutput } from "../utils/compress.ts";
-import { shouldStoreMemory, shouldSuppressRandomRecall } from "../memory/gating.ts";
+import {
+  shouldStoreMemory,
+  shouldSuppressRandomRecall,
+} from "../memory/gating.ts";
 import { createPlan, classifyIntent, type TaskPlan } from "./planner.ts";
 
 // environment configuration
@@ -56,7 +59,9 @@ class RateLimiter {
   async acquire(): Promise<void> {
     while (true) {
       const now = Date.now();
-      this.timestamps = this.timestamps.filter((ts) => now - ts < this.windowMs);
+      this.timestamps = this.timestamps.filter(
+        (ts) => now - ts < this.windowMs,
+      );
 
       if (this.timestamps.length < this.maxRequests) {
         this.timestamps.push(now);
@@ -107,24 +112,113 @@ function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(text));
 }
 
-// fixed thinking status phrases (avoids extra API call per request)
-const THINKING_PHRASES = [
-  "pondering...",
-  "mulling this over...",
-  "thinking...",
-  "working on it...",
-  "processing...",
-  "let me think...",
-  "considering options...",
-  "figuring this out...",
-  "one moment...",
+// status phrases for different stages of task execution
+const BEGINNING_OF_TASK_PHRASES = [
+  "cracking my knuckles...",
+  "ooh let me see...",
   "hmm interesting...",
-  "looking into it...",
-  "on it...",
+  "flexing my claws...",
+  "dusting off the cobwebs...",
+  "time to get crabby with it...",
+  "scuttling over to check...",
+  "pinching into this one...",
 ];
 
+const MIDDLE_OF_TASK_PHRASES = [
+  "still scuttling along...",
+  "deeper into the reef...",
+  "claws deep in the sand now...",
+  "following the current...",
+  "piecing this together...",
+  "the plot thickens...",
+  "ooh this is getting interesting...",
+  "hold my seaweed...",
+];
+
+const WRAPPING_UP_PHRASES = [
+  "putting a bow on it...",
+  "just polishing these shells...",
+  "coming up for air...",
+  "surfacing with answers...",
+  "tying up loose tentacles...",
+  "final pinch of magic...",
+];
+
+const TOOL_SPECIFIC_PHRASES: Record<string, string[]> = {
+  browser: [
+    "surfing the seas...",
+    "diving into that page...",
+    "casting my net across the ocean...",
+    "following the digital current...",
+  ],
+  bash: [
+    "whispering to the terminal...",
+    "poking the shell... ",
+    "summoning the command spirits...",
+  ],
+  read_file: [
+    "squinting at these runes...",
+    "deciphering the ancient texts...",
+    "reading between the lines...",
+  ],
+  write_file: [
+    "scribbling furiously...",
+    "carving this into stone...",
+    "leaving my mark...",
+  ],
+  search: [
+    "hunting for treasure...",
+    "combing through the sand...",
+    "following the scent...",
+  ],
+  memory: [
+    "consulting my shell collection...",
+    "what did i stash here...",
+    "ah yes i remember this...",
+  ],
+};
+
+type TaskPhase = "beginning" | "middle" | "wrapping_up";
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]!;
+}
+
+function getPhaseFromProgress(
+  iteration: number,
+  maxIterations: number,
+): TaskPhase {
+  const progress = iteration / maxIterations;
+  if (iteration === 0 || progress < 0.2) return "beginning";
+  if (progress > 0.7) return "wrapping_up";
+  return "middle";
+}
+
+function getStatusMessage(phase: TaskPhase, toolName?: string): string {
+  // check for tool-specific phrase first
+  if (toolName) {
+    for (const [key, phrases] of Object.entries(TOOL_SPECIFIC_PHRASES)) {
+      if (toolName.toLowerCase().includes(key)) {
+        return pickRandom(phrases);
+      }
+    }
+  }
+
+  // fall back to phase-based phrases
+  switch (phase) {
+    case "beginning":
+      return pickRandom(BEGINNING_OF_TASK_PHRASES);
+    case "wrapping_up":
+      return pickRandom(WRAPPING_UP_PHRASES);
+    case "middle":
+    default:
+      return pickRandom(MIDDLE_OF_TASK_PHRASES);
+  }
+}
+
+// convenience function for initial thinking state
 function getThinkingMessage(): string {
-  return THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)]!;
+  return pickRandom(BEGINNING_OF_TASK_PHRASES);
 }
 
 const MAX_TOOL_ITERATIONS = 25;
@@ -268,7 +362,7 @@ export class Agent {
   async chat(
     userMessage: string,
     callbacks?: AgentCallbacks,
-    replyContext?: string
+    replyContext?: string,
   ): Promise<string> {
     await this.initialize();
 
@@ -300,17 +394,17 @@ export class Agent {
         userMessage,
       );
     }
-    
+
     // gated memory storage - only store durable facts
-    const gatingResult = shouldStoreMemory({ 
-      content: userMessage, 
-      role: "user", 
-      hasToolContext: false 
+    const gatingResult = shouldStoreMemory({
+      content: userMessage,
+      role: "user",
+      hasToolContext: false,
     });
     if (gatingResult.shouldStore) {
       await memoryService.storeMemory(
-        this.userId, 
-        gatingResult.cleanedContent || userMessage
+        this.userId,
+        gatingResult.cleanedContent || userMessage,
       );
     }
 
@@ -327,22 +421,26 @@ export class Agent {
     // optional planning for complex tasks
     const intent = classifyIntent(userMessage);
     let taskPlan: TaskPlan | null = null;
-    
+
     if (intent === "task" || intent === "command") {
       // build recent context for planning
       const recentContext = this._messages
         .slice(-6)
-        .filter(m => m.role !== "system")
-        .map(m => `${m.role}: ${String(m.content).slice(0, 200)}`)
+        .filter((m) => m.role !== "system")
+        .map((m) => `${m.role}: ${String(m.content).slice(0, 200)}`)
         .join("\n");
-      
-      taskPlan = await createPlan(userMessage, recentContext, getAvailableTools());
-      
+
+      taskPlan = await createPlan(
+        userMessage,
+        recentContext,
+        getAvailableTools(),
+      );
+
       // if planner says clarification needed, ask before proceeding
       if (taskPlan?.needs_clarification && taskPlan.clarifying_question) {
-        this._messages.push({ 
-          role: "assistant", 
-          content: taskPlan.clarifying_question 
+        this._messages.push({
+          role: "assistant",
+          content: taskPlan.clarifying_question,
         });
         this.scheduleSave();
         return taskPlan.clarifying_question;
@@ -372,11 +470,15 @@ export class Agent {
         memoryContext || undefined,
       );
 
-      // status update for slow api calls (using fixed phrases)
+      // status update for slow api calls with phase-aware messaging
+      const currentPhase = getPhaseFromProgress(
+        toolIterationCount,
+        MAX_TOOL_ITERATIONS,
+      );
       let statusSent = false;
       const statusTimeout = setTimeout(async () => {
         if (callbacks?.onStatusUpdate) {
-          await callbacks.onStatusUpdate(getThinkingMessage());
+          await callbacks.onStatusUpdate(getStatusMessage(currentPhase));
           statusSent = true;
         }
       }, 3000);
@@ -423,13 +525,14 @@ export class Agent {
       try {
         // api call with automatic retry for transient errors
         response = await withRetry(
-          () => openai.chat.completions.create({
-            model: OPENAI_MODEL,
-            messages: validMessages,
-            tools: tools.length > 0 ? tools : undefined,
-            tool_choice: tools.length > 0 ? "auto" : undefined,
-          }),
-          { maxRetries: 2, baseDelayMs: 1000 }
+          () =>
+            openai.chat.completions.create({
+              model: OPENAI_MODEL,
+              messages: validMessages,
+              tools: tools.length > 0 ? tools : undefined,
+              tool_choice: tools.length > 0 ? "auto" : undefined,
+            }),
+          { maxRetries: 2, baseDelayMs: 1000 },
         );
       } catch (apiError) {
         clearTimeout(statusTimeout);
@@ -577,14 +680,19 @@ export class Agent {
         debug(`[tool: ${name}]`);
         debug(`[args raw]: ${args.slice(0, 500)}`);
 
-        // show tool execution to user
-        if (callbacks?.onStatusUpdate && content.trim()) {
-          await callbacks.onStatusUpdate(cleanModelResponse(content));
+        // show tool execution status with tool-aware messaging
+        if (callbacks?.onStatusUpdate) {
+          const phase = getPhaseFromProgress(
+            toolIterationCount,
+            MAX_TOOL_ITERATIONS,
+          );
+          const statusMsg = getStatusMessage(phase, name);
+          await callbacks.onStatusUpdate(statusMsg);
         }
 
         const result = await executeTool(name, args, this.userId, content);
         debug(`[result]: ${result.slice(0, 200)}...`);
-        
+
         // track results for potential verification
         toolResults.push(result.slice(0, 500));
 
@@ -604,7 +712,9 @@ export class Agent {
 
     // log plan outcome for future reference
     if (taskPlan) {
-      debug(`[planner] completed: ${taskPlan.intent} (${toolResults.length} tool results)`);
+      debug(
+        `[planner] completed: ${taskPlan.intent} (${toolResults.length} tool results)`,
+      );
     }
 
     // log for self-review
