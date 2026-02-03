@@ -17,6 +17,12 @@
 
 ```
 
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
+[![Bun](https://img.shields.io/badge/Bun-1.3.0-f9f1e1.svg)](https://bun.sh/)
+[![CI](https://github.com/cloudwithax/crusty/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/cloudwithax/crusty/actions/workflows/docker-publish.yml)
+
 a telegram ai agent with web browsing, long-term memory, and a modular personality system.
 
 ## features
@@ -33,6 +39,96 @@ a telegram ai agent with web browsing, long-term memory, and a modular personali
 - secure pairing system
 
 ## quickstart
+
+### docker (recommended)
+
+docker is the preferred way to run crusty. it provides a sandboxed environment with all dependencies pre-installed, including chromium for web browsing and bash tools enabled by default.
+
+You can run crusty in one command with the built image:
+
+```bash
+# pull and run the image
+docker run -d \
+  --name crusty \
+  -e OPENAI_API_KEY=your-api-key \
+  -e TELEGRAM_BOT_TOKEN=your-telegram-bot-token \
+  -v crusty-data:/app/data \
+  ghcr.io/cloudwithax/crusty:latest
+```
+
+or build it locally:
+
+```bash
+docker build -t crusty .
+docker run -d \
+  --name crusty \
+  -e OPENAI_API_KEY=your-api-key \
+  -e TELEGRAM_BOT_TOKEN=your-telegram-bot-token \
+  -v crusty-data:/app/data \
+  crusty
+```
+
+## docker compose
+
+create a `docker-compose.yml`:
+
+```yaml
+services:
+  crusty:
+    image: ghcr.io/cloudwithax/crusty:latest
+    container_name: crusty
+    restart: unless-stopped
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENAI_MODEL=gpt-4o
+      - HEARTBEAT_EVERY=30m
+    volumes:
+      - crusty-data:/app/data
+      - ./cogs:/app/cogs:ro # mount custom personality files
+
+volumes:
+  crusty-data:
+```
+
+then run:
+
+```bash
+docker compose up -d
+```
+
+### pairing
+
+on first boot, the bot generates a 6-character pairing code and prints it to the logs. copy this code and send it to your bot on telegram to complete pairing.
+
+```bash
+# view logs to get the pairing code
+docker logs crusty
+```
+
+look for a line like: `pairing code: ABC123`
+
+### adding an external cogs directory
+
+mount your cogs folder as a volume:
+
+```bash
+docker run -d \
+  --name crusty \
+  -e OPENAI_API_KEY=your-api-key \
+  -e TELEGRAM_BOT_TOKEN=your-telegram-bot-token \
+  -v crusty-data:/app/data \
+  -v ./my-cogs:/app/cogs:ro \
+  ghcr.io/cloudwithax/crusty:latest
+```
+
+### viewing logs
+
+```bash
+docker logs -f crusty
+```
+
+## local installation
 
 ```bash
 bun install
@@ -86,6 +182,8 @@ edit the markdown files in `cogs/` to customize personality and behavior:
 - `HEARTBEAT.md` - scheduled task instructions
 
 create skills in `cogs/skills/<name>/SKILL.md` or `~/.config/crusty/skills/<name>/SKILL.md`.
+
+all skills used MUST follow the [agent skill format](https://agentskills.io/).
 
 ## license
 
