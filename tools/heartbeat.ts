@@ -12,13 +12,23 @@ const HEARTBEAT_PATH = join(import.meta.dir, "..", "cogs", "HEARTBEAT.md");
 // ensure table exists
 function ensureTable(): void {
   const db = getDatabase();
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS heartbeat_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      content TEXT NOT NULL,
-      created_at INTEGER DEFAULT (strftime('%s', 'now'))
-    )
-  `);
+  if (db.type === "postgres") {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS heartbeat_items (
+        id SERIAL PRIMARY KEY,
+        content TEXT NOT NULL,
+        created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+      )
+    `);
+  } else {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS heartbeat_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT NOT NULL,
+        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+      )
+    `);
+  }
 }
 
 // get base heartbeat content from filesystem
@@ -33,9 +43,11 @@ function getBaseContent(): string {
 export function getActionableItems(): string[] {
   ensureTable();
   const db = getDatabase();
-  const rows = db.query<{ content: string }>(
-    "SELECT content FROM heartbeat_items ORDER BY created_at ASC"
-  ).all();
+  const rows = db
+    .query<{
+      content: string;
+    }>("SELECT content FROM heartbeat_items ORDER BY created_at ASC")
+    .all();
   return rows.map((r) => r.content);
 }
 
@@ -54,7 +66,9 @@ export function getFullHeartbeatContent(): string {
 
   if (markerIndex === -1) {
     // no section found, append at end
-    return base.trimEnd() + "\n\n## Actionable Items\n\n" + items.join("\n\n") + "\n";
+    return (
+      base.trimEnd() + "\n\n## Actionable Items\n\n" + items.join("\n\n") + "\n"
+    );
   }
 
   // inject items after the marker
@@ -62,7 +76,9 @@ export function getFullHeartbeatContent(): string {
   const afterMarker = base.slice(markerIndex + actionableMarker.length);
 
   // preserve any static content after marker, then add db items
-  return beforeMarker + afterMarker.trimEnd() + "\n\n" + items.join("\n\n") + "\n";
+  return (
+    beforeMarker + afterMarker.trimEnd() + "\n\n" + items.join("\n\n") + "\n"
+  );
 }
 
 const ReadHeartbeatSchema = z.object({});
@@ -79,7 +95,9 @@ const AddHeartbeatItemSchema = z.object({
   content: z.string().describe("actionable item content to add"),
 });
 
-async function addHeartbeatItem(args: z.infer<typeof AddHeartbeatItemSchema>): Promise<string> {
+async function addHeartbeatItem(
+  args: z.infer<typeof AddHeartbeatItemSchema>,
+): Promise<string> {
   try {
     ensureTable();
     const db = getDatabase();
@@ -91,10 +109,14 @@ async function addHeartbeatItem(args: z.infer<typeof AddHeartbeatItemSchema>): P
 }
 
 const RemoveHeartbeatItemSchema = z.object({
-  id: z.coerce.number().describe("id of the item to remove (use heartbeat_list to see ids)"),
+  id: z.coerce
+    .number()
+    .describe("id of the item to remove (use heartbeat_list to see ids)"),
 });
 
-async function removeHeartbeatItem(args: z.infer<typeof RemoveHeartbeatItemSchema>): Promise<string> {
+async function removeHeartbeatItem(
+  args: z.infer<typeof RemoveHeartbeatItemSchema>,
+): Promise<string> {
   try {
     ensureTable();
     const db = getDatabase();
@@ -111,18 +133,24 @@ async function listHeartbeatItems(): Promise<string> {
   try {
     ensureTable();
     const db = getDatabase();
-    const rows = db.query<{ id: number; content: string; created_at: number }>(
-      "SELECT id, content, created_at FROM heartbeat_items ORDER BY created_at ASC"
-    ).all();
+    const rows = db
+      .query<{
+        id: number;
+        content: string;
+        created_at: number;
+      }>("SELECT id, content, created_at FROM heartbeat_items ORDER BY created_at ASC")
+      .all();
 
     if (rows.length === 0) {
       return "no actionable items configured";
     }
 
-    return rows.map((r) => {
-      const date = new Date(r.created_at * 1000).toISOString().split("T")[0];
-      return `[${r.id}] (${date}) ${r.content.slice(0, 100)}${r.content.length > 100 ? "..." : ""}`;
-    }).join("\n");
+    return rows
+      .map((r) => {
+        const date = new Date(r.created_at * 1000).toISOString().split("T")[0];
+        return `[${r.id}] (${date}) ${r.content.slice(0, 100)}${r.content.length > 100 ? "..." : ""}`;
+      })
+      .join("\n");
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -143,12 +171,14 @@ async function clearHeartbeatItems(): Promise<string> {
 
 export const heartbeatTools = {
   heartbeat_read: {
-    description: "read the full heartbeat instructions including base config and actionable items",
+    description:
+      "read the full heartbeat instructions including base config and actionable items",
     schema: ReadHeartbeatSchema,
     handler: readHeartbeat,
   },
   heartbeat_add: {
-    description: "add an actionable item to the heartbeat (persisted in database)",
+    description:
+      "add an actionable item to the heartbeat (persisted in database)",
     schema: AddHeartbeatItemSchema,
     handler: addHeartbeatItem,
   },
