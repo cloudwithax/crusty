@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { filesystemTools, cleanupFilesystem } from "./filesystem.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
@@ -22,6 +22,25 @@ type ToolDefinition = {
   handler: (args: any, userId: number) => Promise<string>;
 };
 
+// iteration extension tool - handled specially in agent.ts but needs to be in the schema
+const iterationTools: Record<string, ToolDefinition> = {
+  request_more_iterations: {
+    description:
+      "request additional tool iterations when you are running low and need more time to complete a complex task. only call this when you receive the iteration warning and genuinely need more iterations. you have a limited number of extensions available.",
+    schema: z.object({
+      reason: z
+        .string()
+        .describe(
+          "brief explanation of why you need more iterations and what remains to be done",
+        ),
+    }),
+    handler: async () => {
+      // actual logic handled in agent.ts - this is just a placeholder
+      return "extension request processed";
+    },
+  },
+};
+
 const toolRegistry: Record<string, ToolDefinition> = {
   ...filesystemTools,
   ...browserTools,
@@ -32,6 +51,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...memoryTools,
   ...heartbeatTools,
   ...learningTools,
+  ...iterationTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 
