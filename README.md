@@ -1,80 +1,53 @@
 # Crusty
 
 ```
-  ░░                      
-░░░░              ░░░░░░  
+  ░░
+░░░░              ░░░░░░
 ░░░░  ░░            ░░░░░░
 ░░░░  ░░        ░░    ░░▒▒
 ░░░░░░▒▒          ░░▒▒░░▒▒
   ░░▒▒                ░░▒▒
-    ░░▒▒  ░░░░░░░░  ░░▒▒  
-      ░░░░░░░░░░░░░░░░    
-    ░░░░░░░░██░░██░░░░░░  
-    ▒▒░░░░░░░░░░░░░░░░▒▒  
+    ░░▒▒  ░░░░░░░░  ░░▒▒
+      ░░░░░░░░░░░░░░░░
+    ░░░░░░░░██░░██░░░░░░
+    ▒▒░░░░░░░░░░░░░░░░▒▒
   ░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░
   ░░░░  ▒▒░░    ░░▒▒  ░░░░
   ░░    ▒▒        ▒▒    ░░
 
 ```
 
-a telegram ai agent with web browsing capabilities, long-term memory, and a modular personality system. crusty scuttles across the web, digging up information and helping with research tasks.
+a telegram ai agent with web browsing, long-term memory, and a modular personality system.
 
 ## features
 
-- web browsing via puppeteer with stealth mode - navigates websites while avoiding bot detection
-- multi-turn conversations - agentic loop with 5-20 iterations and tool execution
-- long-term memory - keyword matching (sqlite) or embedding search (postgres + pgvector)
-- context management - rolling window, automatic summarization, conversation persistence
-- modular personality system - dynamic prompt assembly from markdown files
-- skills system - reusable instruction packages following the agent skills standard
-- heartbeat scheduler - periodic tasks with timezone-aware active hours
-- self-review - failure pattern detection and counter-checks
-- reminder system - scheduled notifications with natural language time parsing
-- openai-compatible api support - works with various llm providers
-- secure pairing system - one user per crab
+- web browsing with stealth mode
+- multi-turn agentic conversations with tool execution
+- long-term memory (sqlite or postgres + pgvector)
+- context management with automatic summarization
+- modular personality system via markdown files
+- skills system for reusable instruction packages
+- heartbeat scheduler with timezone-aware active hours
+- reminder system with natural language time parsing
+- openai-compatible api support
+- secure pairing system
 
-## installation
+## quickstart
 
 ```bash
-# install dependencies
 bun install
-
-# link the cli globally (optional)
-bun link
+bun link        # optional, links cli globally
+crusty setup    # configure api keys, telegram token, etc
+crusty start    # start the bot
 ```
 
-## usage
+## daemon mode
 
 ```bash
-# run the setup wizard
-crusty setup
-
-# start the bot
-crusty start
-
-# start as daemon (systemd user service)
-crusty start -d
-
-# stop the daemon
-crusty stop
-
-# check daemon status
-crusty status
-
-# show help
-crusty --help
+crusty start -d   # start as systemd user service
+crusty stop       # stop the daemon
+crusty status     # check daemon status
 ```
-
-## setup
-
-the interactive setup wizard (`crusty setup`) configures:
-
-1. api settings - openai key, base url, model
-2. telegram bot token
-3. browser settings - headless mode, viewport
-4. cog customization - personality, identity, heartbeat
-5. pairing code generation
-6. configuration validation
 
 ## environment variables
 
@@ -85,201 +58,35 @@ create a `.env` file:
 OPENAI_API_KEY=your-api-key
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 
-# api (optional)
+# optional
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o
-INFERENCE_RPM_LIMIT=40
-
-# browser (optional)
 BROWSER_HEADLESS=true
-BROWSER_VIEWPORT=1280x800
-
-# bootstrap (optional)
-AGENTS_BOOTSTRAP_MAX_CHARS=20000
-AGENTS_SOUL_EVIL_ENABLED=false
-
-# heartbeat (optional)
 HEARTBEAT_EVERY=30m
-HEARTBEAT_TIMEZONE=America/New_York
-HEARTBEAT_DAYS=1,2,3,4,5
-HEARTBEAT_START=09:00
-HEARTBEAT_END=18:00
-
-# context management (optional)
 MAX_CONTEXT_TOKENS=24000
-RESERVED_COMPLETION_TOKENS=2000
-MAX_TURNS=40
-SUMMARIZE_MODEL=gpt-4o-mini
-
-# embeddings (optional, requires postgres + pgvector)
-# DATABASE_URL=postgres://user:pass@localhost:5432/crusty
-# EMBEDDING_PROVIDER=local  # local or none (local is default, no api needed)
-# LOCAL_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2
-# LOCAL_EMBEDDING_DIMENSION=384
 ```
+
+see `AGENTS.md` for the full list of environment variables.
 
 ## telegram commands
 
-once paired, use these commands:
-
-- `/start` - initialize and show help
+- `/start` - show help
 - `/clear` - clear memory and reset conversation
-- `/context` - show context stats (message count, tokens, summary)
+- `/context` - show context stats
 - `/memory` - show memory stats
-- `/reminders` - list all pending reminders
-- `/skill` or `/skill list` - list available skills
-- `/skill new` - create a new skill interactively
-- `/skill <name>` - view skill details
-- `/skill cancel` - abort skill creation
+- `/reminders` - list pending reminders
+- `/skill` - manage skills
 
-## project structure
+## customization
 
-```
-crusty/
-├── index.ts              # entry point with graceful shutdown
-├── cli/                  # cli commands (setup, start, stop, status)
-│   ├── index.ts          # command router
-│   ├── setup.ts          # interactive configuration wizard
-│   ├── pairing.ts        # one-time pairing system
-│   ├── daemon.ts         # systemd user service management
-│   └── context.ts        # context management cli
-├── core/                 # agent system
-│   ├── agent.ts          # multi-turn conversation loop
-│   ├── bootstrap.ts      # system prompt assembly
-│   ├── context-manager.ts # rolling window, summarization
-│   ├── context-config.ts # token limits and budgets
-│   ├── conversation-store.ts # persistence layer
-│   ├── skills.ts         # skill discovery and registry
-│   └── skill-wizard.ts   # interactive skill creation
-├── telegram/             # telegram bot integration
-│   └── bot.ts            # long polling, session management
-├── tools/                # tool registry and implementations
-│   ├── registry.ts       # central registry with zod validation
-│   ├── browser.ts        # web browsing tools
-│   ├── todo.ts           # todo list management
-│   ├── reminder.ts       # reminder system
-│   └── skill.ts          # skill loading tools
-├── memory/               # long-term memory system
-│   ├── service.ts        # keyword extraction, emotional weighting
-│   └── embeddings.ts     # pgvector embedding search (postgres only)
-├── scheduler/            # background tasks
-│   ├── heartbeat.ts      # periodic task scheduling
-│   ├── reminders.ts      # reminder processing
-│   └── self-review.ts    # failure pattern detection
-├── data/                 # database
-│   └── db.ts             # sqlite singleton with wal mode
-└── cogs/                 # modular system prompts
-    ├── SOUL.md           # agent personality and behavior
-    ├── IDENTITY.md       # communication style
-    ├── HEARTBEAT.md      # scheduled task instructions
-    └── skills/           # skill storage
-```
+edit the markdown files in `cogs/` to customize personality and behavior:
 
-## bootstrap system
+- `SOUL.md` - core personality and behavior
+- `IDENTITY.md` - communication style
+- `HEARTBEAT.md` - scheduled task instructions
 
-the bootstrap system loads markdown files in order to assemble the system prompt:
-
-1. `SOUL.md` (cogs/) - required: agent personality and behavior
-2. `TOOLS.md` (root) - optional: tool-specific instructions
-3. `IDENTITY.md` (root or cogs/) - optional: identity configuration
-4. `USER.md` (root) - optional: user-specific instructions
-5. `HEARTBEAT.md` (cogs/) - optional: scheduled task instructions
-6. `BOOTSTRAP.md` (root) - optional: bootstrap configuration
-
-template variables are supported: `{{CURRENT_TIME}}`, `{{CURRENT_DATE}}`, `{{WORKING_DIR}}`
-
-## skills
-
-skills are reusable instruction packages that extend the agent's capabilities.
-
-### skill locations
-
-- `.crusty/skills/<name>/` - project local
-- `cogs/skills/<name>/` - project local
-- `~/.config/crusty/skills/<name>/` - global
-
-### skill format
-
-```yaml
----
-name: my-skill
-description: what this skill does
-license: MIT
----
-
-## instructions
-
-skill content here...
-```
-
-## tools
-
-### browser tools
-
-- `browser_navigate(url)` - navigate to url
-- `browser_click(selector)` - click element
-- `browser_type(selector, text)` - type into input
-- `browser_scroll(direction)` - scroll page
-- `browser_get_content()` - extract page text
-- `web_search(query)` - search multiple engines
-
-### todo tools
-
-- `create_todo(title, items)` - create todo list
-- `update_todo(todoId, items)` - update items
-- `mark_complete(todoId, itemIndex)` - mark complete
-- `get_todo(todoId)` - retrieve todo
-
-### reminder tools
-
-- `reminder_create(message, remind_at)` - create a reminder with natural language time parsing
-- `reminder_list()` - list all pending reminders
-- `reminder_cancel(reminder_id)` - cancel a pending reminder
-
-### skill tools
-
-- `skill(name)` - load skill by name
-- `read_skill_file(skill_name, filename)` - read skill files
-
-## memory system
-
-long-term memory with:
-
-- keyword extraction and stop-word filtering
-- emotional weight calculation (1-10 scale)
-- recency boost for recent memories
-- 15% random recall chance when no matches found
-
-## heartbeat scheduler
-
-configurable periodic tasks with:
-
-- flexible frequency (30m, 1h, 2d)
-- timezone-aware scheduling
-- active hours support (overnight windows too)
-- self-review integration for failure pattern detection
-
-## reminder system
-
-scheduled notifications with natural language time parsing:
-
-- create reminders via natural language (e.g., "remind me in 5 minutes", "tomorrow at 3pm")
-- list all pending reminders with relative time display
-- cancel reminders by id
-- automatic processing via scheduler
-- persistent storage in sqlite database
-- status tracking (pending, sent, cancelled)
-
-## testing
-
-```bash
-# run all tests
-bun test
-
-# run specific test file
-bun test core/bootstrap.test.ts
-```
+create skills in `cogs/skills/<name>/SKILL.md` or `~/.config/crusty/skills/<name>/SKILL.md`.
 
 ## license
 
-this project is licensed under the MIT license. see the `LICENSE` file for details.
+MIT
