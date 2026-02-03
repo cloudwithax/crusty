@@ -70,7 +70,7 @@ const FALLBACK_CONTEXT: Record<string, number> = {
   "qwen-2.5-72b": 131072,
   "qwen-2.5-32b": 131072,
   "qwen-2-72b": 131072,
-  "qwen2": 32768,
+  qwen2: 32768,
   // deepseek
   "deepseek-v3": 65536,
   "deepseek-r1": 65536,
@@ -115,13 +115,19 @@ async function fetchAllModels(): Promise<OpenRouterModel[]> {
 
 // normalize model id for comparison
 // strips common suffixes, provider prefixes, and lowercases
+// intentionally does NOT strip version numbers as they're often part of the model name
 function normalizeForComparison(modelId: string): string {
   return modelId
     .toLowerCase()
-    .replace(/^(openai|anthropic|meta-llama|mistralai|google|cohere|deepseek|qwen)\//, "")
+    .replace(
+      /^(openai|anthropic|meta-llama|mistralai|google|cohere|deepseek|qwen)\//,
+      "",
+    )
     .replace(/[-_:]/g, "-")
-    .replace(/-+(instruct|chat|base|fp16|fp8|awq|gptq|gguf|q[0-9]+|[0-9]+k)$/g, "")
-    .replace(/-+v?[0-9]+(\.[0-9]+)*$/, "") // strip version suffixes like -v0.1, -20240229
+    .replace(
+      /-+(instruct|chat|base|fp16|fp8|awq|gptq|gguf|q[0-9]+|[0-9]+k)$/g,
+      "",
+    )
     .replace(/--+/g, "-")
     .trim();
 }
@@ -129,53 +135,126 @@ function normalizeForComparison(modelId: string): string {
 // extract key identifiers from model name for matching
 function extractModelTokens(modelId: string): string[] {
   const normalized = normalizeForComparison(modelId);
-  
+
   // extract meaningful tokens
   const tokens: string[] = [];
-  
+
   // model family
-  const families = ["gpt", "claude", "llama", "mistral", "mixtral", "qwen", "gemini", "deepseek", "command"];
+  const families = [
+    "gpt",
+    "claude",
+    "llama",
+    "mistral",
+    "mixtral",
+    "qwen",
+    "gemini",
+    "deepseek",
+    "command",
+  ];
   for (const family of families) {
     if (normalized.includes(family)) {
       tokens.push(family);
       break;
     }
   }
-  
+
   // version/size patterns
   const versionMatch = normalized.match(/[0-9]+\.?[0-9]*[b]?/g);
   if (versionMatch) {
     tokens.push(...versionMatch);
   }
-  
+
   // special variants
-  const variants = ["mini", "small", "medium", "large", "turbo", "pro", "opus", "sonnet", "haiku", "nemo", "coder"];
+  const variants = [
+    "mini",
+    "small",
+    "medium",
+    "large",
+    "turbo",
+    "pro",
+    "opus",
+    "sonnet",
+    "haiku",
+    "nemo",
+    "coder",
+    "flash",
+    "air",
+  ];
   for (const variant of variants) {
     if (normalized.includes(variant)) {
       tokens.push(variant);
     }
   }
-  
+
   return tokens;
 }
 
+// calculate levenshtein distance for tiebreaking
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    Array(n + 1).fill(0),
+  );
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
 // calculate similarity score between two model ids
-function modelSimilarity(a: string, b: string): number {
+// returns { score, distance } for proper tiebreaking
+function modelSimilarity(
+  a: string,
+  b: string,
+): { score: number; distance: number } {
   const tokensA = extractModelTokens(a);
   const tokensB = extractModelTokens(b);
-  
-  if (tokensA.length === 0 || tokensB.length === 0) return 0;
-  
+
+  if (tokensA.length === 0 || tokensB.length === 0) {
+    return { score: 0, distance: Infinity };
+  }
+
   let matches = 0;
   for (const token of tokensA) {
     if (tokensB.includes(token)) {
       matches++;
     }
   }
-  
+
+  // check for extra tokens in B that aren't in A (penalize additions like "flash")
+  let extraTokens = 0;
+  for (const token of tokensB) {
+    if (!tokensA.includes(token)) {
+      extraTokens++;
+    }
+  }
+
   // normalize by average length
   const avgLen = (tokensA.length + tokensB.length) / 2;
-  return matches / avgLen;
+  let score = matches / avgLen;
+
+  // penalize candidates with extra tokens not in the query
+  if (extraTokens > 0) {
+    score *= 1 / (1 + extraTokens * 0.3);
+  }
+
+  // calculate edit distance on normalized forms for tiebreaking
+  const normA = normalizeForComparison(a);
+  const normB = normalizeForComparison(b);
+  const distance = levenshteinDistance(normA, normB);
+
+  return { score, distance };
 }
 
 function normalizeModelId(modelId: string): string {
@@ -215,31 +294,43 @@ export async function getModelContextLength(modelId: string): Promise<number> {
   // 3. partial match (e.g., "gpt-4o" matches "openai/gpt-4o")
   if (!match) {
     match = models.find(
-      (m) => m.id.endsWith(`/${modelId}`) || m.id.toLowerCase().includes(modelId.toLowerCase())
+      (m) =>
+        m.id.endsWith(`/${modelId}`) ||
+        m.id.toLowerCase().includes(modelId.toLowerCase()),
     );
   }
 
   // 4. normalized comparison match
   if (!match) {
-    match = models.find((m) => normalizeForComparison(m.id) === normalizedForMatch);
+    match = models.find(
+      (m) => normalizeForComparison(m.id) === normalizedForMatch,
+    );
   }
 
   // 5. fuzzy match - find best similarity score
   if (!match && models.length > 0) {
     let bestScore = 0;
+    let bestDistance = Infinity;
     let bestMatch: OpenRouterModel | null = null;
 
     for (const m of models) {
-      const score = modelSimilarity(modelId, m.id);
-      if (score > bestScore && score >= 0.6) {
+      const { score, distance } = modelSimilarity(modelId, m.id);
+      // prefer higher score, use edit distance as tiebreaker
+      if (
+        score >= 0.6 &&
+        (score > bestScore || (score === bestScore && distance < bestDistance))
+      ) {
         bestScore = score;
+        bestDistance = distance;
         bestMatch = m;
       }
     }
 
     if (bestMatch) {
       match = bestMatch;
-      debug(`[model-info] fuzzy matched ${modelId} -> ${match.id} (score: ${bestScore.toFixed(2)})`);
+      debug(
+        `[model-info] fuzzy matched ${modelId} -> ${match.id} (score: ${bestScore.toFixed(2)}, dist: ${bestDistance})`,
+      );
     }
   }
 
@@ -291,12 +382,17 @@ function findFallbackContext(modelId: string): number | null {
 
   // fuzzy match on fallback keys
   let bestScore = 0;
+  let bestDistance = Infinity;
   let bestValue: number | null = null;
 
   for (const [key, value] of Object.entries(FALLBACK_CONTEXT)) {
-    const score = modelSimilarity(modelId, key);
-    if (score > bestScore && score >= 0.5) {
+    const { score, distance } = modelSimilarity(modelId, key);
+    if (
+      score >= 0.5 &&
+      (score > bestScore || (score === bestScore && distance < bestDistance))
+    ) {
       bestScore = score;
+      bestDistance = distance;
       bestValue = value;
     }
   }
