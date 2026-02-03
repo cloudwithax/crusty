@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "
 import { join, relative } from "path";
 import { debug } from "../utils/debug.ts";
 
-// nanocode-inspired minimal filesystem tools
+// minimal filesystem tools
 // read, write, edit, glob, grep - nothing more
 
 const MAX_OUTPUT = 8000;
@@ -28,7 +28,7 @@ async function read(args: z.infer<typeof ReadSchema>): Promise<string> {
     const limit = args.limit ?? lines.length;
     const selected = lines.slice(offset, offset + limit);
     
-    // line-numbered output like nanocode
+    // line-numbered output
     const numbered = selected
       .map((line, idx) => `${String(offset + idx + 1).padStart(4)}| ${line}`)
       .join("\n");

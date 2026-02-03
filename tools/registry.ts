@@ -10,7 +10,7 @@ import { hookTools } from "./hooks.ts";
 import { memoryTools } from "./memory.ts";
 import { heartbeatTools } from "./heartbeat.ts";
 
-// minimal tool registry - nanocode style
+// minimal tool registry
 // filesystem + browser + bash (in docker)
 
 type ToolDefinition = {

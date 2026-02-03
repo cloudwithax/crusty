@@ -66,7 +66,7 @@ HEARTBEAT_EVERY=30m
 MAX_CONTEXT_TOKENS=24000
 ```
 
-see `AGENTS.md` for the full list of environment variables.
+see .env.example for all options.
 
 ## telegram commands
 
