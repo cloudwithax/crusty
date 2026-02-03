@@ -1,12 +1,15 @@
 // embedding-based memory search
-// uses local transformers.js model for zero-config experience
+// supports local transformers.js model (default) and openai embeddings
+// works with both memories and learnings tables
 
 import { getAsyncDatabase, isUsingPostgres } from "../data/db";
 import { debug } from "../utils/debug";
+import { OpenAI } from "openai";
 
-// embedding provider: local or none
+// embedding provider: local, openai, or none
 // local uses transformers.js with all-MiniLM-L6-v2 (384 dimensions, runs on cpu)
-type EmbeddingProvider = "local" | "none";
+// openai uses text-embedding-3-small (1536 dimensions)
+type EmbeddingProvider = "local" | "openai" | "none";
 const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER ||
   "local") as EmbeddingProvider;
 
@@ -18,9 +21,35 @@ const LOCAL_EMBEDDING_DIMENSION = parseInt(
   10,
 );
 
+// openai config
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
+const OPENAI_EMBEDDING_MODEL =
+  process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+const OPENAI_EMBEDDING_DIMENSION = parseInt(
+  process.env.OPENAI_EMBEDDING_DIMENSION || "1536",
+  10,
+);
+
+// lazy-loaded openai client
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI | null {
+  if (!OPENAI_API_KEY) return null;
+  if (!openaiClient) {
+    openaiClient = new OpenAI({
+      apiKey: OPENAI_API_KEY,
+      baseURL: OPENAI_BASE_URL,
+      timeout: 30 * 1000,
+    });
+  }
+  return openaiClient;
+}
+
 // get the dimension for current provider
 function getEmbeddingDimension(): number {
   if (EMBEDDING_PROVIDER === "none") return 0;
+  if (EMBEDDING_PROVIDER === "openai") return OPENAI_EMBEDDING_DIMENSION;
   return LOCAL_EMBEDDING_DIMENSION;
 }
 
@@ -75,7 +104,7 @@ async function getLocalPipeline(): Promise<any> {
 let pgvectorInitialized = false;
 let pgvectorAvailable = false;
 
-// check if pgvector extension is available and initialize
+// check if pgvector extension is available and initialize both memories and learnings tables
 async function ensurePgvector(): Promise<boolean> {
   if (pgvectorInitialized) return pgvectorAvailable;
 
@@ -109,13 +138,19 @@ async function ensurePgvector(): Promise<boolean> {
     // try to create pgvector extension
     await asyncDb.run(`CREATE EXTENSION IF NOT EXISTS vector`);
 
-    // add embedding column if it doesnt exist
+    // add embedding column to memories table if it doesnt exist
     await asyncDb.run(`
       ALTER TABLE memories 
       ADD COLUMN IF NOT EXISTS embedding vector(${dimension})
     `);
 
-    // create index for fast similarity search
+    // add embedding column to learnings table if it doesnt exist
+    await asyncDb.run(`
+      ALTER TABLE learnings 
+      ADD COLUMN IF NOT EXISTS embedding vector(${dimension})
+    `);
+
+    // create index for fast similarity search on memories
     // using ivfflat for approximate nearest neighbor (good balance of speed/accuracy)
     // lists = 100 is reasonable for small-medium datasets
     try {
@@ -125,7 +160,21 @@ async function ensurePgvector(): Promise<boolean> {
       `);
     } catch (indexErr) {
       // ivfflat needs enough rows to work, fall back to exact search for now
-      debug("[embeddings] ivfflat index creation deferred (need more rows)");
+      debug(
+        "[embeddings] memories ivfflat index creation deferred (need more rows)",
+      );
+    }
+
+    // create index for learnings table
+    try {
+      await asyncDb.run(`
+        CREATE INDEX IF NOT EXISTS idx_learnings_embedding 
+        ON learnings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+      `);
+    } catch (indexErr) {
+      debug(
+        "[embeddings] learnings ivfflat index creation deferred (need more rows)",
+      );
     }
 
     // restore default message level
@@ -165,12 +214,47 @@ async function generateLocalEmbedding(text: string): Promise<number[] | null> {
   }
 }
 
-// generate embedding for text
+// generate embedding using openai api
+async function generateOpenAIEmbedding(text: string): Promise<number[] | null> {
+  try {
+    const client = getOpenAIClient();
+    if (!client) {
+      debug("[embeddings] openai client not available");
+      return null;
+    }
+
+    // truncate for api limits
+    const truncated = text.substring(0, 8192);
+
+    const response = await client.embeddings.create({
+      model: OPENAI_EMBEDDING_MODEL,
+      input: truncated,
+      dimensions: OPENAI_EMBEDDING_DIMENSION,
+    });
+
+    const embedding = response.data[0]?.embedding;
+    if (!embedding) {
+      debug("[embeddings] openai returned no embedding");
+      return null;
+    }
+
+    return embedding;
+  } catch (err) {
+    debug("[embeddings] openai embedding failed:", err);
+    return null;
+  }
+}
+
+// generate embedding for text using configured provider
 export async function generateEmbedding(
   text: string,
 ): Promise<number[] | null> {
   if (EMBEDDING_PROVIDER === "none") {
     return null;
+  }
+
+  if (EMBEDDING_PROVIDER === "openai") {
+    return generateOpenAIEmbedding(text);
   }
 
   return generateLocalEmbedding(text);
@@ -311,6 +395,184 @@ export async function isEmbeddingsAvailable(): Promise<boolean> {
   return ensurePgvector();
 }
 
+// learning embedding types
+export interface LearningEmbeddingSearchResult {
+  id: string;
+  userId: number;
+  title: string;
+  content: string;
+  category: string;
+  toolName?: string;
+  similarity: number;
+  confidence: number;
+  applicationCount: number;
+  timestamp: number;
+}
+
+// store learning with embedding
+export async function storeLearningWithEmbedding(
+  learningId: string,
+  content: string,
+): Promise<boolean> {
+  const available = await ensurePgvector();
+  if (!available) return false;
+
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return false;
+
+  const embedding = await generateEmbedding(content);
+  if (!embedding) return false;
+
+  try {
+    await asyncDb.run(
+      `UPDATE learnings SET embedding = $1::vector WHERE id = $2`,
+      [formatEmbedding(embedding), learningId],
+    );
+    debug(
+      `[embeddings] stored embedding for learning ${learningId.substring(0, 8)}`,
+    );
+    return true;
+  } catch (err) {
+    debug("[embeddings] failed to store learning embedding:", err);
+    return false;
+  }
+}
+
+// search learnings by embedding similarity
+export async function searchLearningsByEmbedding(
+  userId: number,
+  queryText: string,
+  limit: number = 5,
+  category?: string,
+): Promise<LearningEmbeddingSearchResult[]> {
+  const available = await ensurePgvector();
+  if (!available) return [];
+
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return [];
+
+  const queryEmbedding = await generateEmbedding(queryText);
+  if (!queryEmbedding) return [];
+
+  try {
+    const categoryFilter = category ? ` AND category = $4` : "";
+    const params = category
+      ? [formatEmbedding(queryEmbedding), userId, limit, category]
+      : [formatEmbedding(queryEmbedding), userId, limit];
+
+    const rows = await asyncDb.all<{
+      id: string;
+      user_id: number;
+      title: string;
+      content: string;
+      category: string;
+      tool_name: string | null;
+      similarity: number;
+      confidence: number;
+      application_count: number;
+      timestamp: number;
+    }>(
+      `SELECT 
+        id, user_id, title, content, category, tool_name, confidence, application_count, timestamp,
+        1 - (embedding <=> $1::vector) as similarity
+      FROM learnings
+      WHERE user_id = $2 AND embedding IS NOT NULL${categoryFilter}
+      ORDER BY embedding <=> $1::vector
+      LIMIT $3`,
+      ...params,
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      title: row.title,
+      content: row.content,
+      category: row.category,
+      toolName: row.tool_name || undefined,
+      similarity: row.similarity,
+      confidence: row.confidence,
+      applicationCount: row.application_count,
+      timestamp: row.timestamp,
+    }));
+  } catch (err) {
+    debug("[embeddings] learning search failed:", err);
+    return [];
+  }
+}
+
+// backfill embeddings for existing learnings without them
+export async function backfillLearningEmbeddings(
+  userId?: number,
+  batchSize: number = 50,
+): Promise<number> {
+  const available = await ensurePgvector();
+  if (!available) return 0;
+
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return 0;
+
+  const whereClause = userId !== undefined ? `user_id = $1 AND` : "";
+  const params = userId !== undefined ? [userId, batchSize] : [batchSize];
+
+  const rows = await asyncDb.all<{
+    id: string;
+    title: string;
+    content: string;
+  }>(
+    `SELECT id, title, content FROM learnings 
+     WHERE ${whereClause} embedding IS NULL 
+     LIMIT ${userId !== undefined ? "$2" : "$1"}`,
+    ...params,
+  );
+
+  let count = 0;
+  for (const row of rows) {
+    // combine title and content for better semantic representation
+    const success = await storeLearningWithEmbedding(
+      row.id,
+      `${row.title}\n${row.content}`,
+    );
+    if (success) count++;
+  }
+
+  debug(`[embeddings] backfilled ${count}/${rows.length} learnings`);
+  return count;
+}
+
+// get embedding stats for learnings
+export async function getLearningEmbeddingStats(userId: number): Promise<{
+  total: number;
+  withEmbedding: number;
+  coverage: number;
+}> {
+  const available = await ensurePgvector();
+  if (!available) {
+    return { total: 0, withEmbedding: 0, coverage: 0 };
+  }
+
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    return { total: 0, withEmbedding: 0, coverage: 0 };
+  }
+
+  const row = await asyncDb.get<{ total: number; with_embedding: number }>(
+    `SELECT 
+      COUNT(*) as total,
+      COUNT(embedding) as with_embedding
+    FROM learnings WHERE user_id = $1`,
+    userId,
+  );
+
+  const total = row?.total || 0;
+  const withEmbedding = row?.with_embedding || 0;
+
+  return {
+    total,
+    withEmbedding,
+    coverage: total > 0 ? withEmbedding / total : 0,
+  };
+}
+
 // get current embedding provider info
 export function getEmbeddingProviderInfo(): {
   provider: EmbeddingProvider;
@@ -322,6 +584,14 @@ export function getEmbeddingProviderInfo(): {
       provider: "local",
       model: LOCAL_EMBEDDING_MODEL,
       dimension: LOCAL_EMBEDDING_DIMENSION,
+    };
+  }
+
+  if (EMBEDDING_PROVIDER === "openai") {
+    return {
+      provider: "openai",
+      model: OPENAI_EMBEDDING_MODEL,
+      dimension: OPENAI_EMBEDDING_DIMENSION,
     };
   }
 

@@ -396,6 +396,24 @@ function initTables(): void {
     )
   `);
 
+  // learnings table for the learning machine (self-improving knowledge)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS learnings (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      category TEXT NOT NULL CHECK (category IN ('error_pattern', 'gotcha', 'fix', 'preference', 'workflow', 'context')),
+      tool_name TEXT,
+      error_type TEXT,
+      keywords TEXT NOT NULL,
+      confidence REAL DEFAULT 0.5,
+      application_count INTEGER DEFAULT 0,
+      timestamp INTEGER NOT NULL,
+      last_applied INTEGER
+    )
+  `);
+
   db.exec(`CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`);
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_todo_items_todo ON todo_items(todo_id)`,
@@ -412,6 +430,15 @@ function initTables(): void {
   );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_user ON learnings(user_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_tool ON learnings(tool_name)`,
   );
 
   db.exec(`
@@ -554,6 +581,24 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
+  // learnings table for the learning machine (self-improving knowledge)
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS learnings (
+      id TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      category TEXT NOT NULL CHECK (category IN ('error_pattern', 'gotcha', 'fix', 'preference', 'workflow', 'context')),
+      tool_name TEXT,
+      error_type TEXT,
+      keywords TEXT NOT NULL,
+      confidence REAL DEFAULT 0.5,
+      application_count INTEGER DEFAULT 0,
+      timestamp BIGINT NOT NULL,
+      last_applied BIGINT
+    )
+  `);
+
   await pgAdapter.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id)`,
   );
@@ -574,6 +619,15 @@ async function initTablesAsync(): Promise<void> {
   );
   await pgAdapter.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_user ON learnings(user_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_learnings_tool ON learnings(tool_name)`,
   );
 
   await pgAdapter.execAsync(`

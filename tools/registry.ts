@@ -9,9 +9,10 @@ import { reminderTools } from "./reminder.ts";
 import { hookTools } from "./hooks.ts";
 import { memoryTools } from "./memory.ts";
 import { heartbeatTools } from "./heartbeat.ts";
+import { learningTools } from "./learnings.ts";
 
 // minimal tool registry
-// filesystem + browser + bash (in docker)
+// filesystem + browser + bash (in docker) + learning machine
 
 type ToolDefinition = {
   description: string;
@@ -30,6 +31,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...hookTools,
   ...memoryTools,
   ...heartbeatTools,
+  ...learningTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
 

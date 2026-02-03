@@ -24,6 +24,11 @@ import {
   shouldSuppressRandomRecall,
 } from "../memory/gating.ts";
 import { createPlan, classifyIntent, type TaskPlan } from "./planner.ts";
+import { learningsService } from "../memory/learnings.ts";
+import {
+  formatLearningsForContext,
+  captureToolFailure,
+} from "../tools/learnings.ts";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -395,6 +400,20 @@ export class Agent {
       );
     }
 
+    // learning machine: retrieve relevant learnings for context
+    let learningContext = "";
+    const relevantLearnings = await learningsService.searchLearnings(
+      this.userId,
+      userMessage,
+      3,
+    );
+    if (relevantLearnings.length > 0) {
+      learningContext = formatLearningsForContext(relevantLearnings);
+      debug(
+        `[agent] injected ${relevantLearnings.length} learnings into context`,
+      );
+    }
+
     // gated memory storage - only store durable facts
     const gatingResult = shouldStoreMemory({
       content: userMessage,
@@ -465,9 +484,13 @@ export class Agent {
       if (callbacks?.onTyping) await callbacks.onTyping();
 
       // build messages with context window management
+      // combine memory and learning contexts
+      const combinedContext =
+        [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
+        undefined;
       const messagesForModel = this.contextManager.buildMessagesForModel(
         this._messages,
-        memoryContext || undefined,
+        combinedContext,
       );
 
       // status update for slow api calls with phase-aware messaging
@@ -690,8 +713,25 @@ export class Agent {
           await callbacks.onStatusUpdate(statusMsg);
         }
 
-        const result = await executeTool(name, args, this.userId, content);
-        debug(`[result]: ${result.slice(0, 200)}...`);
+        let result: string;
+        try {
+          result = await executeTool(name, args, this.userId, content);
+          debug(`[result]: ${result.slice(0, 200)}...`);
+        } catch (error) {
+          // capture tool failure for learning machine
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          result = `[Error] ${errorMessage}`;
+          debug(`[tool error]: ${errorMessage}`);
+
+          // auto-capture the failure (fire and forget)
+          captureToolFailure(
+            this.userId,
+            name,
+            errorMessage,
+            args.slice(0, 200),
+          ).catch(() => {});
+        }
 
         // track results for potential verification
         toolResults.push(result.slice(0, 500));
