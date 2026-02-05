@@ -3,6 +3,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { filesystemTools, cleanupFilesystem } from "./filesystem.ts";
 import { bashTools, cleanupBash, DOCKER_ENV } from "./bash.ts";
 import { browserTools, cleanupBrowser } from "./browser.ts";
+import { webTools } from "./web.ts";
 import { skillTools } from "./skill.ts";
 import { todoTools } from "./todo.ts";
 import { reminderTools } from "./reminder.ts";
@@ -12,7 +13,7 @@ import { heartbeatTools } from "./heartbeat.ts";
 import { learningTools } from "./learnings.ts";
 
 // minimal tool registry
-// filesystem + browser + bash (in docker) + learning machine
+// filesystem + browser + web + bash (in docker) + learning machine
 
 type ToolDefinition = {
   description: string;
@@ -44,6 +45,7 @@ const iterationTools: Record<string, ToolDefinition> = {
 const toolRegistry: Record<string, ToolDefinition> = {
   ...filesystemTools,
   ...browserTools,
+  ...webTools,
   ...skillTools,
   ...todoTools,
   ...reminderTools,
@@ -368,11 +370,31 @@ function recoverMalformedArgs(
       return { ...originalArgs, url };
     }
   }
-  if (toolName === "browser_click" && selectorMatch) {
-    return { ...originalArgs, selector: selectorMatch[1] };
+  // ref-based browser actions
+  if (toolName === "browser_act") {
+    const refMatch = brokenArgs.match(/"?ref"?\s*[:=]\s*(\d+)/i);
+    const actionMatch = brokenArgs.match(
+      /"?action"?\s*[:=]\s*"?(click|type|fill|hover|select|check|uncheck|focus|clear)/i,
+    );
+    const valueMatch = brokenArgs.match(/"?value"?\s*[:=]\s*"([^"]+)"/i);
+    if (refMatch && actionMatch) {
+      return {
+        ...originalArgs,
+        ref: parseInt(refMatch[1]!, 10),
+        action: actionMatch[1],
+        ...(valueMatch ? { value: valueMatch[1] } : {}),
+      };
+    }
   }
-  if (toolName === "browser_type" && selectorMatch && textMatch) {
-    return { ...originalArgs, selector: selectorMatch[1], text: textMatch[1] };
+
+  // web_fetch - recover url from broken args
+  if (toolName === "web_fetch") {
+    if (urlMatch) {
+      let url = urlMatch[1]!.trim();
+      if (url.startsWith("//")) url = `https:${url}`;
+      if (!url.startsWith("http") && url.includes(".")) url = `https://${url}`;
+      return { ...originalArgs, url };
+    }
   }
 
   // web search - more flexible matching

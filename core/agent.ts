@@ -148,8 +148,19 @@ class StepTracker {
         case "browser_navigate":
         case "browser_go_to_url":
           return `visited ${parsed.url || "a webpage"}`;
+        case "browser_snapshot":
+          return `scanned page structure`;
+        case "browser_act":
+          return `${parsed.action || "interacted with"} element [${parsed.ref || "?"}]`;
+        case "browser_tabs":
+          return `${parsed.action || "managed"} browser tabs`;
+        case "browser_wait":
+          return `waited for ${parsed.condition || "page"} to be ready`;
         case "browser_search":
+        case "web_search":
           return `searched for "${parsed.query || "something"}"`;
+        case "web_fetch":
+          return `fetched ${parsed.url || "a page"}`;
         case "read_file":
           return `read ${this.extractFilename(parsed.path || parsed.file_path || "")}`;
         case "write_file":

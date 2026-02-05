@@ -2,6 +2,111 @@
 
 guidance on when and how to use specific tools effectively.
 
+## Web Browsing
+
+IMPORTANT: you MUST follow the snapshot-based workflow below for all browser interaction. do NOT guess at page structure or try to interact with elements without first taking a snapshot.
+
+### tool priority (follow this order)
+
+1. for quick page reads (articles, docs, APIs): use `web_fetch` FIRST. its faster than launching a browser.
+2. for interactive sites or JS-heavy pages: use `browser_navigate` then IMMEDIATELY `browser_snapshot`
+3. to interact with any element: ALWAYS use `browser_act` with a ref from `browser_snapshot`. never guess at selectors.
+4. for long-form text extraction after youve already navigated: `browser_get_content`
+
+### required workflow
+
+every browser interaction MUST follow this pattern:
+
+1. **navigate** to a page with `browser_navigate`
+2. **snapshot** the page with `browser_snapshot` to see its structure and get element refs
+3. **act** on elements using `browser_act` with a ref number from the snapshot
+4. **re-snapshot** after any page change (navigation, form submission, dynamic updates)
+
+do NOT skip the snapshot step. do NOT try to click or type without refs.
+
+### browser_snapshot
+
+this is how you "see" the page. it returns a semantic tree of interactive elements (buttons, links, inputs) and content (headings, text), each with a numbered ref.
+
+example output:
+
+```
+[Page] GitHub - Search
+URL: https://github.com/search
+
+--- Interactive Elements ---
+[1] searchbox "Search GitHub" placeholder="Search GitHub"
+[2] button "Search"
+[3] link "Repositories"
+[4] link "Code"
+[5] link "crusty/README.md" -> /clxudiaea/crusty
+
+--- Page Content ---
+[6] heading "Repository results"
+[7] text "A crab-themed telegram AI agent"
+```
+
+### browser_act
+
+use refs from the snapshot to interact with elements. actions:
+
+| action  | what it does                         | needs value? |
+| ------- | ------------------------------------ | ------------ |
+| click   | click the element                    | no           |
+| type    | clear field and type text            | yes          |
+| fill    | set value directly (fast, for forms) | yes          |
+| hover   | mouse hover (tooltips, dropdowns)    | no           |
+| select  | pick dropdown option                 | yes          |
+| check   | check a checkbox                     | no           |
+| uncheck | uncheck a checkbox                   | no           |
+| focus   | focus the element                    | no           |
+| clear   | clear an input field                 | no           |
+
+examples:
+
+```
+click a link:    {"ref": 5, "action": "click"}
+type and submit: {"ref": 1, "action": "type", "value": "crusty bot", "submit": true}
+fill a form:     {"ref": 3, "action": "fill", "value": "user@example.com"}
+```
+
+important: refs expire when the page changes. always re-run `browser_snapshot` after navigation, form submission, or clicking elements that load new content.
+
+### browser_tabs
+
+manage multiple tabs:
+
+- `{"action": "list"}` - see all open tabs
+- `{"action": "new", "url": "https://example.com"}` - open new tab
+- `{"action": "switch", "id": "tab-2"}` - switch to a tab
+- `{"action": "close", "id": "tab-1"}` - close a tab
+
+### browser_wait
+
+wait for async conditions before proceeding:
+
+- `{"condition": "text", "value": "Results loaded"}` - wait for text to appear
+- `{"condition": "url", "value": "/dashboard"}` - wait for URL to contain string
+- `{"condition": "selector", "value": "#results"}` - wait for element to be visible
+- `{"condition": "networkidle"}` - wait for network activity to stop
+
+### web_fetch
+
+for quickly reading web pages without the overhead of a full browser session. fetches the URL via HTTP and extracts readable text. much faster than navigate + get_content for simple pages.
+
+best for: articles, documentation, API responses, static pages.
+not ideal for: JavaScript-heavy SPAs, interactive sites, login-protected pages.
+
+```
+{"url": "https://docs.example.com/api"}
+```
+
+### web_search vs browser_navigate
+
+- use `web_search` first to find URLs
+- use `web_fetch` for quick reads of simple pages
+- use `browser_navigate` + `browser_snapshot` for interactive sites or when you need to click/type
+
 ## Shell Commands
 
 if a user asks you to run a shell command (like `uname`, `curl`, `ls`, `pwd`, etc.) and you dont have access to bash tools, tell them directly that shell access isnt enabled. do NOT guess or fabricate command output. ever. if you dont have a bash_execute or similar tool available, say so.
