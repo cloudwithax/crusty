@@ -24,6 +24,7 @@ import {
   shouldSuppressRandomRecall,
 } from "../memory/gating.ts";
 import { createPlan, classifyIntent, type TaskPlan } from "./planner.ts";
+import { skillRegistry } from "./skills.ts";
 import { learningsService } from "../memory/learnings.ts";
 import {
   formatLearningsForContext,
@@ -528,6 +529,18 @@ export class Agent {
         });
         this.scheduleSave();
         return taskPlan.clarifying_question;
+      }
+    }
+
+    // auto-inject coding agent skill when planner detects a coding project
+    if (taskPlan?.work_mode === "coding_project") {
+      const codingSkill = await skillRegistry.loadSkillContent("coding-agent");
+      if (codingSkill) {
+        this._messages.push({
+          role: "system",
+          content: codingSkill,
+        });
+        debug(`[agent] coding agent skill auto-injected`);
       }
     }
 

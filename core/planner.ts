@@ -31,6 +31,7 @@ export interface TaskPlan {
   tool_plan: PlanStep[];
   success_criteria: string;
   estimated_steps: number;
+  work_mode?: "default" | "coding_project";
 }
 
 export interface VerificationResult {
@@ -86,14 +87,17 @@ respond with valid json only, no markdown:
   "clarifying_question": "question to ask if needs_clarification is true",
   "tool_plan": [{"tool": "tool_name", "purpose": "why this tool"}],
   "success_criteria": "how to know the task is complete",
-  "estimated_steps": number
+  "estimated_steps": number,
+  "work_mode": "default" | "coding_project"
 }
 
 guidelines:
 - set needs_clarification=true only if critical info is missing
 - for simple questions, set needs_tools=false
 - tool_plan should be minimal - only essential tools
-- be practical, not overly thorough`;
+- be practical, not overly thorough
+- set work_mode to "coding_project" when the user wants to create or modify multiple files, add features to a codebase, integrate libraries, refactor across modules, or implement something in a repository
+- set work_mode to "default" for simple scripts, one-off snippets, single file changes, questions, or non-coding tasks`;
 
   const userPrompt = `conversation context (recent):
 ${conversationContext.slice(-1000)}

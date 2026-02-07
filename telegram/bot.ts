@@ -25,7 +25,7 @@ import {
   generateSkillContent,
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
-import { fetchAndValidateSkillUrl } from "../core/skill-url.ts";
+import { fetchAndValidateSkillUrl, detectInjection } from "../core/skill-url.ts";
 import { getRunningHooks } from "../scheduler/hooks.ts";
 import { getDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
@@ -686,6 +686,18 @@ async function handleSkillWizardInput(
 
   if (result.done) {
     if (result.skill) {
+      // scan wizard output for injection before persisting
+      const skillContent = generateSkillContent(result.skill);
+      const injectionCheck = detectInjection(skillContent);
+      if (injectionCheck.detected) {
+        await sendMessage(
+          chatId,
+          `skill blocked: suspicious content detected in skill definition (${injectionCheck.patterns.length} pattern(s) matched)`,
+          { message_thread_id: messageThreadId },
+        );
+        return true;
+      }
+
       // wizard completed successfully, write the skill to filesystem
       const writeResult = await writeSkill(result.skill);
 
@@ -693,7 +705,7 @@ async function handleSkillWizardInput(
       const dbSaved = await skillRegistry.addWizardSkill(
         result.skill.name,
         result.skill.description,
-        generateSkillContent(result.skill),
+        skillContent,
         "MIT",
       );
 
