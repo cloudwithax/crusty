@@ -25,7 +25,10 @@ import {
   generateSkillContent,
 } from "../core/skill-wizard.ts";
 import { skillRegistry } from "../core/skills.ts";
-import { fetchAndValidateSkillUrl, detectInjection } from "../core/skill-url.ts";
+import {
+  fetchAndValidateSkillUrl,
+  detectInjection,
+} from "../core/skill-url.ts";
 import { getRunningHooks } from "../scheduler/hooks.ts";
 import { getDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
@@ -855,13 +858,12 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     message_thread_id: messageThreadId,
   });
 
-  // callbacks for the agent to send real-time updates
+  // callbacks for the agent
   const callbacks: AgentCallbacks = {
-    onStatusUpdate: async (message: string) => {
-      await sendMessage(chatId, message, {
+    onPlanReady: async (intent: string) => {
+      await sendMessage(chatId, intent, {
         message_thread_id: messageThreadId,
       });
-      // refresh typing after sending a status message
       await sendChatAction(chatId, "typing", {
         message_thread_id: messageThreadId,
       });
@@ -895,7 +897,9 @@ async function processMessage(message: TelegramMessage): Promise<void> {
 
     // if interrupted, the new message handler will take over
     if (error instanceof AgentInterruptedError) {
-      debug(`[bot] agent interrupted for user ${userId}, handing off to new message`);
+      debug(
+        `[bot] agent interrupted for user ${userId}, handing off to new message`,
+      );
       const queuedMessage = interruptQueue.get(userId);
       if (queuedMessage) {
         interruptQueue.delete(userId);
@@ -1003,7 +1007,9 @@ export async function startBot(): Promise<void> {
           const existingController = processingUsers.get(userId);
           if (existingController) {
             // interrupt the current processing and queue new message
-            debug(`[User ${userId} is busy, interrupting and queuing new message]`);
+            debug(
+              `[User ${userId} is busy, interrupting and queuing new message]`,
+            );
             interruptQueue.set(userId, update.message);
             existingController.abort();
             continue;
@@ -1011,10 +1017,7 @@ export async function startBot(): Promise<void> {
 
           // process message without blocking the polling loop
           processMessage(update.message).catch((error) =>
-            console.error(
-              `[Error processing message from ${userId}]:`,
-              error,
-            ),
+            console.error(`[Error processing message from ${userId}]:`, error),
           );
         }
       }

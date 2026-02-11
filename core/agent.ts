@@ -185,6 +185,8 @@ class StepTracker {
           return `recorded a learning`;
         case "search_learnings":
           return `checked past learnings`;
+        case "deep_research":
+          return `running deep research on "${parsed.topic || "a topic"}"`;
         default:
           return `used ${tool.replace(/_/g, " ")}`;
       }
@@ -331,7 +333,7 @@ function buildToolSignature(
 }
 
 export interface AgentCallbacks {
-  onStatusUpdate?: (message: string) => Promise<void>;
+  onPlanReady?: (intent: string) => Promise<void>;
   onTyping?: () => Promise<void>;
   abortSignal?: AbortSignal;
 }
@@ -436,13 +438,6 @@ export class Agent {
       // archive the current conversation before compaction
       await archiveConversation(this.userId, this._messages);
       markFlushPerformed(this.userId);
-
-      // notify via status callback if available
-      if (callbacks?.onStatusUpdate) {
-        await callbacks.onStatusUpdate(
-          "archiving conversation to session memory...",
-        );
-      }
     }
 
     // context management
@@ -560,382 +555,344 @@ export class Agent {
     let extensionCount = 0;
     let warningInjected = false;
 
-    // periodic status update every 10 seconds
-    let statusInterval: ReturnType<typeof setInterval> | null = null;
-    if (callbacks?.onStatusUpdate) {
-      statusInterval = setInterval(async () => {
-        const status = stepTracker.generateStatus();
-        await callbacks.onStatusUpdate!(status);
-      }, 10000);
+    // send plan intent once if planner produced one
+    if (callbacks?.onPlanReady && taskPlan?.intent) {
+      await callbacks.onPlanReady(taskPlan.intent);
     }
 
-    // cleanup helper for the status interval
-    const clearStatusInterval = () => {
-      if (statusInterval) {
-        clearInterval(statusInterval);
-        statusInterval = null;
-      }
-    };
+    // agentic loop: keep calling api until no more tool calls
+    while (true) {
+      // check for interrupt at start of each iteration
+      checkAbort();
 
-    try {
-      // agentic loop: keep calling api until no more tool calls
-      while (true) {
-        // check for interrupt at start of each iteration
+      if (callbacks?.onTyping) await callbacks.onTyping();
+
+      // build messages with context window management
+      // combine memory and learning contexts
+      const combinedContext =
+        [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
+        undefined;
+      const messagesForModel = this.contextManager.buildMessagesForModel(
+        this._messages,
+        combinedContext,
+      );
+
+      await rateLimiter.acquire();
+
+      // validate and fix messages before sending to api
+      const validMessages = messagesForModel
+        .map((msg) => {
+          // fix assistant messages with missing content
+          if (msg.role === "assistant") {
+            const hasToolCalls =
+              (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
+            const hasContent =
+              msg.content &&
+              (typeof msg.content === "string" ? msg.content.trim() : true);
+
+            // assistant must have content or tool_calls
+            if (!hasContent && !hasToolCalls) {
+              return null; // drop invalid message
+            }
+
+            // if has tool_calls but no content, set empty string
+            if (hasToolCalls && !msg.content) {
+              return { ...msg, content: "" };
+            }
+          }
+
+          // ensure tool messages have content
+          if (msg.role === "tool" && msg.content === undefined) {
+            return null;
+          }
+
+          return msg;
+        })
+        .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
+
+      if (validMessages.length === 0) {
+        debug("[api] no valid messages to send");
+        break;
+      }
+
+      let response;
+      try {
+        // api call with automatic retry for transient errors
+        response = await withRetry(
+          () =>
+            openai.chat.completions.create({
+              model: OPENAI_MODEL,
+              messages: validMessages,
+              tools: tools.length > 0 ? tools : undefined,
+              tool_choice: tools.length > 0 ? "auto" : undefined,
+            }),
+          { maxRetries: 2, baseDelayMs: 1000 },
+        );
+      } catch (apiError) {
+        // extract detailed error info from openai sdk
+        let errorDetails = "unknown error";
+        if (apiError instanceof Error) {
+          errorDetails = apiError.message;
+
+          // openai sdk errors have additional properties
+          const anyError = apiError as any;
+          if (anyError.status) {
+            errorDetails = `${anyError.status} status code`;
+          }
+          if (anyError.error) {
+            // detailed error from api response body
+            const errorBody =
+              typeof anyError.error === "string"
+                ? anyError.error
+                : JSON.stringify(anyError.error);
+            errorDetails += ` - ${errorBody}`;
+          }
+        }
+
+        debug(`[api error: ${errorDetails}]`);
+        return (
+          lastTextResponse || "i ran into a connection issue. please try again."
+        );
+      }
+
+      // check for interrupt after api call completes
+      checkAbort();
+
+      const choice = response.choices[0];
+      if (!choice) {
+        debug("[no choice in response]");
+        break;
+      }
+
+      const message = choice.message;
+      const content = message.content || "";
+      const toolCalls = message.tool_calls || [];
+
+      // collect text response
+      if (content.trim()) {
+        lastTextResponse = cleanModelResponse(content);
+        debug(`[text]: ${lastTextResponse.slice(0, 100)}...`);
+      }
+
+      // add assistant message to history (strip reasoning tags to reduce context bloat)
+      const cleanedContent = stripReasoningTags(content);
+      this._messages.push({
+        role: "assistant",
+        content: cleanedContent,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      });
+
+      // no tools = done
+      if (toolCalls.length === 0) {
+        break;
+      }
+
+      toolIterationCount += 1;
+
+      const normalizedContent = cleanModelResponse(content).toLowerCase();
+      if (normalizedContent) {
+        if (normalizedContent === lastAssistantText) {
+          repeatAssistantCount += 1;
+        } else {
+          lastAssistantText = normalizedContent;
+          repeatAssistantCount = 0;
+        }
+      }
+
+      const toolSignature = buildToolSignature(toolCalls);
+      if (toolSignature) {
+        if (toolSignature === lastToolSignature) {
+          repeatToolCount += 1;
+        } else {
+          lastToolSignature = toolSignature;
+          repeatToolCount = 0;
+        }
+      }
+
+      // check if agent requested more iterations
+      const extensionRequest = toolCalls.find(
+        (tc) =>
+          tc.type === "function" &&
+          tc.function?.name === "request_more_iterations",
+      );
+
+      if (extensionRequest) {
+        if (extensionCount < MAX_EXTENSIONS) {
+          extensionCount += 1;
+          currentMaxIterations += ITERATION_EXTENSION_AMOUNT;
+          warningInjected = false; // reset warning flag for next threshold
+          debug(
+            `[agent] iteration extension granted (${extensionCount}/${MAX_EXTENSIONS}), new max: ${currentMaxIterations}`,
+          );
+
+          // respond to the tool call
+          this._messages.push({
+            role: "tool",
+            content: `granted ${ITERATION_EXTENSION_AMOUNT} additional iterations. new limit: ${currentMaxIterations}. extensions remaining: ${MAX_EXTENSIONS - extensionCount}`,
+            tool_call_id: extensionRequest.id,
+          });
+
+          // skip this tool call in the execution loop below
+        } else {
+          debug(`[agent] iteration extension denied - max extensions reached`);
+          this._messages.push({
+            role: "tool",
+            content: `denied. you have already used all ${MAX_EXTENSIONS} extensions. wrap up your work now.`,
+            tool_call_id: extensionRequest.id,
+          });
+        }
+      }
+
+      // inject warning when approaching limit (only once per threshold)
+      const iterationsRemaining = currentMaxIterations - toolIterationCount;
+      const shouldWarn =
+        !warningInjected &&
+        toolIterationCount >= ITERATION_WARNING_THRESHOLD &&
+        iterationsRemaining <= 10;
+
+      if (shouldWarn) {
+        warningInjected = true;
+        const warningContent = ITERATION_WARNING_MESSAGE.replace(
+          "{{USED}}",
+          String(toolIterationCount),
+        )
+          .replace("{{MAX}}", String(currentMaxIterations))
+          .replace("{{REMAINING}}", String(iterationsRemaining));
+
+        this._messages.push({
+          role: "system",
+          content: warningContent,
+        });
+        debug(
+          `[agent] iteration warning injected at ${toolIterationCount}/${currentMaxIterations}`,
+        );
+      }
+
+      let loopReason: string | null = null;
+      if (toolIterationCount > currentMaxIterations) {
+        loopReason = "too many tool iterations";
+      } else if (repeatAssistantCount >= MAX_REPEAT_ASSISTANT_MESSAGES) {
+        loopReason = "repeating assistant response";
+      } else if (repeatToolCount >= MAX_REPEAT_TOOL_SIGNATURES) {
+        loopReason = "repeating tool calls";
+      }
+
+      if (loopReason) {
+        loopGuardMessage =
+          "i got stuck in a tool loop and stopped to avoid repeating myself. please try again.";
+        lastTextResponse = loopGuardMessage;
+        debug(`[tool loop guard] ${loopReason}`);
+
+        for (const toolCall of toolCalls) {
+          this._messages.push({
+            role: "tool",
+            content: `error: tool call stopped to avoid loop (${loopReason})`,
+            tool_call_id: toolCall.id,
+          });
+        }
+
+        break;
+      }
+
+      // execute tools and collect results
+      for (const toolCall of toolCalls) {
+        // skip iteration extension tool - already handled above
+        if (
+          toolCall.type === "function" &&
+          toolCall.function?.name === "request_more_iterations"
+        ) {
+          continue;
+        }
+
+        // check for interrupt before each tool execution
         checkAbort();
 
         if (callbacks?.onTyping) await callbacks.onTyping();
 
-        // build messages with context window management
-        // combine memory and learning contexts
-        const combinedContext =
-          [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
-          undefined;
-        const messagesForModel = this.contextManager.buildMessagesForModel(
-          this._messages,
-          combinedContext,
-        );
+        // handle both standard function type and custom/alternative formats
+        let name: string;
+        let args: string;
 
-        // initial status if we havent sent one yet
-        let statusSent = false;
-        const statusTimeout = setTimeout(async () => {
-          if (callbacks?.onStatusUpdate && stepTracker.getStepCount() === 0) {
-            await callbacks.onStatusUpdate("thinking...");
-            statusSent = true;
-          }
-        }, 3000);
+        if (toolCall.type === "function" && toolCall.function) {
+          name = toolCall.function.name;
+          args = toolCall.function.arguments ?? "";
+        } else {
+          // fallback for non-standard tool call formats (some providers use different structures)
+          const anyCall = toolCall as unknown as Record<string, unknown>;
+          const fn = anyCall.function as
+            | { name?: string; arguments?: string }
+            | undefined;
+          const custom = anyCall.custom as
+            | { name?: string; input?: string }
+            | undefined;
 
-        await rateLimiter.acquire();
-
-        // validate and fix messages before sending to api
-        const validMessages = messagesForModel
-          .map((msg) => {
-            // fix assistant messages with missing content
-            if (msg.role === "assistant") {
-              const hasToolCalls =
-                (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
-              const hasContent =
-                msg.content &&
-                (typeof msg.content === "string" ? msg.content.trim() : true);
-
-              // assistant must have content or tool_calls
-              if (!hasContent && !hasToolCalls) {
-                return null; // drop invalid message
-              }
-
-              // if has tool_calls but no content, set empty string
-              if (hasToolCalls && !msg.content) {
-                return { ...msg, content: "" };
-              }
-            }
-
-            // ensure tool messages have content
-            if (msg.role === "tool" && msg.content === undefined) {
-              return null;
-            }
-
-            return msg;
-          })
-          .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
-
-        if (validMessages.length === 0) {
-          debug("[api] no valid messages to send");
-          break;
+          name = fn?.name ?? custom?.name ?? String(anyCall.name ?? "unknown");
+          args =
+            fn?.arguments ??
+            custom?.input ??
+            String(anyCall.arguments ?? anyCall.input ?? "{}");
         }
 
-        let response;
+        debug(`[tool: ${name}]`);
+        debug(`[args raw]: ${args.slice(0, 500)}`);
+
+        let result: string;
         try {
-          // api call with automatic retry for transient errors
-          response = await withRetry(
-            () =>
-              openai.chat.completions.create({
-                model: OPENAI_MODEL,
-                messages: validMessages,
-                tools: tools.length > 0 ? tools : undefined,
-                tool_choice: tools.length > 0 ? "auto" : undefined,
-              }),
-            { maxRetries: 2, baseDelayMs: 1000 },
-          );
-        } catch (apiError) {
-          clearTimeout(statusTimeout);
+          result = await executeTool(name, args, this.userId, content);
+          debug(`[result]: ${result.slice(0, 200)}...`);
 
-          // extract detailed error info from openai sdk
-          let errorDetails = "unknown error";
-          if (apiError instanceof Error) {
-            errorDetails = apiError.message;
+          // track step for status summarization
+          stepTracker.addStep(name, args, result);
+        } catch (error) {
+          // capture tool failure for learning machine
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          result = `[Error] ${errorMessage}`;
+          debug(`[tool error]: ${errorMessage}`);
 
-            // openai sdk errors have additional properties
-            const anyError = apiError as any;
-            if (anyError.status) {
-              errorDetails = `${anyError.status} status code`;
-            }
-            if (anyError.error) {
-              // detailed error from api response body
-              const errorBody =
-                typeof anyError.error === "string"
-                  ? anyError.error
-                  : JSON.stringify(anyError.error);
-              errorDetails += ` - ${errorBody}`;
-            }
-          }
+          // track failed step too
+          stepTracker.addStep(name, args, result);
 
-          debug(`[api error: ${errorDetails}]`);
-          return (
-            lastTextResponse ||
-            "i ran into a connection issue. please try again."
-          );
+          // auto-capture the failure (fire and forget)
+          captureToolFailure(
+            this.userId,
+            name,
+            errorMessage,
+            args.slice(0, 200),
+          ).catch(() => {});
         }
 
-        clearTimeout(statusTimeout);
-        if (statusSent && callbacks?.onTyping) await callbacks.onTyping();
+        // track results for potential verification
+        toolResults.push(result.slice(0, 500));
 
-        // check for interrupt after api call completes
-        checkAbort();
-
-        const choice = response.choices[0];
-        if (!choice) {
-          debug("[no choice in response]");
-          break;
-        }
-
-        const message = choice.message;
-        const content = message.content || "";
-        const toolCalls = message.tool_calls || [];
-
-        // collect text response
-        if (content.trim()) {
-          lastTextResponse = cleanModelResponse(content);
-          debug(`[text]: ${lastTextResponse.slice(0, 100)}...`);
-        }
-
-        // add assistant message to history (strip reasoning tags to reduce context bloat)
-        const cleanedContent = stripReasoningTags(content);
+        // compress large tool outputs before storing in context
+        const compressedResult = compressToolOutput(result, name);
         this._messages.push({
-          role: "assistant",
-          content: cleanedContent,
-          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+          role: "tool",
+          content: compressedResult,
+          tool_call_id: toolCall.id,
         });
-
-        // no tools = done
-        if (toolCalls.length === 0) {
-          break;
-        }
-
-        toolIterationCount += 1;
-
-        const normalizedContent = cleanModelResponse(content).toLowerCase();
-        if (normalizedContent) {
-          if (normalizedContent === lastAssistantText) {
-            repeatAssistantCount += 1;
-          } else {
-            lastAssistantText = normalizedContent;
-            repeatAssistantCount = 0;
-          }
-        }
-
-        const toolSignature = buildToolSignature(toolCalls);
-        if (toolSignature) {
-          if (toolSignature === lastToolSignature) {
-            repeatToolCount += 1;
-          } else {
-            lastToolSignature = toolSignature;
-            repeatToolCount = 0;
-          }
-        }
-
-        // check if agent requested more iterations
-        const extensionRequest = toolCalls.find(
-          (tc) =>
-            tc.type === "function" &&
-            tc.function?.name === "request_more_iterations",
-        );
-
-        if (extensionRequest) {
-          if (extensionCount < MAX_EXTENSIONS) {
-            extensionCount += 1;
-            currentMaxIterations += ITERATION_EXTENSION_AMOUNT;
-            warningInjected = false; // reset warning flag for next threshold
-            debug(
-              `[agent] iteration extension granted (${extensionCount}/${MAX_EXTENSIONS}), new max: ${currentMaxIterations}`,
-            );
-
-            // respond to the tool call
-            this._messages.push({
-              role: "tool",
-              content: `granted ${ITERATION_EXTENSION_AMOUNT} additional iterations. new limit: ${currentMaxIterations}. extensions remaining: ${MAX_EXTENSIONS - extensionCount}`,
-              tool_call_id: extensionRequest.id,
-            });
-
-            // skip this tool call in the execution loop below
-          } else {
-            debug(
-              `[agent] iteration extension denied - max extensions reached`,
-            );
-            this._messages.push({
-              role: "tool",
-              content: `denied. you have already used all ${MAX_EXTENSIONS} extensions. wrap up your work now.`,
-              tool_call_id: extensionRequest.id,
-            });
-          }
-        }
-
-        // inject warning when approaching limit (only once per threshold)
-        const iterationsRemaining = currentMaxIterations - toolIterationCount;
-        const shouldWarn =
-          !warningInjected &&
-          toolIterationCount >= ITERATION_WARNING_THRESHOLD &&
-          iterationsRemaining <= 10;
-
-        if (shouldWarn) {
-          warningInjected = true;
-          const warningContent = ITERATION_WARNING_MESSAGE.replace(
-            "{{USED}}",
-            String(toolIterationCount),
-          )
-            .replace("{{MAX}}", String(currentMaxIterations))
-            .replace("{{REMAINING}}", String(iterationsRemaining));
-
-          this._messages.push({
-            role: "system",
-            content: warningContent,
-          });
-          debug(
-            `[agent] iteration warning injected at ${toolIterationCount}/${currentMaxIterations}`,
-          );
-        }
-
-        let loopReason: string | null = null;
-        if (toolIterationCount > currentMaxIterations) {
-          loopReason = "too many tool iterations";
-        } else if (repeatAssistantCount >= MAX_REPEAT_ASSISTANT_MESSAGES) {
-          loopReason = "repeating assistant response";
-        } else if (repeatToolCount >= MAX_REPEAT_TOOL_SIGNATURES) {
-          loopReason = "repeating tool calls";
-        }
-
-        if (loopReason) {
-          loopGuardMessage =
-            "i got stuck in a tool loop and stopped to avoid repeating myself. please try again.";
-          lastTextResponse = loopGuardMessage;
-          debug(`[tool loop guard] ${loopReason}`);
-
-          for (const toolCall of toolCalls) {
-            this._messages.push({
-              role: "tool",
-              content: `error: tool call stopped to avoid loop (${loopReason})`,
-              tool_call_id: toolCall.id,
-            });
-          }
-
-          break;
-        }
-
-        // execute tools and collect results
-        for (const toolCall of toolCalls) {
-          // skip iteration extension tool - already handled above
-          if (
-            toolCall.type === "function" &&
-            toolCall.function?.name === "request_more_iterations"
-          ) {
-            continue;
-          }
-
-          // check for interrupt before each tool execution
-          checkAbort();
-
-          if (callbacks?.onTyping) await callbacks.onTyping();
-
-          // handle both standard function type and custom/alternative formats
-          let name: string;
-          let args: string;
-
-          if (toolCall.type === "function" && toolCall.function) {
-            name = toolCall.function.name;
-            args = toolCall.function.arguments ?? "";
-          } else {
-            // fallback for non-standard tool call formats (some providers use different structures)
-            const anyCall = toolCall as unknown as Record<string, unknown>;
-            const fn = anyCall.function as
-              | { name?: string; arguments?: string }
-              | undefined;
-            const custom = anyCall.custom as
-              | { name?: string; input?: string }
-              | undefined;
-
-            name =
-              fn?.name ?? custom?.name ?? String(anyCall.name ?? "unknown");
-            args =
-              fn?.arguments ??
-              custom?.input ??
-              String(anyCall.arguments ?? anyCall.input ?? "{}");
-          }
-
-          debug(`[tool: ${name}]`);
-          debug(`[args raw]: ${args.slice(0, 500)}`);
-
-          let result: string;
-          try {
-            result = await executeTool(name, args, this.userId, content);
-            debug(`[result]: ${result.slice(0, 200)}...`);
-
-            // track step for status summarization
-            stepTracker.addStep(name, args, result);
-          } catch (error) {
-            // capture tool failure for learning machine
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            result = `[Error] ${errorMessage}`;
-            debug(`[tool error]: ${errorMessage}`);
-
-            // track failed step too
-            stepTracker.addStep(name, args, result);
-
-            // auto-capture the failure (fire and forget)
-            captureToolFailure(
-              this.userId,
-              name,
-              errorMessage,
-              args.slice(0, 200),
-            ).catch(() => {});
-          }
-
-          // track results for potential verification
-          toolResults.push(result.slice(0, 500));
-
-          // compress large tool outputs before storing in context
-          const compressedResult = compressToolOutput(result, name);
-          this._messages.push({
-            role: "tool",
-            content: compressedResult,
-            tool_call_id: toolCall.id,
-          });
-        }
       }
-
-      if (loopGuardMessage) {
-        this._messages.push({ role: "assistant", content: loopGuardMessage });
-      }
-
-      // log plan outcome for future reference
-      if (taskPlan) {
-        debug(
-          `[planner] completed: ${taskPlan.intent} (${toolResults.length} tool results)`,
-        );
-      }
-
-      // log for self-review
-      addRecentContext(
-        `user: ${userMessage}\n\nassistant: ${lastTextResponse}`,
-      );
-      this.scheduleSave();
-
-      return (
-        lastTextResponse ||
-        "i couldn't complete that request. please try again."
-      );
-    } finally {
-      // always clean up the status interval
-      clearStatusInterval();
     }
+
+    if (loopGuardMessage) {
+      this._messages.push({ role: "assistant", content: loopGuardMessage });
+    }
+
+    // log plan outcome for future reference
+    if (taskPlan) {
+      debug(
+        `[planner] completed: ${taskPlan.intent} (${toolResults.length} tool results)`,
+      );
+    }
+
+    // log for self-review
+    addRecentContext(`user: ${userMessage}\n\nassistant: ${lastTextResponse}`);
+    this.scheduleSave();
+
+    return (
+      lastTextResponse || "i couldn't complete that request. please try again."
+    );
   }
 
   getMemory(): ChatCompletionMessageParam[] {

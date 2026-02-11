@@ -159,6 +159,12 @@ function getCompressionStrategy(
       const head = lines.slice(0, 25).join("\n");
       return `${head}\n\n... and ${lines.length - 25} more matches`;
     },
+
+    // deep research output is already synthesized, keep most of it
+    deep_research: (output, opts) => {
+      if (output.length <= 8000) return output;
+      return output.slice(0, 8000) + "\n\n[report truncated for context management]";
+    },
   };
 
   return strategies[toolName] || null;
