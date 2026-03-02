@@ -40,8 +40,29 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-venv \
     openssh-client \
+    build-essential \
+    procps \
+    file \
+    sudo \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# install node.js lts (includes npm and npx) via nodesource
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# install homebrew via linuxbrew user (homebrew refuses to run as root)
+RUN useradd -m -s /bin/bash linuxbrew \
+    && echo 'linuxbrew ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+RUN NONINTERACTIVE=1 su linuxbrew -c '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+# add homebrew to path for all users
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
+
+# wrapper script so root (and the bot) can invoke brew as the linuxbrew user
+RUN printf '#!/bin/bash\nexec su linuxbrew -s /bin/bash -c '"'"'/home/linuxbrew/.linuxbrew/bin/brew "$@"'"'"' -- "$@"\n' > /usr/local/bin/brew \
+    && chmod +x /usr/local/bin/brew
 
 # install bun
 RUN curl -fsSL https://bun.sh/install | bash
