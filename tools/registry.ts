@@ -374,15 +374,18 @@ function recoverMalformedArgs(
   }
   // ref-based browser actions
   if (toolName === "browser_act") {
-    const refMatch = brokenArgs.match(/"?ref"?\s*[:=]\s*(\d+)/i);
+    const refMatch = brokenArgs.match(/"?ref"?\s*[:=]\s*"?(e?\d+)/i);
     const actionMatch = brokenArgs.match(
       /"?action"?\s*[:=]\s*"?(click|type|fill|hover|select|check|uncheck|focus|clear)/i,
     );
     const valueMatch = brokenArgs.match(/"?value"?\s*[:=]\s*"([^"]+)"/i);
     if (refMatch && actionMatch) {
+      const rawRef = refMatch[1]!;
+      // normalize ref to always have 'e' prefix
+      const ref = rawRef.startsWith("e") ? rawRef : `e${rawRef}`;
       return {
         ...originalArgs,
-        ref: parseInt(refMatch[1]!, 10),
+        ref,
         action: actionMatch[1],
         ...(valueMatch ? { value: valueMatch[1] } : {}),
       };

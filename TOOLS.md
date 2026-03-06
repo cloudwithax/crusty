@@ -19,14 +19,14 @@ every browser interaction MUST follow this pattern:
 
 1. **navigate** to a page with `browser_navigate`
 2. **snapshot** the page with `browser_snapshot` to see its structure and get element refs
-3. **act** on elements using `browser_act` with a ref number from the snapshot
+3. **act** on elements using `browser_act` with a ref string from the snapshot (e.g. "e5")
 4. **re-snapshot** after any page change (navigation, form submission, dynamic updates)
 
 do NOT skip the snapshot step. do NOT try to click or type without refs.
 
 ### browser_snapshot
 
-this is how you "see" the page. it returns a semantic tree of interactive elements (buttons, links, inputs) and content (headings, text), each with a numbered ref.
+this is how you "see" the page. it returns a semantic tree of interactive elements (buttons, links, inputs) and content (headings, text), each with a string ref (e.g. e0, e5, e12).
 
 example output:
 
@@ -35,15 +35,15 @@ example output:
 URL: https://github.com/search
 
 --- Interactive Elements ---
-[1] searchbox "Search GitHub" placeholder="Search GitHub"
-[2] button "Search"
-[3] link "Repositories"
-[4] link "Code"
-[5] link "crusty/README.md" -> /clxudiaea/crusty
+[e0] searchbox "Search GitHub" placeholder="Search GitHub"
+[e1] button "Search"
+[e2] link "Repositories"
+[e3] link "Code"
+[e5] link "crusty/README.md" -> /clxudiaea/crusty
 
 --- Page Content ---
-[6] heading "Repository results"
-[7] text "A crab-themed telegram AI agent"
+[e6] heading "Repository results"
+[e7] text "A crab-themed telegram AI agent"
 ```
 
 ### browser_act
@@ -65,9 +65,9 @@ use refs from the snapshot to interact with elements. actions:
 examples:
 
 ```
-click a link:    {"ref": 5, "action": "click"}
-type and submit: {"ref": 1, "action": "type", "value": "crusty bot", "submit": true}
-fill a form:     {"ref": 3, "action": "fill", "value": "user@example.com"}
+click a link:    {"ref": "e5", "action": "click"}
+type and submit: {"ref": "e1", "action": "type", "value": "crusty bot", "submit": true}
+fill a form:     {"ref": "e3", "action": "fill", "value": "user@example.com"}
 ```
 
 important: refs expire when the page changes. always re-run `browser_snapshot` after navigation, form submission, or clicking elements that load new content.

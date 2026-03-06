@@ -4,6 +4,13 @@ import {
   sendMessage,
   getPairedUserId,
 } from "./telegram/bot.ts";
+import {
+  startImessageBot,
+  cleanupImessageBot,
+  sendImessageMessage,
+  getPairedPhoneNumber,
+  isImessageConfigured,
+} from "./imessage/index.ts";
 import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
 import { startHooks, cleanupHooks } from "./scheduler/hooks.ts";
 import {
@@ -21,6 +28,7 @@ process.on("SIGINT", async () => {
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();
+  await cleanupImessageBot();
   closeDatabase();
   process.exit(0);
 });
@@ -30,33 +38,48 @@ process.on("SIGTERM", async () => {
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();
+  await cleanupImessageBot();
   closeDatabase();
   process.exit(0);
 });
 
-// Create heartbeat message sender
+// Create heartbeat message sender - delivers to all configured channels
 async function sendHeartbeatMessage(
   text: string,
   isHeartbeat?: boolean,
 ): Promise<void> {
+  // deliver to telegram if paired
   const userId = getPairedUserId();
-  if (!userId) {
-    debug("[heartbeat] no paired user, skipping delivery");
-    return;
+  if (userId) {
+    await sendMessage(userId, text, { isHeartbeat });
   }
 
-  await sendMessage(userId, text, { isHeartbeat });
+  // deliver to imessage if paired
+  const phone = getPairedPhoneNumber();
+  if (phone) {
+    await sendImessageMessage(phone, text, { isHeartbeat });
+  }
+
+  if (!userId && !phone) {
+    debug("[heartbeat] no paired user on any channel, skipping delivery");
+  }
 }
 
-// Create hook message sender
+// Create hook message sender - delivers to all configured channels
 async function sendHookMessage(text: string, isHook?: boolean): Promise<void> {
   const userId = getPairedUserId();
-  if (!userId) {
-    debug("[hooks] no paired user, skipping delivery");
-    return;
+  if (userId) {
+    await sendMessage(userId, text, { isHeartbeat: isHook });
   }
 
-  await sendMessage(userId, text, { isHeartbeat: isHook });
+  const phone = getPairedPhoneNumber();
+  if (phone) {
+    await sendImessageMessage(phone, text, { isHeartbeat: isHook });
+  }
+
+  if (!userId && !phone) {
+    debug("[hooks] no paired user on any channel, skipping delivery");
+  }
 }
 
 // Create reminder message sender
@@ -67,26 +90,31 @@ async function sendReminderMessage(
   await sendMessage(userId, text);
 }
 
-// Start the Telegram bot and heartbeat
+// start all bot adapters and schedulers
 async function main(): Promise<void> {
   // preload embedding model for faster first chat
   preloadEmbeddingModel().then((loaded) => {
     if (loaded) debug("[startup] embedding model preloaded");
   });
 
-  // Start heartbeat scheduler
+  // start heartbeat scheduler
   await startHeartbeat(sendHeartbeatMessage);
 
-  // Set hook message sender for tools to use when reloading
+  // set hook message sender for tools to use when reloading
   setHookMessageSender(sendHookMessage);
 
-  // Start hooks scheduler
+  // start hooks scheduler
   await startHooks(sendHookMessage);
 
-  // Start reminder scheduler
+  // start reminder scheduler
   startReminderScheduler(sendReminderMessage);
 
-  // Start the bot
+  // start imessage bot if configured
+  if (isImessageConfigured()) {
+    await startImessageBot();
+  }
+
+  // start telegram bot (this blocks on long polling)
   await startBot();
 }
 
@@ -96,6 +124,7 @@ main().catch(async (error) => {
   cleanupHooks();
   cleanupReminderScheduler();
   await cleanupBot();
+  await cleanupImessageBot();
   closeDatabase();
   process.exit(1);
 });

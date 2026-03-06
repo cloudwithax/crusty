@@ -3,7 +3,7 @@
 FROM debian:bookworm-slim AS base
 WORKDIR /app
 
-# install system dependencies + chromium for puppeteer
+# install system dependencies + chromium for agent-browser automation
 RUN apt-get update && apt-get install -y \
     curl \
     unzip \
@@ -68,9 +68,8 @@ RUN printf '#!/bin/bash\nexec su linuxbrew -s /bin/bash -c '"'"'/home/linuxbrew/
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 
-# puppeteer configuration
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+# install agent-browser for browser automation
+RUN npm install -g agent-browser
 
 # docker detection for bash tools
 ENV CRUSTY_DOCKER=true
@@ -160,4 +159,8 @@ ENV HEARTBEAT_DAYS=${HEARTBEAT_DAYS}
 ENV HEARTBEAT_START=${HEARTBEAT_START}
 ENV HEARTBEAT_END=${HEARTBEAT_END}
 
-ENTRYPOINT ["bun", "run", "dist/index.js"]
+# entrypoint runs the bot (agent-browser daemon starts on first use)
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]

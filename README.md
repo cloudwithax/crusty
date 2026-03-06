@@ -17,7 +17,6 @@
 
 ```
 
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-1.3.0-f9f1e1.svg)](https://bun.sh/)
@@ -157,7 +156,6 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 # optional
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o
-BROWSER_HEADLESS=true
 HEARTBEAT_EVERY=30m
 MAX_CONTEXT_TOKENS=24000
 ```

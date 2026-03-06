@@ -1,13 +1,31 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { chromium } from "playwright";
-import { generatePairingCode, savePairingCode, loadPairingData, clearPairing, getPairingCodeRemainingMinutes, clearPairingForNewCode } from "./pairing.ts";
+import {
+  generatePairingCode,
+  savePairingCode,
+  loadPairingData,
+  clearPairing,
+  getPairingCodeRemainingMinutes,
+  clearPairingForNewCode,
+} from "./pairing.ts";
+import {
+  generateImessagePairingCode,
+  saveImessagePairingCode,
+  loadImessagePairingData,
+  clearImessagePairing,
+  getImessagePairingCodeRemainingMinutes,
+  clearImessagePairingForNewCode,
+} from "../imessage/pairing.ts";
 
 const ENV_PATH = join(import.meta.dir, "..", ".env");
 const COGS_PATH = join(import.meta.dir, "..", "cogs");
 
 // Simple prompt function for Bun
-async function prompt(question: string, defaultValue?: string): Promise<string> {
+async function prompt(
+  question: string,
+  defaultValue?: string,
+): Promise<string> {
   const stdin = process.stdin;
   const stdout = process.stdout;
 
@@ -90,7 +108,7 @@ function saveEnv(env: Record<string, string>): void {
 // Validate OpenAI API connection
 async function validateOpenAIConnection(
   apiKey: string,
-  baseUrl?: string
+  baseUrl?: string,
 ): Promise<boolean> {
   try {
     const url = baseUrl
@@ -131,26 +149,28 @@ async function configureAPI(env: Record<string, string>): Promise<void> {
 
   console.log(`Current API Key: ${maskedKey}`);
   const newKey = await prompt(
-    "Enter OpenAI API Key (or press enter to keep current)"
+    "Enter OpenAI API Key (or press enter to keep current)",
   );
 
   if (newKey) {
     env.OPENAI_API_KEY = newKey;
   }
 
-  console.log(`\nCurrent Base URL: ${env.OPENAI_BASE_URL || "not set (using OpenAI default)"}`);
+  console.log(
+    `\nCurrent Base URL: ${env.OPENAI_BASE_URL || "not set (using OpenAI default)"}`,
+  );
   const newBaseUrl = await prompt(
-    "Enter Base URL (or press enter to keep current)"
+    "Enter Base URL (or press enter to keep current)",
   );
 
   if (newBaseUrl) {
     env.OPENAI_BASE_URL = newBaseUrl;
   }
 
-  console.log(`\nCurrent Model: ${env.OPENAI_MODEL || "not set (using gpt-4o)"}`);
-  const newModel = await prompt(
-    "Enter Model (or press enter to keep current)"
+  console.log(
+    `\nCurrent Model: ${env.OPENAI_MODEL || "not set (using gpt-4o)"}`,
   );
+  const newModel = await prompt("Enter Model (or press enter to keep current)");
 
   if (newModel) {
     env.OPENAI_MODEL = newModel;
@@ -171,7 +191,7 @@ async function configureTelegram(env: Record<string, string>): Promise<void> {
 
   console.log(`Current Bot Token: ${maskedToken}`);
   const newToken = await prompt(
-    "Enter Telegram Bot Token (or press enter to keep current)"
+    "Enter Telegram Bot Token (or press enter to keep current)",
   );
 
   if (newToken) {
@@ -183,27 +203,12 @@ async function configureTelegram(env: Record<string, string>): Promise<void> {
 }
 
 // Configure browser settings
-async function configureBrowser(env: Record<string, string>): Promise<void> {
-  console.log("\n=== Browser Configuration ===\n");
-
-  const currentHeadless = env.BROWSER_HEADLESS !== "false";
-  console.log(`Headless Mode: ${currentHeadless ? "enabled" : "disabled"}`);
-  const headlessInput = await prompt(
-    "Run browser in headless mode? (y/n)",
-    currentHeadless ? "y" : "n"
-  );
-  env.BROWSER_HEADLESS = headlessInput.toLowerCase() === "n" ? "false" : "true";
-
-  const currentViewport = env.BROWSER_VIEWPORT || "1280x800";
-  console.log(`\nCurrent Viewport: ${currentViewport}`);
-  const newViewport = await prompt(
-    "Enter viewport size (WIDTHxHEIGHT)",
-    currentViewport
-  );
-  env.BROWSER_VIEWPORT = newViewport;
-
-  saveEnv(env);
-  console.log("\n✓ Browser configuration saved");
+async function configureBrowser(_env: Record<string, string>): Promise<void> {
+  console.log("\n=== Browser Configuration (agent-browser) ===\n");
+  console.log("agent-browser manages the browser daemon automatically.");
+  console.log("No configuration is required.");
+  console.log("\nTo install: npm install -g agent-browser");
+  console.log("The daemon starts on first use and stops when the bot exits.");
 }
 
 // Customize cogs
@@ -258,7 +263,11 @@ async function customizeCogs(): Promise<void> {
     });
 
     rl.on("line", (line: string) => {
-      if (line.trim() === "" && lines.length > 0 && lines[lines.length - 1] === "") {
+      if (
+        line.trim() === "" &&
+        lines.length > 0 &&
+        lines[lines.length - 1] === ""
+      ) {
         rl.close();
       } else {
         lines.push(line);
@@ -315,7 +324,95 @@ async function resetPairing(): Promise<void> {
   clearPairing();
   console.log("✓ Pairing reset. Generate a new code to pair again.");
 }
+// Generate iMessage pairing code
+async function generateImessagePairing(): Promise<void> {
+  console.log("\n=== Generate iMessage Pairing Code ===\n");
 
+  const existingData = loadImessagePairingData();
+  if (existingData && !existingData.used) {
+    const remaining = getImessagePairingCodeRemainingMinutes();
+    console.log(`Existing pairing code: ${existingData.code}`);
+    console.log(`Expires in: ${remaining} minutes`);
+    console.log(
+      "\nSend this code via iMessage to your Sendblue number to pair.",
+    );
+    return;
+  }
+
+  if (existingData) {
+    clearImessagePairingForNewCode();
+  }
+
+  const code = generateImessagePairingCode();
+  saveImessagePairingCode(code, 60);
+
+  console.log(`\nPairing Code: ${code}`);
+  console.log("\nInstructions:");
+  console.log(
+    "1. Make sure SENDBLUE_API_KEY and SENDBLUE_API_SECRET are set in .env",
+  );
+  console.log("2. Start the bot with 'bun run start'");
+  console.log(
+    "3. Send this exact code via iMessage to your Sendblue phone number",
+  );
+  console.log("4. The bot will confirm pairing and you can start chatting");
+  console.log("\nThis code expires in 60 minutes");
+}
+
+// Reset iMessage pairing
+async function resetImessagePairing(): Promise<void> {
+  console.log("\n=== Reset iMessage Pairing ===\n");
+  clearImessagePairing();
+  console.log(
+    "\u2713 iMessage pairing reset. Generate a new code to pair again.",
+  );
+}
+
+// Configure SendBlue settings
+async function configureSendblue(env: Record<string, string>): Promise<void> {
+  console.log("\n=== SendBlue / iMessage Configuration ===\n");
+
+  const currentKey = env.SENDBLUE_API_KEY || "";
+  const maskedKey = currentKey
+    ? `${currentKey.slice(0, 8)}...${currentKey.slice(-4)}`
+    : "not set";
+
+  console.log(`Current API Key: ${maskedKey}`);
+  const newKey = await prompt(
+    "Enter SendBlue API Key (or press enter to keep current)",
+  );
+  if (newKey) env.SENDBLUE_API_KEY = newKey;
+
+  const currentSecret = env.SENDBLUE_API_SECRET || "";
+  const maskedSecret = currentSecret
+    ? `${currentSecret.slice(0, 8)}...${currentSecret.slice(-4)}`
+    : "not set";
+
+  console.log(`\nCurrent API Secret: ${maskedSecret}`);
+  const newSecret = await prompt(
+    "Enter SendBlue API Secret (or press enter to keep current)",
+  );
+  if (newSecret) env.SENDBLUE_API_SECRET = newSecret;
+
+  console.log(
+    `\nCurrent From Number: ${env.SENDBLUE_FROM_NUMBER || "not set (sendblue will auto-assign)"}`,
+  );
+  const newFrom = await prompt(
+    "Enter From Number in E.164 format e.g. +15551234567 (or press enter to skip)",
+  );
+  if (newFrom) env.SENDBLUE_FROM_NUMBER = newFrom;
+
+  console.log(
+    `\nCurrent Webhook Port: ${env.SENDBLUE_WEBHOOK_PORT || "3847 (default)"}`,
+  );
+  const newPort = await prompt(
+    "Enter Webhook Port (or press enter to keep default 3847)",
+  );
+  if (newPort) env.SENDBLUE_WEBHOOK_PORT = newPort;
+
+  saveEnv(env);
+  console.log("\n\u2713 SendBlue configuration saved");
+}
 // Run environment validation
 async function runValidation(env: Record<string, string>): Promise<void> {
   console.log("\n=== Environment Validation ===\n");
@@ -325,9 +422,11 @@ async function runValidation(env: Record<string, string>): Promise<void> {
   if (env.OPENAI_API_KEY) {
     const valid = await validateOpenAIConnection(
       env.OPENAI_API_KEY,
-      env.OPENAI_BASE_URL
+      env.OPENAI_BASE_URL,
     );
-    console.log(`${checkmark(valid)} ${valid ? "Connected" : "Failed to connect"}`);
+    console.log(
+      `${checkmark(valid)} ${valid ? "Connected" : "Failed to connect"}`,
+    );
   } else {
     console.log(`${checkmark(false)} Not configured`);
   }
@@ -337,10 +436,10 @@ async function runValidation(env: Record<string, string>): Promise<void> {
   if (env.TELEGRAM_BOT_TOKEN) {
     try {
       const response = await fetch(
-        `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`
+        `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       if (data.ok) {
         console.log(`${checkmark(true)} Connected (@${data.result.username})`);
       } else {
@@ -356,32 +455,64 @@ async function runValidation(env: Record<string, string>): Promise<void> {
   // Check browser
   process.stdout.write("Checking browser installation... ");
   const browserOk = await validateBrowser();
-  console.log(`${checkmark(browserOk)} ${browserOk ? "Ready" : "Not installed"}`);
+  console.log(
+    `${checkmark(browserOk)} ${browserOk ? "Ready" : "Not installed"}`,
+  );
 
   // Check cogs
   process.stdout.write("Checking cogs... ");
   const requiredCogs = ["identity", "memory", "runtime", "soul"];
   const missingCogs = requiredCogs.filter(
-    (cog) => !existsSync(join(COGS_PATH, `${cog}.md`))
+    (cog) => !existsSync(join(COGS_PATH, `${cog}.md`)),
   );
   console.log(
-    `${checkmark(missingCogs.length === 0)} ${missingCogs.length === 0 ? "All present" : `Missing: ${missingCogs.join(", ")}`}`
+    `${checkmark(missingCogs.length === 0)} ${missingCogs.length === 0 ? "All present" : `Missing: ${missingCogs.join(", ")}`}`,
   );
 
   // Check pairing status
-  process.stdout.write("Checking pairing status... ");
+  process.stdout.write("Checking Telegram pairing... ");
   const pairingData = loadPairingData();
   if (pairingData?.used) {
-    console.log(`${checkmark(true)} Paired with user ${pairingData.pairedUserId}`);
+    console.log(
+      `${checkmark(true)} Paired with user ${pairingData.pairedUserId}`,
+    );
   } else if (pairingData?.code) {
     const remaining = getPairingCodeRemainingMinutes();
     if (remaining && remaining > 0) {
-      console.log(`${checkmark(true)} Code generated (${remaining}m remaining)`);
+      console.log(
+        `${checkmark(true)} Code generated (${remaining}m remaining)`,
+      );
     } else {
       console.log(`${checkmark(false)} Code expired`);
     }
   } else {
     console.log(`${checkmark(false)} Not paired`);
+  }
+
+  // Check SendBlue configuration
+  process.stdout.write("Checking SendBlue config... ");
+  if (env.SENDBLUE_API_KEY && env.SENDBLUE_API_SECRET) {
+    console.log(`${checkmark(true)} API credentials configured`);
+  } else {
+    console.log(`${checkmark(false)} Not configured (optional)`);
+  }
+
+  // Check iMessage pairing status
+  process.stdout.write("Checking iMessage pairing... ");
+  const imsgData = loadImessagePairingData();
+  if (imsgData?.used) {
+    console.log(`${checkmark(true)} Paired with ${imsgData.pairedPhone}`);
+  } else if (imsgData?.code) {
+    const remaining = getImessagePairingCodeRemainingMinutes();
+    if (remaining && remaining > 0) {
+      console.log(
+        `${checkmark(true)} Code generated (${remaining}m remaining)`,
+      );
+    } else {
+      console.log(`${checkmark(false)} Code expired`);
+    }
+  } else {
+    console.log(`${checkmark(false)} Not paired (optional)`);
   }
 
   console.log("\nValidation complete");
@@ -398,11 +529,14 @@ async function mainMenu(): Promise<void> {
     console.log("1. Configure API Settings");
     console.log("2. Configure Telegram Bot");
     console.log("3. Configure Browser Settings");
-    console.log("4. Customize Cogs");
-    console.log("5. Generate Pairing Code");
-    console.log("6. Reset Pairing");
-    console.log("7. Run Validation");
-    console.log("8. Exit");
+    console.log("4. Configure SendBlue / iMessage");
+    console.log("5. Customize Cogs");
+    console.log("6. Generate Telegram Pairing Code");
+    console.log("7. Reset Telegram Pairing");
+    console.log("8. Generate iMessage Pairing Code");
+    console.log("9. Reset iMessage Pairing");
+    console.log("10. Run Validation");
+    console.log("11. Exit");
     console.log("=".repeat(40));
 
     const choice = await prompt("Select option");
@@ -418,18 +552,27 @@ async function mainMenu(): Promise<void> {
         await configureBrowser(env);
         break;
       case "4":
-        await customizeCogs();
+        await configureSendblue(env);
         break;
       case "5":
-        await generatePairing();
+        await customizeCogs();
         break;
       case "6":
-        await resetPairing();
+        await generatePairing();
         break;
       case "7":
-        await runValidation(env);
+        await resetPairing();
         break;
       case "8":
+        await generateImessagePairing();
+        break;
+      case "9":
+        await resetImessagePairing();
+        break;
+      case "10":
+        await runValidation(env);
+        break;
+      case "11":
         console.log("\nGoodbye!");
         process.exit(0);
         break;
