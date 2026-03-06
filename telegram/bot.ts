@@ -2,7 +2,11 @@ import {
   Agent,
   AgentInterruptedError,
   type AgentCallbacks,
+  getCurrentModel,
+  setCurrentModel,
+  getOpenAIClient,
 } from "../core/agent.ts";
+import { initializeContextLimits } from "../core/context-config.ts";
 import { cleanupTools } from "../tools/registry.ts";
 import {
   isValidPairingCodeAsync,
@@ -297,6 +301,7 @@ const commands: Record<
       "*Crusty's Commands*\n\n" +
         "/start - Wake up the crab\n" +
         "/clear - Clean the shell (clear conversation)\n" +
+        "/model - View or change the AI model\n" +
         "/memory - View memory stats\n" +
         "/memory clear - Wipe long-term memory\n" +
         "/reminders - View pending reminders\n" +
@@ -636,7 +641,201 @@ const commands: Record<
       );
     }
   },
+
+  async model(userId, chatId, messageThreadId, args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const arg = args.trim();
+    const currentModel = getCurrentModel();
+
+    // /model (no args) - show current model and try to show selection menu
+    if (!arg) {
+      // try to fetch available models from the OpenAI-compatible API
+      const models = await fetchAvailableModels();
+
+      if (models && models.length > 0) {
+        // build inline keyboard with available models (max 40 to fit telegram limits)
+        const displayModels = models.slice(0, 40);
+        const keyboard = displayModels.map((m) => {
+          const label = m.id === currentModel ? `${m.id} (current)` : m.id;
+          return [{ text: label, callback_data: `model:${m.id}` }];
+        });
+
+        await sendMessage(
+          chatId,
+          `*Current model:* \`${currentModel}\`\n\nSelect a model from the list below, or use \`/model <model-id>\` to set one directly.`,
+          {
+            message_thread_id: messageThreadId,
+            reply_markup: { inline_keyboard: keyboard },
+          },
+        );
+      } else {
+        await sendMessage(
+          chatId,
+          `*Current model:* \`${currentModel}\`\n\nCouldn't fetch model list from the API. Use \`/model <model-id>\` to change the model directly.`,
+          { message_thread_id: messageThreadId },
+        );
+      }
+      return;
+    }
+
+    // /model <model-id> - set model directly
+    await switchModel(chatId, messageThreadId, arg, userId);
+  },
 };
+
+// fetch available models from the OpenAI-compatible API's /models endpoint
+async function fetchAvailableModels(): Promise<
+  { id: string; owned_by?: string }[] | null
+> {
+  const openai = getOpenAIClient();
+  const baseURL = (openai as any).baseURL || "https://api.openai.com/v1";
+  const apiKey = (openai as any).apiKey;
+
+  try {
+    const modelsUrl = `${baseURL.replace(/\/$/, "")}/models`;
+    const response = await fetch(modelsUrl, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      debug(`[model] /models endpoint returned ${response.status}`);
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      data?: { id: string; owned_by?: string }[];
+    };
+    if (!data.data || !Array.isArray(data.data)) {
+      debug("[model] /models response missing data array");
+      return null;
+    }
+
+    // sort alphabetically
+    return data.data.sort((a, b) => a.id.localeCompare(b.id));
+  } catch (err) {
+    debug("[model] failed to fetch /models:", err);
+    return null;
+  }
+}
+
+// verify a model works by streaming a quick "who are you" test with 10s timeout
+async function verifyModel(modelId: string): Promise<boolean> {
+  const openai = getOpenAIClient();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const stream = await openai.chat.completions.create(
+      {
+        model: modelId,
+        messages: [{ role: "user", content: "who are you? reply in one sentence." }],
+        max_tokens: 100,
+        stream: true,
+      },
+      { signal: controller.signal },
+    );
+
+    let gotContent = false;
+    for await (const chunk of stream) {
+      if (chunk.choices?.[0]?.delta?.content) {
+        gotContent = true;
+        break; // we got at least one streamed token, model works
+      }
+    }
+
+    clearTimeout(timeout);
+    return gotContent;
+  } catch (err) {
+    debug(`[model] verification failed for ${modelId}:`, err);
+    return false;
+  }
+}
+
+// switch to a new model with verification
+async function switchModel(
+  chatId: number,
+  messageThreadId: number | undefined,
+  modelId: string,
+  userId: number,
+): Promise<void> {
+  const currentModel = getCurrentModel();
+
+  if (modelId === currentModel) {
+    await sendMessage(chatId, `already using \`${modelId}\`.`, {
+      message_thread_id: messageThreadId,
+    });
+    return;
+  }
+
+  await sendMessage(chatId, `verifying \`${modelId}\`...`, {
+    message_thread_id: messageThreadId,
+  });
+
+  const works = await verifyModel(modelId);
+
+  if (works) {
+    setCurrentModel(modelId);
+
+    // reinitialize context limits for the new model
+    await initializeContextLimits(modelId);
+
+    // clear session so agent picks up new model context limits
+    await clearUserSession(userId);
+
+    await sendMessage(
+      chatId,
+      `model switched to \`${modelId}\`. conversation has been reset.`,
+      { message_thread_id: messageThreadId },
+    );
+  } else {
+    await sendMessage(
+      chatId,
+      `model \`${modelId}\` failed verification (no response within 10s). keeping \`${currentModel}\`.`,
+      { message_thread_id: messageThreadId },
+    );
+  }
+}
+
+// handle callback queries (inline keyboard responses)
+async function handleCallbackQuery(
+  callbackQuery: TelegramCallbackQuery,
+): Promise<void> {
+  const userId = callbackQuery.from.id;
+  const chatId = callbackQuery.message?.chat.id;
+  const messageThreadId = callbackQuery.message?.message_thread_id;
+  const data = callbackQuery.data || "";
+
+  // acknowledge the callback to remove loading state
+  try {
+    await makeRequest("answerCallbackQuery", { callback_query_id: callbackQuery.id });
+  } catch {
+    // ignore errors from answering callback
+  }
+
+  if (!chatId) return;
+
+  // check if user is paired
+  const userPaired = await isUserPairedAsync(userId);
+  if (!userPaired) return;
+
+  // handle model selection callbacks
+  if (data.startsWith("model:")) {
+    const modelId = data.slice("model:".length);
+    await switchModel(chatId, messageThreadId, modelId, userId);
+  }
+}
 
 // handle soul content input (called when user is in awaiting state)
 async function handleSoulInput(
@@ -977,6 +1176,7 @@ export async function startBot(): Promise<void> {
     commands: [
       { command: "start", description: "Start the bot" },
       { command: "clear", description: "Clear conversation history" },
+      { command: "model", description: "View or change the AI model" },
       { command: "reminders", description: "View pending reminders" },
       { command: "soul", description: "View or set the bot's persona" },
       { command: "help", description: "Show help message" },
@@ -995,6 +1195,16 @@ export async function startBot(): Promise<void> {
 
       for (const update of updates) {
         offset = update.update_id + 1;
+
+        // handle callback queries (inline keyboard buttons)
+        if (update.callback_query) {
+          handleCallbackQuery(update.callback_query).catch((error) =>
+            console.error(
+              `[Error handling callback from ${update.callback_query!.from.id}]:`,
+              error,
+            ),
+          );
+        }
 
         if (update.message) {
           const userId = update.message.from?.id || update.message.chat.id;

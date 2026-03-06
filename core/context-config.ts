@@ -34,13 +34,13 @@ export function getMaxContextTokens(): number {
   return getModelContextLengthSync(OPENAI_MODEL);
 }
 
-export async function initializeContextLimits(): Promise<void> {
+export async function initializeContextLimits(modelId?: string): Promise<void> {
   if (process.env.MAX_CONTEXT_TOKENS) {
     _maxContextTokens = parseInt(process.env.MAX_CONTEXT_TOKENS, 10);
     return;
   }
 
-  _maxContextTokens = await getModelContextLength(OPENAI_MODEL);
+  _maxContextTokens = await getModelContextLength(modelId || OPENAI_MODEL);
 }
 
 // prefetch on module load (non-blocking)
