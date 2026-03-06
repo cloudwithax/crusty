@@ -41,8 +41,19 @@ import {
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+let OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 const SUMMARIZE_MODEL = process.env.SUMMARIZE_MODEL || OPENAI_MODEL || "gpt-4o";
+
+// runtime model management
+export function getCurrentModel(): string {
+  return OPENAI_MODEL;
+}
+
+export function setCurrentModel(modelId: string): void {
+  OPENAI_MODEL = modelId;
+  debug(`[agent] model changed to: ${modelId}`);
+}
+
 const INFERENCE_RPM_LIMIT = parseInt(
   process.env.INFERENCE_RPM_LIMIT || "40",
   10,
@@ -57,6 +68,10 @@ const openai = new OpenAI({
   baseURL: OPENAI_BASE_URL,
   timeout: 60 * 1000,
 });
+
+export function getOpenAIClient(): OpenAI {
+  return openai;
+}
 
 // simple rate limiter with iterative wait loop (avoids stack growth)
 class RateLimiter {
