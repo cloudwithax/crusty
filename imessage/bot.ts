@@ -776,13 +776,11 @@ function handleWebhookRequest(req: Request): Response {
 
   // webhook endpoint for inbound messages
   if (url.pathname === "/webhook/receive" && req.method === "POST") {
-    // verify webhook secret if configured
-    if (SENDBLUE_WEBHOOK_SECRET) {
-      const reqSecret = req.headers.get("x-webhook-secret");
-      if (reqSecret !== SENDBLUE_WEBHOOK_SECRET) {
-        debug("[imessage] webhook secret mismatch, rejecting");
-        return new Response("Unauthorized", { status: 401 });
-      }
+    // verify webhook secret (mandatory for security)
+    const reqSecret = req.headers.get("x-webhook-secret");
+    if (!SENDBLUE_WEBHOOK_SECRET || reqSecret !== SENDBLUE_WEBHOOK_SECRET) {
+      debug("[imessage] webhook secret mismatch or not configured, rejecting");
+      return new Response("Unauthorized", { status: 401 });
     }
 
     // parse body and process asynchronously, respond 200 immediately
@@ -830,6 +828,12 @@ export async function startImessageBot(): Promise<void> {
     return;
   }
 
+  if (!SENDBLUE_WEBHOOK_SECRET) {
+    console.error("[imessage] CRITICAL: SENDBLUE_WEBHOOK_SECRET is required to secure the webhook endpoint.");
+    console.error("[imessage] Without it, an attacker could spoof messages and gain remote code execution.");
+    process.exit(1);
+  }
+
   console.log("[imessage] starting imessage integration...");
 
   // initialize sendblue client
@@ -857,7 +861,7 @@ export async function startImessageBot(): Promise<void> {
 
   // check pairing status
   if (await isImessageSystemPairedAsync()) {
-    const data = loadImessagePairingData();
+    const data = await loadImessagePairingDataAsync();
     console.log(`[imessage] paired with ${data?.pairedPhone}`);
   } else {
     // auto-generate pairing code in non-interactive mode
