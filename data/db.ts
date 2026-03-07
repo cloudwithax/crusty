@@ -697,14 +697,13 @@ async function initTablesAsync(): Promise<void> {
   );
 
   // migration: add timeout column to existing hooks tables
-  await pgAdapter.execAsync(`
-    DO $$
-    BEGIN
-      ALTER TABLE hooks ADD COLUMN timeout TEXT;
-    EXCEPTION WHEN duplicate_column THEN
-      NULL;
-    END $$
-  `);
+  try {
+    await pgAdapter.execAsync(
+      `ALTER TABLE hooks ADD COLUMN timeout TEXT`,
+    );
+  } catch {
+    // column already exists, ignore
+  }
 
   // heartbeat items table for user-customizable actionable items
   await pgAdapter.execAsync(`
