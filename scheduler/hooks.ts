@@ -7,34 +7,13 @@ import {
 } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
-import { OpenAI } from "openai";
 import { debug } from "../utils/debug.ts";
 import {
   loadAllHooks as loadAllHooksFromDb,
   type HookRecord,
   type HookSourceType,
 } from "../data/hooks.ts";
-
-// environment configuration
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
-
-// default hook timeout: 60s (configurable via HOOK_TIMEOUT env var, e.g. "60s", "2m")
-// individual hooks can override this with a `timeout` field in their config
-const DEFAULT_HOOK_TIMEOUT_MS = parseHookDuration(
-  process.env.HOOK_TIMEOUT || "60s",
-) || 60 * 1000;
-
-if (!OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY environment variable is required for hooks");
-}
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 120 * 1000, // generous client-level timeout; per-hook timeouts are enforced at request level
-});
+import { Agent } from "../core/agent.ts";
 
 // hook configuration parsed from frontmatter
 export interface HookConfig {
@@ -94,6 +73,11 @@ interface HookRuntime {
 // legacy path for backwards compatibility
 const LEGACY_HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
 const HOOKS_LOG_PATH = join(process.cwd(), "hooks.log");
+
+// default hook timeout: 60s (configurable via HOOK_TIMEOUT env var, e.g. "60s", "2m")
+// individual hooks can override this with a `timeout` field in their config
+const DEFAULT_HOOK_TIMEOUT_MS =
+  parseHookDuration(process.env.HOOK_TIMEOUT || "60s") || 60 * 1000;
 
 // parse duration string to milliseconds
 // supports: Xm (minutes), Xh (hours), Xd (days), Xs (seconds)
@@ -519,7 +503,23 @@ function writeHookLog(hookId: string, entry: string): void {
   }
 }
 
-// execute a single hook
+// one agent per hook id, reused across ticks for initialization/reuse; conversational
+// memory is cleared after each run so context does not accumulate between executions
+const hookAgents: Map<string, Agent> = new Map();
+
+function getHookAgent(hookId: string): Agent {
+  let agent = hookAgents.get(hookId);
+  if (!agent) {
+    // use a negative user id range to avoid collisions with real users
+    // hooks start at -1000 to distinguish from heartbeat (userId 0) and real users (positive)
+    const userId = -(1000 + hookAgents.size + 1);
+    agent = new Agent(userId);
+    hookAgents.set(hookId, agent);
+  }
+  return agent;
+}
+
+// execute a single hook using the full agent loop so hooks have access to all tools
 async function executeHook(
   hook: Hook,
   sendMessage: (text: string, isHook?: boolean) => Promise<void>,
@@ -538,44 +538,33 @@ async function executeHook(
   debug(`[hooks] ${hook.id}: executing...`);
 
   try {
-    const systemPrompt = `You are an automated hook processor for the "${hook.config.name}" hook.
+    const agent = getHookAgent(hook.id);
+
+    // build the prompt that gives the agent its hook context and instructions
+    const prompt = `You are running as an automated hook: "${hook.config.name}".
 ${hook.config.description ? `Hook description: ${hook.config.description}` : ""}
-
-Your task is to process the following instructions and determine what action to take.
-
-Instructions:
-${hook.content}
-
-If no action is needed right now, respond with exactly: HOOK_OK
-If action is needed, provide a brief, actionable message.
 
 Current time: ${new Date().toISOString()}
 
-Be concise and direct.`;
+Your instructions for this run:
+${hook.content}
 
-    const response = await openai.chat.completions.create(
-      {
-        model: OPENAI_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Process hook: ${hook.config.name}` },
-        ],
-        temperature: 0.3,
-      },
-      { timeout: hook.timeoutMs },
-    );
+If no action is needed right now, respond with exactly: HOOK_OK
+Otherwise, carry out the instructions. You have access to all tools including send_message to proactively notify the user.`;
 
-    const output = response.choices[0]?.message?.content?.trim() || "";
+    const output = await agent.chat(prompt);
 
     debug(`[hooks] ${hook.id}: output: ${output.substring(0, 100)}`);
 
-    if (output === "HOOK_OK" || output.toUpperCase() === "HOOK_OK") {
+    if (output.trim() === "HOOK_OK" || output.trim().toUpperCase() === "HOOK_OK") {
       writeHookLog(hook.id, "HOOK_OK - no action needed");
       debug(`[hooks] ${hook.id}: HOOK_OK - suppressed delivery`);
+      // clear memory after a no-op tick to avoid unbounded context growth
+      agent.clearMemory();
       return;
     }
 
-    // deliver message
+    // deliver the agent's response to the user unless it used send_message itself
     const formattedOutput = `**[${hook.config.name}]**\n${output}`;
     await sendMessage(formattedOutput, true);
     writeHookLog(
@@ -583,6 +572,9 @@ Be concise and direct.`;
       `DELIVERED: ${output.substring(0, 100)}${output.length > 100 ? "..." : ""}`,
     );
     debug(`[hooks] ${hook.id}: delivered message`);
+
+    // clear memory after each active tick to keep hooks stateless between runs
+    agent.clearMemory();
   } catch (error) {
     console.error(`[hooks] ${hook.id}: error during execution:`, error);
     writeHookLog(
@@ -668,6 +660,8 @@ export function stopHooks(): void {
   for (const hookId of hookRuntimes.keys()) {
     stopHookScheduler(hookId);
   }
+  // clear agent instances so they don't leak memory between reloads
+  hookAgents.clear();
   isRunning = false;
   debug("[hooks] all hooks stopped");
 }

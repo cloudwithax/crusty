@@ -10,6 +10,7 @@ import {
   executeTool,
   cleanupTools,
 } from "../tools/registry.ts";
+import { getCurrentModel, setCurrentModel } from "./model-state.ts";
 import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
@@ -41,18 +42,13 @@ import {
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-let OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
-const SUMMARIZE_MODEL = process.env.SUMMARIZE_MODEL || OPENAI_MODEL || "gpt-4o";
+const SUMMARIZE_MODEL =
+  process.env.SUMMARIZE_MODEL ||
+  process.env.OPENAI_MODEL ||
+  "gpt-4o";
 
-// runtime model management
-export function getCurrentModel(): string {
-  return OPENAI_MODEL;
-}
-
-export function setCurrentModel(modelId: string): void {
-  OPENAI_MODEL = modelId;
-  debug(`[agent] model changed to: ${modelId}`);
-}
+// re-export model accessors so callers (telegram/bot.ts) don't need to know about model-state
+export { getCurrentModel, setCurrentModel } from "./model-state.ts";
 
 const INFERENCE_RPM_LIMIT = parseInt(
   process.env.INFERENCE_RPM_LIMIT || "40",
@@ -636,7 +632,7 @@ export class Agent {
         response = await withRetry(
           () =>
             openai.chat.completions.create({
-              model: OPENAI_MODEL,
+              model: getCurrentModel(),
               messages: validMessages,
               tools: tools.length > 0 ? tools : undefined,
               tool_choice: tools.length > 0 ? "auto" : undefined,
