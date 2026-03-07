@@ -18,6 +18,7 @@ import {
   cleanupReminderScheduler,
 } from "./scheduler/reminders.ts";
 import { setHookMessageSender } from "./tools/hooks.ts";
+import { setMessagingSender } from "./tools/messaging.ts";
 import { closeDatabase } from "./data/db.ts";
 import { preloadEmbeddingModel } from "./memory/embeddings.ts";
 import { debug } from "./utils/debug.ts";
@@ -102,6 +103,9 @@ async function main(): Promise<void> {
 
   // set hook message sender for tools to use when reloading
   setHookMessageSender(sendHookMessage);
+
+  // wire the send_message and set_model tools to deliver through all channels
+  setMessagingSender(sendHookMessage);
 
   // start hooks scheduler
   await startHooks(sendHookMessage);

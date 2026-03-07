@@ -12,6 +12,7 @@ import { memoryTools } from "./memory.ts";
 import { heartbeatTools } from "./heartbeat.ts";
 import { learningTools } from "./learnings.ts";
 import { deepResearchTools } from "./deep-research.ts";
+import { messagingTools } from "./messaging.ts";
 
 // minimal tool registry
 // filesystem + browser + web + bash (in docker) + learning machine
@@ -55,6 +56,7 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...heartbeatTools,
   ...learningTools,
   ...deepResearchTools,
+  ...messagingTools,
   ...iterationTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };

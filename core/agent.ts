@@ -10,6 +10,7 @@ import {
   executeTool,
   cleanupTools,
 } from "../tools/registry.ts";
+import { getActiveModel } from "../tools/messaging.ts";
 import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
@@ -636,7 +637,7 @@ export class Agent {
         response = await withRetry(
           () =>
             openai.chat.completions.create({
-              model: OPENAI_MODEL,
+              model: getActiveModel(),
               messages: validMessages,
               tools: tools.length > 0 ? tools : undefined,
               tool_choice: tools.length > 0 ? "auto" : undefined,
