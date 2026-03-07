@@ -73,6 +73,11 @@ let sessionTablesInitialized = false;
 async function ensureSessionTables(): Promise<boolean> {
   if (sessionTablesInitialized) return true;
 
+  if (isUsingPostgres()) {
+    sessionTablesInitialized = true;
+    return false;
+  }
+
   const db = getDatabase();
   if (!db) return false;
 

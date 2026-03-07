@@ -172,3 +172,26 @@ export async function isSystemPairedAsync(): Promise<boolean> {
   if (!data) return false;
   return data.used;
 }
+
+export async function savePairingCodeAsync(code: string, expiresInMinutes: number = 60): Promise<void> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    savePairingCode(code, expiresInMinutes);
+    return;
+  }
+  
+  const now = Date.now();
+  const expiresAt = now + expiresInMinutes * 60 * 1000;
+  
+  await asyncDb.run(
+    `INSERT INTO pairing (id, code, created_at, expires_at, used, paired_user_id) 
+     VALUES (1, $1, $2, $3, 0, NULL)
+     ON CONFLICT (id) DO UPDATE SET 
+       code = EXCLUDED.code,
+       created_at = EXCLUDED.created_at,
+       expires_at = EXCLUDED.expires_at,
+       used = EXCLUDED.used,
+       paired_user_id = EXCLUDED.paired_user_id`,
+    [code, now, expiresAt]
+  );
+}

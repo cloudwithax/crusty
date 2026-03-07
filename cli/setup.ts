@@ -3,7 +3,7 @@ import { join } from "path";
 import { chromium } from "playwright";
 import {
   generatePairingCode,
-  savePairingCode,
+  savePairingCodeAsync,
   loadPairingData,
   clearPairing,
   getPairingCodeRemainingMinutes,
@@ -11,7 +11,7 @@ import {
 } from "./pairing.ts";
 import {
   generateImessagePairingCode,
-  saveImessagePairingCode,
+  saveImessagePairingCodeAsync,
   loadImessagePairingData,
   clearImessagePairing,
   getImessagePairingCodeRemainingMinutes,
@@ -308,7 +308,7 @@ async function generatePairing(): Promise<void> {
   }
 
   const code = generatePairingCode();
-  savePairingCode(code, 60); // 60 minute expiration
+  await savePairingCodeAsync(code, 60); // 60 minute expiration
 
   console.log(`\n🔐 Pairing Code: ${code}`);
   console.log("\nInstructions:");
@@ -344,7 +344,7 @@ async function generateImessagePairing(): Promise<void> {
   }
 
   const code = generateImessagePairingCode();
-  saveImessagePairingCode(code, 60);
+  await saveImessagePairingCodeAsync(code, 60);
 
   console.log(`\nPairing Code: ${code}`);
   console.log("\nInstructions:");
