@@ -503,7 +503,8 @@ function writeHookLog(hookId: string, entry: string): void {
   }
 }
 
-// one agent per hook id, persistent across ticks so context accumulates
+// one agent per hook id, reused across ticks for initialization/reuse; conversational
+// memory is cleared after each run so context does not accumulate between executions
 const hookAgents: Map<string, Agent> = new Map();
 
 function getHookAgent(hookId: string): Agent {

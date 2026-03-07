@@ -1,29 +1,17 @@
 import { z } from "zod";
 import { debug } from "../utils/debug.ts";
+import { getCurrentModel, setCurrentModel } from "../core/model-state.ts";
 
 // bridge for delivering messages to paired users across all channels
 // set by index.ts on startup so tools can send messages without depending on specific bot implementations
 let messageSender: ((text: string, isHook?: boolean) => Promise<void>) | null =
   null;
 
-// runtime model override - null means use the env default
-let activeModelOverride: string | null = null;
-
 // set by index.ts after bot startup
 export function setMessagingSender(
   sender: (text: string, isHook?: boolean) => Promise<void>,
 ): void {
   messageSender = sender;
-}
-
-// returns the currently active model (override takes precedence over env default)
-export function getActiveModel(): string {
-  return activeModelOverride || process.env.OPENAI_MODEL || "gpt-4o";
-}
-
-// clear any runtime override and revert to env default
-export function clearModelOverride(): void {
-  activeModelOverride = null;
 }
 
 const sendMessageSchema = z.object({
@@ -71,17 +59,16 @@ async function handleSetModel(
     return "[Error] Model name cannot be empty.";
   }
 
-  const previous = getActiveModel();
-  activeModelOverride = model;
+  const previous = getCurrentModel();
+  setCurrentModel(model);
   debug(`[messaging] model switched from ${previous} to ${model}`);
   return `Model switched from "${previous}" to "${model}". This will take effect on the next agent call.`;
 }
 
 async function handleGetModel(): Promise<string> {
-  const current = getActiveModel();
-  const isOverride = activeModelOverride !== null;
+  const current = getCurrentModel();
   const envDefault = process.env.OPENAI_MODEL || "gpt-4o";
-  if (isOverride) {
+  if (current !== envDefault) {
     return `Active model: "${current}" (runtime override, env default is "${envDefault}")`;
   }
   return `Active model: "${current}" (from environment)`;
