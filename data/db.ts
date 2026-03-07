@@ -142,18 +142,16 @@ class PostgresAdapter implements DatabaseAdapter {
   }
 
   // sync exec (waits for init)
+  // passes the full sql string directly to postgres.js — no splitting needed,
+  // and splitting on ";" is incorrect for dollar-quoted blocks ($$...$$)
   exec(sql: string): void {
-    const statements = sql
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    const trimmed = sql.trim();
+    if (!trimmed) return;
 
     const execute = () => {
-      for (const stmt of statements) {
-        this.sql.unsafe(stmt).catch((err) => {
-          console.error("[db:postgres] exec error:", err);
-        });
-      }
+      this.sql.unsafe(trimmed).catch((err) => {
+        console.error("[db:postgres] exec error:", err);
+      });
     };
 
     if (!this.initialized && this.initPromise) {
@@ -164,15 +162,11 @@ class PostgresAdapter implements DatabaseAdapter {
   }
 
   // async exec
+  // same as exec but awaited — no splitting, postgres.js handles multi-statement sql
   async execAsync(sql: string): Promise<void> {
-    const statements = sql
-      .split(";")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-
-    for (const stmt of statements) {
-      await this.sql.unsafe(stmt);
-    }
+    const trimmed = sql.trim();
+    if (!trimmed) return;
+    await this.sql.unsafe(trimmed);
   }
 
   // sync query with caching for repeated calls
