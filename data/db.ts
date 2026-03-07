@@ -481,6 +481,7 @@ function initTables(): void {
       content TEXT NOT NULL,
       every TEXT NOT NULL,
       enabled INTEGER DEFAULT 1,
+      timeout TEXT,
       timezone TEXT,
       days TEXT,
       start_time TEXT,
@@ -493,6 +494,13 @@ function initTables(): void {
   `);
 
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`);
+
+  // migration: add timeout column to existing hooks tables
+  try {
+    db.exec(`ALTER TABLE hooks ADD COLUMN timeout TEXT`);
+  } catch {
+    // column already exists, ignore
+  }
 
   // heartbeat items table for user-customizable actionable items
   db.exec(`
@@ -672,6 +680,7 @@ async function initTablesAsync(): Promise<void> {
       content TEXT NOT NULL,
       every TEXT NOT NULL,
       enabled INTEGER DEFAULT 1,
+      timeout TEXT,
       timezone TEXT,
       days TEXT,
       start_time TEXT,
@@ -686,6 +695,16 @@ async function initTablesAsync(): Promise<void> {
   await pgAdapter.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`,
   );
+
+  // migration: add timeout column to existing hooks tables
+  await pgAdapter.execAsync(`
+    DO $$
+    BEGIN
+      ALTER TABLE hooks ADD COLUMN timeout TEXT;
+    EXCEPTION WHEN duplicate_column THEN
+      NULL;
+    END $$
+  `);
 
   // heartbeat items table for user-customizable actionable items
   await pgAdapter.execAsync(`
