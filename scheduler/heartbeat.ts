@@ -218,7 +218,7 @@ export async function heartbeatTick(
   }
 
   // get actionable items from database
-  const items = getActionableItems();
+  const items = await getActionableItems();
 
   if (items.length === 0) {
     debug("[heartbeat] no actionable items, skipping");

@@ -3,7 +3,7 @@
 // stored in imessage_pairing table with same single-row pattern
 
 import { randomBytes } from "crypto";
-import { getDatabase } from "../data/db.ts";
+import { getDatabase, getAsyncDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 
 // ensure the imessage pairing table exists
@@ -137,4 +137,94 @@ export function clearImessagePairingForNewCode(): void {
   ensureTable();
   const db = getDatabase();
   db.run("DELETE FROM imessage_pairing WHERE id = 1");
+}
+
+// async versions for postgres
+export async function loadImessagePairingDataAsync(): Promise<ImessagePairingData | null> {
+  await ensureImessagePairingTableAsync();
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    return loadImessagePairingData();
+  }
+  
+  const row = await asyncDb.get<{
+    code: string;
+    created_at: number;
+    expires_at: number;
+    used: number;
+    paired_phone: string | null;
+  }>("SELECT code, created_at, expires_at, used, paired_phone FROM imessage_pairing WHERE id = 1");
+
+  if (!row) return null;
+
+  return {
+    code: row.code,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    used: row.used === 1,
+    pairedPhone: row.paired_phone ?? undefined,
+  };
+}
+
+export async function isImessagePairedAsync(phone: string): Promise<boolean> {
+  const data = await loadImessagePairingDataAsync();
+  if (!data) return false;
+  return data.used && data.pairedPhone === phone;
+}
+
+export async function isImessageSystemPairedAsync(): Promise<boolean> {
+  const data = await loadImessagePairingDataAsync();
+  if (!data) return false;
+  return data.used;
+}
+
+export async function markImessagePairedAsync(phone: string): Promise<void> {
+  await ensureImessagePairingTableAsync();
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    markImessagePaired(phone);
+    return;
+  }
+  await asyncDb.run(
+    "UPDATE imessage_pairing SET used = 1, paired_phone = $1 WHERE id = 1",
+    [phone]
+  );
+  debug(`[imessage] paired with ${phone}`);
+}
+
+export async function saveImessagePairingCodeAsync(
+  code: string,
+  expiresInMinutes: number = 60
+): Promise<void> {
+  await ensureImessagePairingTableAsync();
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    saveImessagePairingCode(code, expiresInMinutes);
+    return;
+  }
+  
+  const now = Date.now();
+  const expiresAt = now + expiresInMinutes * 60 * 1000;
+  
+  await asyncDb.run(
+    `INSERT INTO imessage_pairing (id, code, created_at, expires_at, used, paired_phone)
+     VALUES (1, $1, $2, $3, 0, NULL)
+     ON CONFLICT (id) DO UPDATE SET
+       code = EXCLUDED.code,
+       created_at = EXCLUDED.created_at,
+       expires_at = EXCLUDED.expires_at,
+       used = EXCLUDED.used,
+       paired_phone = EXCLUDED.paired_phone`,
+    [code, now, expiresAt]
+  );
+}
+
+export async function clearImessagePairingForNewCodeAsync(): Promise<void> {
+  await ensureImessagePairingTableAsync();
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) {
+    clearImessagePairingForNewCode();
+    return;
+  }
+  await asyncDb.run("DELETE FROM imessage_pairing WHERE id = 1");
 }

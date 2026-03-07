@@ -2,13 +2,13 @@ import {
   startBot,
   cleanupBot,
   sendMessage,
-  getPairedUserId,
+  getPairedUserIdAsync,
 } from "./telegram/bot.ts";
 import {
   startImessageBot,
   cleanupImessageBot,
   sendImessageMessage,
-  getPairedPhoneNumber,
+  getPairedPhoneNumberAsync,
   isImessageConfigured,
 } from "./imessage/index.ts";
 import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
@@ -49,13 +49,13 @@ async function sendHeartbeatMessage(
   isHeartbeat?: boolean,
 ): Promise<void> {
   // deliver to telegram if paired
-  const userId = getPairedUserId();
+  const userId = await getPairedUserIdAsync();
   if (userId) {
     await sendMessage(userId, text, { isHeartbeat });
   }
 
   // deliver to imessage if paired
-  const phone = getPairedPhoneNumber();
+  const phone = await getPairedPhoneNumberAsync();
   if (phone) {
     await sendImessageMessage(phone, text, { isHeartbeat });
   }
@@ -67,12 +67,12 @@ async function sendHeartbeatMessage(
 
 // Create hook message sender - delivers to all configured channels
 async function sendHookMessage(text: string, isHook?: boolean): Promise<void> {
-  const userId = getPairedUserId();
+  const userId = await getPairedUserIdAsync();
   if (userId) {
     await sendMessage(userId, text, { isHeartbeat: isHook });
   }
 
-  const phone = getPairedPhoneNumber();
+  const phone = await getPairedPhoneNumberAsync();
   if (phone) {
     await sendImessageMessage(phone, text, { isHeartbeat: isHook });
   }

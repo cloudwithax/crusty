@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { getDatabase } from "../data/db.ts";
+import { getDatabase, getAsyncDatabase } from "../data/db.ts";
 
 // heartbeat customization tools
 // stores actionable items in database for docker persistence
@@ -10,10 +10,10 @@ import { getDatabase } from "../data/db.ts";
 const HEARTBEAT_PATH = join(import.meta.dir, "..", "cogs", "HEARTBEAT.md");
 
 // ensure table exists
-function ensureTable(): void {
-  const db = getDatabase();
-  if (db.type === "postgres") {
-    db.exec(`
+async function ensureTableAsync(): Promise<void> {
+  const asyncDb = getAsyncDatabase();
+  if (asyncDb) {
+    await asyncDb.run(`
       CREATE TABLE IF NOT EXISTS heartbeat_items (
         id SERIAL PRIMARY KEY,
         content TEXT NOT NULL,
@@ -21,6 +21,7 @@ function ensureTable(): void {
       )
     `);
   } else {
+    const db = getDatabase();
     db.exec(`
       CREATE TABLE IF NOT EXISTS heartbeat_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +33,7 @@ function ensureTable(): void {
 }
 
 // get base heartbeat content from filesystem
-function getBaseContent(): string {
+async function getBaseContent(): Promise<string> {
   if (!existsSync(HEARTBEAT_PATH)) {
     return "";
   }
@@ -40,21 +41,29 @@ function getBaseContent(): string {
 }
 
 // get all actionable items from database
-export function getActionableItems(): string[] {
-  ensureTable();
-  const db = getDatabase();
-  const rows = db
-    .query<{
-      content: string;
-    }>("SELECT content FROM heartbeat_items ORDER BY created_at ASC")
-    .all();
-  return rows.map((r) => r.content);
+export async function getActionableItems(): Promise<string[]> {
+  await ensureTableAsync();
+  const asyncDb = getAsyncDatabase();
+  if (asyncDb) {
+    const rows = await asyncDb.all<{ content: string }>(
+      "SELECT content FROM heartbeat_items ORDER BY created_at ASC"
+    );
+    return rows.map((r) => r.content);
+  } else {
+    const db = getDatabase();
+    const rows = db
+      .query<{ content: string }>(
+        "SELECT content FROM heartbeat_items ORDER BY created_at ASC"
+      )
+      .all();
+    return rows.map((r) => r.content);
+  }
 }
 
 // get combined heartbeat content (base + db items)
-export function getFullHeartbeatContent(): string {
-  const base = getBaseContent();
-  const items = getActionableItems();
+export async function getFullHeartbeatContent(): Promise<string> {
+  const base = await getBaseContent();
+  const items = await getActionableItems();
 
   if (items.length === 0) {
     return base;
@@ -85,7 +94,7 @@ const ReadHeartbeatSchema = z.object({});
 
 async function readHeartbeat(): Promise<string> {
   try {
-    return getFullHeartbeatContent();
+    return await getFullHeartbeatContent();
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -99,9 +108,14 @@ async function addHeartbeatItem(
   args: z.infer<typeof AddHeartbeatItemSchema>,
 ): Promise<string> {
   try {
-    ensureTable();
-    const db = getDatabase();
-    db.run("INSERT INTO heartbeat_items (content) VALUES (?)", [args.content]);
+    await ensureTableAsync();
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run("INSERT INTO heartbeat_items (content) VALUES ($1)", [args.content]);
+    } else {
+      const db = getDatabase();
+      db.run("INSERT INTO heartbeat_items (content) VALUES (?)", [args.content]);
+    }
     return "ok";
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -118,9 +132,14 @@ async function removeHeartbeatItem(
   args: z.infer<typeof RemoveHeartbeatItemSchema>,
 ): Promise<string> {
   try {
-    ensureTable();
-    const db = getDatabase();
-    db.run("DELETE FROM heartbeat_items WHERE id = ?", [args.id]);
+    await ensureTableAsync();
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run("DELETE FROM heartbeat_items WHERE id = $1", [args.id]);
+    } else {
+      const db = getDatabase();
+      db.run("DELETE FROM heartbeat_items WHERE id = ?", [args.id]);
+    }
     return "ok";
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -131,15 +150,25 @@ const ListHeartbeatItemsSchema = z.object({});
 
 async function listHeartbeatItems(): Promise<string> {
   try {
-    ensureTable();
-    const db = getDatabase();
-    const rows = db
-      .query<{
-        id: number;
-        content: string;
-        created_at: number;
-      }>("SELECT id, content, created_at FROM heartbeat_items ORDER BY created_at ASC")
-      .all();
+    await ensureTableAsync();
+    const asyncDb = getAsyncDatabase();
+    let rows: { id: number; content: string; created_at: number }[];
+    if (asyncDb) {
+      rows = await asyncDb.all<{
+          id: number;
+          content: string;
+          created_at: number;
+        }>("SELECT id, content, created_at FROM heartbeat_items ORDER BY created_at ASC");
+    } else {
+      const db = getDatabase();
+      rows = db
+        .query<{
+          id: number;
+          content: string;
+          created_at: number;
+        }>("SELECT id, content, created_at FROM heartbeat_items ORDER BY created_at ASC")
+        .all();
+    }
 
     if (rows.length === 0) {
       return "no actionable items configured";
@@ -160,9 +189,14 @@ const ClearHeartbeatItemsSchema = z.object({});
 
 async function clearHeartbeatItems(): Promise<string> {
   try {
-    ensureTable();
-    const db = getDatabase();
-    db.run("DELETE FROM heartbeat_items");
+    await ensureTableAsync();
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      await asyncDb.run("DELETE FROM heartbeat_items");
+    } else {
+      const db = getDatabase();
+      db.run("DELETE FROM heartbeat_items");
+    }
     return "ok";
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;

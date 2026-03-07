@@ -4,7 +4,9 @@ export {
   sendMessage as sendImessageMessage,
   sendMessageToUser as sendImessageMessageToUser,
   getPairedPhoneNumber,
+  getPairedPhoneNumberAsync,
   getImessagePairedUserId,
+  getImessagePairedUserIdAsync,
   isImessageConfigured,
 } from "./bot.ts";
 

@@ -10,8 +10,9 @@ import {
   isUserPairedAsync,
   isSystemPairedAsync,
   loadPairingData,
+  loadPairingDataAsync,
   generatePairingCode,
-  savePairingCode,
+  savePairingCodeAsync,
 } from "../cli/pairing.ts";
 import { memoryService } from "../memory/service.ts";
 import { getUserReminders } from "../tools/reminder.ts";
@@ -105,6 +106,14 @@ const awaitingSoulInput = new Set<number>();
 // Get the paired user ID for heartbeat messages
 export function getPairedUserId(): number | null {
   const pairingData = loadPairingData();
+  if (pairingData?.used && pairingData?.pairedUserId) {
+    return pairingData.pairedUserId;
+  }
+  return null;
+}
+
+export async function getPairedUserIdAsync(): Promise<number | null> {
+  const pairingData = await loadPairingDataAsync();
   if (pairingData?.used && pairingData?.pairedUserId) {
     return pairingData.pairedUserId;
   }
@@ -959,7 +968,7 @@ export async function startBot(): Promise<void> {
     const isNonInteractive = !process.stdout.isTTY;
     if (isNonInteractive) {
       const code = generatePairingCode();
-      savePairingCode(code, 60);
+      await savePairingCodeAsync(code, 60);
       console.log("----------------------------------------");
       console.log("PAIRING CODE: " + code);
       console.log("----------------------------------------");

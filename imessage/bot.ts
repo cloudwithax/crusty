@@ -29,13 +29,14 @@ import { getDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 import { SendBlueClient, type InboundMessage } from "./sendblue.ts";
 import {
-  isImessagePaired,
-  isImessageSystemPaired,
-  markImessagePaired,
+  isImessagePairedAsync,
+  isImessageSystemPairedAsync,
+  markImessagePairedAsync,
   isValidImessagePairingCode,
   loadImessagePairingData,
+  loadImessagePairingDataAsync,
   generateImessagePairingCode,
-  saveImessagePairingCode,
+  saveImessagePairingCodeAsync,
 } from "./pairing";
 
 // environment configuration
@@ -122,9 +123,23 @@ export function getPairedPhoneNumber(): string | null {
   return null;
 }
 
+export async function getPairedPhoneNumberAsync(): Promise<string | null> {
+  const data = await loadImessagePairingDataAsync();
+  if (data?.used && data?.pairedPhone) {
+    return data.pairedPhone;
+  }
+  return null;
+}
+
 // get the paired user id (numeric hash) for heartbeat routing
 export function getImessagePairedUserId(): number | null {
   const phone = getPairedPhoneNumber();
+  if (!phone) return null;
+  return phoneToUserId(phone);
+}
+
+export async function getImessagePairedUserIdAsync(): Promise<number | null> {
+  const phone = await getPairedPhoneNumberAsync();
   if (!phone) return null;
   return phoneToUserId(phone);
 }
@@ -168,7 +183,7 @@ export async function sendMessageToUser(
   text: string,
   options?: { isHeartbeat?: boolean },
 ): Promise<void> {
-  const phone = getPairedPhoneNumber();
+  const phone = await getPairedPhoneNumberAsync();
   if (!phone) {
     debug("[imessage] no paired phone, cannot send");
     return;
@@ -190,7 +205,7 @@ const commands: Record<
   (userId: number, phone: string, args: string) => Promise<void>
 > = {
   async start(userId, phone) {
-    if (!isImessageSystemPaired()) {
+    if (!await isImessageSystemPairedAsync()) {
       await sendMessage(
         phone,
         "Pairing Required\n\n" +
@@ -201,7 +216,7 @@ const commands: Record<
       return;
     }
 
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "Already Paired\n\n" +
@@ -226,7 +241,7 @@ const commands: Record<
   },
 
   async help(userId, phone) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -258,7 +273,7 @@ const commands: Record<
   },
 
   async clear(userId, phone) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -274,7 +289,7 @@ const commands: Record<
   },
 
   async memory(userId, phone, args) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -300,7 +315,7 @@ const commands: Record<
   },
 
   async context(userId, phone) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -323,7 +338,7 @@ const commands: Record<
   },
 
   async soul(userId, phone, args) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -366,7 +381,7 @@ const commands: Record<
   },
 
   async reminders(userId, phone) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -417,7 +432,7 @@ const commands: Record<
   },
 
   async skill(userId, phone, args) {
-    if (!isImessagePaired(phone)) {
+    if (!await isImessagePairedAsync(phone)) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -626,10 +641,10 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   );
 
   // pairing flow
-  const systemPaired = isImessageSystemPaired();
+  const systemPaired = await isImessageSystemPairedAsync();
   if (!systemPaired) {
     if (isValidImessagePairingCode(text)) {
-      markImessagePaired(phone);
+      await markImessagePairedAsync(phone);
       await sendMessage(
         phone,
         "Successfully Paired!\n\n" +
@@ -649,7 +664,7 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   }
 
   // check if this phone is the paired one
-  if (!isImessagePaired(phone)) {
+  if (!await isImessagePairedAsync(phone)) {
     await sendMessage(
       phone,
       "Access Denied\n\n" +
@@ -841,7 +856,7 @@ export async function startImessageBot(): Promise<void> {
   );
 
   // check pairing status
-  if (isImessageSystemPaired()) {
+  if (await isImessageSystemPairedAsync()) {
     const data = loadImessagePairingData();
     console.log(`[imessage] paired with ${data?.pairedPhone}`);
   } else {
@@ -849,7 +864,7 @@ export async function startImessageBot(): Promise<void> {
     const isNonInteractive = !process.stdout.isTTY;
     if (isNonInteractive) {
       const code = generateImessagePairingCode();
-      saveImessagePairingCode(code, 60);
+      await saveImessagePairingCodeAsync(code, 60);
       console.log("----------------------------------------");
       console.log("IMESSAGE PAIRING CODE: " + code);
       console.log("----------------------------------------");
