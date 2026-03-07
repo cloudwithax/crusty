@@ -12,6 +12,7 @@ export interface HookRecord {
   content: string;
   every: string;
   enabled: number;
+  timeout: string | null;
   timezone: string | null;
   days: string | null;
   start_time: string | null;
@@ -29,6 +30,7 @@ export interface CreateHookInput {
   content: string;
   every: string;
   enabled?: boolean;
+  timeout?: string;
   timezone?: string;
   days?: string;
   startTime?: string;
@@ -52,16 +54,17 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
       if (existing) {
         // update existing hook
         await asyncDb.run(
-          `UPDATE hooks SET 
-            description = ?, 
-            content = ?, 
+          `UPDATE hooks SET
+            description = ?,
+            content = ?,
             every = ?,
             enabled = ?,
+            timeout = ?,
             timezone = ?,
             days = ?,
             start_time = ?,
             end_time = ?,
-            source_type = ?, 
+            source_type = ?,
             source_url = ?,
             updated_at = EXTRACT(EPOCH FROM NOW())
           WHERE name = ?`,
@@ -70,6 +73,7 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
             input.content,
             input.every,
             input.enabled !== false ? 1 : 0,
+            input.timeout || null,
             input.timezone || null,
             input.days || null,
             input.startTime || null,
@@ -83,14 +87,15 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
       } else {
         // insert new hook
         await asyncDb.run(
-          `INSERT INTO hooks (name, description, content, every, enabled, timezone, days, start_time, end_time, source_type, source_url)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO hooks (name, description, content, every, enabled, timeout, timezone, days, start_time, end_time, source_type, source_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             input.name,
             input.description || null,
             input.content,
             input.every,
             input.enabled !== false ? 1 : 0,
+            input.timeout || null,
             input.timezone || null,
             input.days || null,
             input.startTime || null,
@@ -111,16 +116,17 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
 
       if (existing) {
         db.run(
-          `UPDATE hooks SET 
-            description = ?, 
-            content = ?, 
+          `UPDATE hooks SET
+            description = ?,
+            content = ?,
             every = ?,
             enabled = ?,
+            timeout = ?,
             timezone = ?,
             days = ?,
             start_time = ?,
             end_time = ?,
-            source_type = ?, 
+            source_type = ?,
             source_url = ?,
             updated_at = strftime('%s', 'now')
           WHERE name = ?`,
@@ -129,6 +135,7 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
             input.content,
             input.every,
             input.enabled !== false ? 1 : 0,
+            input.timeout || null,
             input.timezone || null,
             input.days || null,
             input.startTime || null,
@@ -141,14 +148,15 @@ export async function saveHook(input: CreateHookInput): Promise<boolean> {
         debug(`[hooks:db] updated hook: ${input.name}`);
       } else {
         db.run(
-          `INSERT INTO hooks (name, description, content, every, enabled, timezone, days, start_time, end_time, source_type, source_url)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO hooks (name, description, content, every, enabled, timeout, timezone, days, start_time, end_time, source_type, source_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             input.name,
             input.description || null,
             input.content,
             input.every,
             input.enabled !== false ? 1 : 0,
+            input.timeout || null,
             input.timezone || null,
             input.days || null,
             input.startTime || null,

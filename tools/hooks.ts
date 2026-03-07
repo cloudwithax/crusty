@@ -86,6 +86,12 @@ const createHookSchema = z.object({
     .string()
     .optional()
     .describe("end time in 24h format (e.g. 17:00). omit for always active."),
+  timeout: z
+    .string()
+    .optional()
+    .describe(
+      "timeout for the hook's AI request (e.g. '30s', '2m'). hooks that generate long content should use longer timeouts. default: env HOOK_TIMEOUT or 60s",
+    ),
   storage: z
     .enum(["filesystem", "database"])
     .optional()
@@ -126,6 +132,7 @@ function generateHookContent(args: {
   description?: string;
   every: string;
   instructions: string;
+  timeout?: string;
   timezone?: string;
   days?: string;
   start?: string;
@@ -139,6 +146,9 @@ function generateHookContent(args: {
   }
   lines.push(`every: ${args.every}`);
   lines.push(`enabled: true`);
+  if (args.timeout) {
+    lines.push(`timeout: ${args.timeout}`);
+  }
 
   if (args.timezone) {
     lines.push(`timezone: ${args.timezone}`);
@@ -199,6 +209,7 @@ async function handleCreateHook(
         content: args.instructions,
         every: args.every,
         enabled: true,
+        timeout: args.timeout,
         timezone: args.timezone,
         days: args.days,
         startTime: args.start,
@@ -238,6 +249,7 @@ async function handleCreateHook(
       description: args.description,
       every: args.every,
       instructions: args.instructions,
+      timeout: args.timeout,
       timezone: args.timezone,
       days: args.days,
       start: args.start,

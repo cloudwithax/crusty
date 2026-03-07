@@ -20,6 +20,12 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
+// default hook timeout: 60s (configurable via HOOK_TIMEOUT env var, e.g. "60s", "2m")
+// individual hooks can override this with a `timeout` field in their config
+const DEFAULT_HOOK_TIMEOUT_MS = parseHookDuration(
+  process.env.HOOK_TIMEOUT || "60s",
+) || 60 * 1000;
+
 if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY environment variable is required for hooks");
 }
@@ -27,7 +33,7 @@ if (!OPENAI_API_KEY) {
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
   baseURL: OPENAI_BASE_URL,
-  timeout: 10 * 1000,
+  timeout: 120 * 1000, // generous client-level timeout; per-hook timeouts are enforced at request level
 });
 
 // hook configuration parsed from frontmatter
@@ -36,6 +42,7 @@ export interface HookConfig {
   description?: string;
   every: string; // duration string like "30m", "1h", "5m"
   enabled: boolean;
+  timeout?: string; // duration string for per-hook timeout (e.g. "30s", "2m")
   activeHours?: {
     timezone: string;
     days: number[]; // 0 = Sunday, 1 = Monday, etc.
@@ -51,6 +58,7 @@ export interface Hook {
   config: HookConfig;
   content: string; // the markdown content after frontmatter
   intervalMs: number;
+  timeoutMs: number; // per-hook timeout for AI requests (falls back to DEFAULT_HOOK_TIMEOUT_MS)
   scope: "project" | "global";
   sourceType: HookSourceType;
 }
@@ -268,6 +276,9 @@ function parseFrontmatter(content: string): {
       case "enabled":
         config.enabled = value.toLowerCase() === "true";
         break;
+      case "timeout":
+        config.timeout = value;
+        break;
       case "timezone":
         if (!config.activeHours) {
           config.activeHours = {
@@ -361,10 +372,14 @@ function loadHook(
         description: config.description,
         every: config.every,
         enabled: config.enabled !== false, // default to true
+        timeout: config.timeout,
         activeHours: config.activeHours,
       },
       content: body,
       intervalMs,
+      timeoutMs: config.timeout
+        ? parseHookDuration(config.timeout) || DEFAULT_HOOK_TIMEOUT_MS
+        : DEFAULT_HOOK_TIMEOUT_MS,
       scope,
       sourceType: "filesystem",
     };
@@ -444,6 +459,8 @@ function hookRecordToHook(record: HookRecord): Hook | null {
     };
   }
 
+  const timeoutStr = record.timeout || undefined;
+
   return {
     id: record.name,
     filePath: `db:${record.name}`, // virtual path for database hooks
@@ -452,10 +469,14 @@ function hookRecordToHook(record: HookRecord): Hook | null {
       description: record.description || undefined,
       every: record.every,
       enabled: record.enabled === 1,
+      timeout: timeoutStr,
       activeHours,
     },
     content: record.content,
     intervalMs,
+    timeoutMs: timeoutStr
+      ? parseHookDuration(timeoutStr) || DEFAULT_HOOK_TIMEOUT_MS
+      : DEFAULT_HOOK_TIMEOUT_MS,
     scope: "project", // db hooks are always project-scoped
     sourceType: record.source_type,
   };
@@ -532,14 +553,17 @@ Current time: ${new Date().toISOString()}
 
 Be concise and direct.`;
 
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Process hook: ${hook.config.name}` },
-      ],
-      temperature: 0.3,
-    });
+    const response = await openai.chat.completions.create(
+      {
+        model: OPENAI_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Process hook: ${hook.config.name}` },
+        ],
+        temperature: 0.3,
+      },
+      { timeout: hook.timeoutMs },
+    );
 
     const output = response.choices[0]?.message?.content?.trim() || "";
 
