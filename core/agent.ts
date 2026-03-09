@@ -136,81 +136,392 @@ function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(stripProviderArtifacts(text)));
 }
 
-// kimi k2 emits tool calls as text using pipe-delimited special tokens instead of
-// the structured tool_calls field. parse them into standard openai tool call objects.
-// format: <|tool_calls_section_begin|><|tool_call_begin|>JSON<|tool_call_end|><|tool_calls_section_end|>
-function parseKimiK2ToolCalls(
-  content: string,
-): ChatCompletionMessageToolCall[] {
-  if (!content.includes("<|tool_call_begin|>")) return [];
+// ─── Universal provider tool-call text format parser ──────────────────────
+//
+// Several models (or local inference stacks) embed tool calls as plain text
+// using model-specific special tokens rather than the OpenAI tool_calls field.
+// This function detects and translates those formats into standard
+// ChatCompletionMessageToolCall objects so the agent can execute them.
+//
+// Supported formats:
+//   kimi-k2          <|tool_call_begin|>JSON<|tool_call_end|>
+//   deepseek v2/v3   <｜tool▁calls▁begin｜>...<｜tool▁sep｜>name\njson...<｜tool▁calls▁end｜>
+//   mistral/mixtral  [TOOL_CALLS] [{name, arguments, id}]
+//   qwen2 / hermes   <tool_call>{"name","arguments"}</tool_call>
+//   phi-4            <|tool_calls|>[{name, arguments}]<|/tool_calls|>
+//   granite-3.x      <|tool_call|>{name, arguments}
+//   internlm2        <|action_start|><|plugin|>{name, parameters}<|action_end|>
+//   functionary-v3   <function=name>{arguments}</function>
+//   functionary-v2   <|from|>assistant\n<|recipient|>name\n<|content|>{args}
+//   glm-4.7          <tool_call>name\n<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
+//   glm-4            ```python\ntool_call(name="...", arguments={...})\n```
+//   command-r        Action: ```json [{tool_name, parameters}]```
+//   granite-20b      <function_call> {name, arguments}
+//   llama-3.1        <|python_tag|>func(arg=val)<|eom_id|>
+// ──────────────────────────────────────────────────────────────────────────
 
-  const toolCalls: ChatCompletionMessageToolCall[] = [];
-  const callRegex = /<\|tool_call_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
-  let match;
-  let index = 0;
+interface ProviderParseResult {
+  toolCalls: ChatCompletionMessageToolCall[];
+  textContent: string;
+}
 
-  while ((match = callRegex.exec(content)) !== null) {
-    const rawCall = match[1]!.trim();
-    try {
-      const parsed = JSON.parse(rawCall);
+function _argsStr(args: unknown): string {
+  return typeof args === "string" ? args : JSON.stringify(args ?? {});
+}
 
-      let name: string | undefined;
-      let args: string;
+function _makeTC(
+  name: string,
+  args: unknown,
+  id?: string,
+  idx = 0,
+): ChatCompletionMessageToolCall {
+  return {
+    id: id ?? `tc_${Date.now()}_${idx}`,
+    type: "function",
+    function: { name, arguments: _argsStr(args) },
+  };
+}
 
-      if (parsed.function?.name) {
-        // openai-shaped: {"type":"function","function":{"name":"...","arguments":"..."}}
-        name = parsed.function.name;
-        args =
-          typeof parsed.function.arguments === "string"
-            ? parsed.function.arguments
-            : JSON.stringify(parsed.function.arguments ?? {});
-      } else if (parsed.name) {
-        // flat: {"name":"...","arguments":{...}}
-        name = parsed.name;
-        args =
-          typeof parsed.arguments === "string"
-            ? parsed.arguments
-            : JSON.stringify(parsed.arguments ?? {});
+function _tryObj(s: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(s.trim());
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function _stripFences(s: string): string {
+  return s.replace(/^```(?:json|python)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+}
+
+function parseProviderToolCalls(content: string): ProviderParseResult | null {
+  // ── 1. Kimi K2 ───────────────────────────────────────────────────────────
+  // <|tool_calls_section_begin|><|tool_call_begin|>JSON<|tool_call_end|><|tool_calls_section_end|>
+  // JSON: {id?, type, function:{name,arguments}} OR flat {id?, name, arguments}
+  if (content.includes("<|tool_call_begin|>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<\|tool_call_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const obj = _tryObj(m[1]!.trim());
+      if (!obj) continue;
+      const fn = obj.function as Record<string, unknown> | undefined;
+      const name = (fn?.name ?? obj.name) as string | undefined;
+      const args = fn?.arguments ?? obj.arguments;
+      if (name) calls.push(_makeTC(name, args, obj.id as string | undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content
+      .replace(/<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g, "")
+      .replace(/<\|[a-z_]+\|>/g, "")
+      .replace(/^\s*\[[\s\S]*?'type'\s*:\s*'text'[\s\S]*?\]\s*/g, "")
+      .trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 2. DeepSeek V2/V3/R1 ─────────────────────────────────────────────────
+  // Uses fullwidth vertical bars ｜ (U+FF5C) and block underscore ▁ (U+2581).
+  // Inference engines sometimes normalize these to ASCII | and _.
+  // <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>name\n```json\n{}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+  {
+    const CALLS_BEGIN = /<[|｜]tool[_▁]calls[_▁]begin[|｜]>/;
+    if (CALLS_BEGIN.test(content)) {
+      const calls: ChatCompletionMessageToolCall[] = [];
+      const blockRe =
+        /<[|｜]tool[_▁]call[_▁]begin[|｜]>([\s\S]*?)<[|｜]tool[_▁]call[_▁]end[|｜]>/g;
+      let m: RegExpExecArray | null;
+      let idx = 0;
+      while ((m = blockRe.exec(content)) !== null) {
+        const block = m[1]!;
+        const sepMatch = block.match(/<[|｜]tool[_▁]sep[|｜]>/);
+        if (!sepMatch) continue;
+        const afterSep = block.slice(block.search(/<[|｜]tool[_▁]sep[|｜]>/) + sepMatch[0].length);
+        const nlIdx = afterSep.search(/[\n`]/);
+        const name = (nlIdx === -1 ? afterSep : afterSep.slice(0, nlIdx)).trim();
+        const argsRaw = nlIdx === -1 ? "{}" : afterSep.slice(nlIdx);
+        const obj = _tryObj(_stripFences(argsRaw));
+        if (name) calls.push(_makeTC(name, obj ?? {}, undefined, idx++));
       }
-
-      if (!name) continue;
-
-      toolCalls.push({
-        id: parsed.id ?? `kimi_${Date.now()}_${index}`,
-        type: "function",
-        function: { name, arguments: args! },
-      });
-      index++;
-    } catch {
-      debug(`[kimi k2] failed to parse tool call: ${rawCall.slice(0, 200)}`);
+      if (!calls.length) return null;
+      const textContent = content
+        .replace(/<[|｜]tool[_▁]calls[_▁]begin[|｜]>[\s\S]*?<[|｜]tool[_▁]calls[_▁]end[|｜]>/g, "")
+        .trim();
+      return { toolCalls: calls, textContent };
     }
   }
 
-  return toolCalls;
-}
-
-// extract the plain text portion from kimi k2 content, stripping tool call sections
-// and the python-style content block prefix e.g. [{'type': 'text', 'text': 'hi'}]
-function extractKimiK2Text(content: string): string {
-  let text = content;
-  // remove tool call sections entirely
-  text = text.replace(
-    /<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g,
-    "",
-  );
-  // remove any orphan pipe tokens
-  text = text.replace(/<\|[a-z_]+\|>/g, "");
-  // extract text value from python-style content block array prefix
-  const pyTextMatch = text.match(
-    /^\s*\[[\s\S]*?'type'\s*:\s*'text'\s*,\s*'text'\s*:\s*'([\s\S]*?)'[\s\S]*?\]/,
-  );
-  if (pyTextMatch) {
-    text = pyTextMatch[1]!;
-  } else {
-    // strip the array wrapper if present but no extractable text
-    text = text.replace(/^\s*\[[\s\S]*?'type'\s*:\s*'(?:text|image_url)'[\s\S]*?\]\s*/g, "");
+  // ── 3. Mistral / Mixtral ─────────────────────────────────────────────────
+  // [TOOL_CALLS] [{"name":"...","arguments":{...},"id":"XXXXXXXXX"}]
+  // id is exactly 9 alphanumeric chars per the official template
+  if (content.includes("[TOOL_CALLS]")) {
+    const cut = content.indexOf("[TOOL_CALLS]");
+    const after = content.slice(cut + "[TOOL_CALLS]".length).trim();
+    const arrMatch = after.match(/^(\[[\s\S]*?\])/);
+    if (arrMatch) {
+      try {
+        const arr = JSON.parse(arrMatch[1]!) as Array<Record<string, unknown>>;
+        const calls = arr
+          .map((item, i) => {
+            const name = item.name as string;
+            return name ? _makeTC(name, item.arguments, item.id as string | undefined, i) : null;
+          })
+          .filter((c): c is ChatCompletionMessageToolCall => c !== null);
+        if (calls.length) {
+          return { toolCalls: calls, textContent: content.slice(0, cut).trim() };
+        }
+      } catch { /* fall through */ }
+    }
   }
-  return text.trim();
+
+  // ── 4. Phi-4 ─────────────────────────────────────────────────────────────
+  // <|tool_calls|>[{"name":"...","arguments":{...}}]<|/tool_calls|>
+  if (content.includes("<|tool_calls|>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<\|tool_calls\|>([\s\S]*?)<\|\/tool_calls\|>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      try {
+        const arr = JSON.parse(m[1]!.trim());
+        const items: Array<Record<string, unknown>> = Array.isArray(arr) ? arr : [arr];
+        for (const item of items) {
+          const name = item.name as string;
+          if (name) calls.push(_makeTC(name, item.arguments, undefined, idx++));
+        }
+      } catch { /* skip malformed */ }
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<\|tool_calls\|>[\s\S]*?<\|\/tool_calls\|>/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 5. Granite 3.x ───────────────────────────────────────────────────────
+  // <|tool_call|>{"name":"...","arguments":{...}}  (no trailing delimiter; ends at next token or EOF)
+  // Some template versions wrap in {"tool": {"name": ..., "arguments": ...}}
+  if (content.includes("<|tool_call|>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<\|tool_call\|>([\s\S]*?)(?=<\||$)/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const obj = _tryObj(m[1]!.trim());
+      if (!obj) continue;
+      const inner = (obj.tool && typeof obj.tool === "object"
+        ? obj.tool
+        : obj) as Record<string, unknown>;
+      const name = inner.name as string;
+      if (name) calls.push(_makeTC(name, inner.arguments, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<\|tool_call\|>[\s\S]*?(?=<\||$)/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 6. InternLM2 / InternLM2.5 ──────────────────────────────────────────
+  // <|action_start|><|plugin|>\n{"name":"...","parameters":{...}}\n<|action_end|>
+  // Uses "parameters" instead of "arguments"
+  if (content.includes("<|action_start|>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<\|action_start\|><\|plugin\|>\s*([\s\S]*?)<\|action_end\|>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const obj = _tryObj(m[1]!.trim());
+      const name = obj?.name as string;
+      if (name) calls.push(_makeTC(name, obj?.parameters ?? obj?.arguments, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<\|action_start\|>[\s\S]*?<\|action_end\|>/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 7. Functionary v3.1 ──────────────────────────────────────────────────
+  // <function=name>{...}</function>
+  // Function name is in the tag; body is the args object directly
+  if (content.includes("<function=")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const name = m[1]!.trim();
+      const obj = _tryObj(m[2]!.trim());
+      if (name) calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<function=[^>]+>[\s\S]*?<\/function>/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 8. Functionary v2 ────────────────────────────────────────────────────
+  // <|from|>assistant\n<|recipient|>func_name\n<|content|>{args}\n<|from|>...
+  // "all" as recipient means final text response; skip it
+  if (content.includes("<|from|>") && content.includes("<|recipient|>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<\|recipient\|>([^\n<]+)\n<\|content\|>([\s\S]*?)(?=<\|from\|>|$)/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const name = m[1]!.trim();
+      if (name === "all") continue;
+      const obj = _tryObj(m[2]!.trim());
+      if (name) calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.slice(0, content.indexOf("<|from|>")).trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 9. GLM-4.7 XML key-value format ──────────────────────────────────────
+  // <tool_call>func_name\n<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>
+  // Checked before Qwen/Hermes since both use <tool_call>; the presence of <arg_key> distinguishes it
+  if (content.includes("<tool_call>") && content.includes("<arg_key>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const block = m[1]!;
+      const name = block.match(/^([^\n<]+)/)?.[1]?.trim();
+      if (!name) continue;
+      const args: Record<string, string> = {};
+      const pairRe = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/g;
+      let pair: RegExpExecArray | null;
+      while ((pair = pairRe.exec(block)) !== null) {
+        args[pair[1]!.trim()] = pair[2]!.trim();
+      }
+      calls.push(_makeTC(name, args, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 10. Qwen2/2.5 and NousHermes (identical format) ──────────────────────
+  // <tool_call>{"name":"...","arguments":{...}}</tool_call>
+  // Also used by vLLM's hermes parser for both model families
+  if (content.includes("<tool_call>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const obj = _tryObj(m[1]!);
+      const name = obj?.name as string;
+      if (name) calls.push(_makeTC(name, obj?.arguments, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 11. Cohere Command-R / Command-R+ ────────────────────────────────────
+  // Action: ```json\n[{"tool_name":"...","parameters":{...}}]\n```
+  // Uses "tool_name" and "parameters" instead of "name" and "arguments"
+  // "directly_answer" is a pseudo-tool signaling no external call needed
+  if (/^Action:\s*```/m.test(content) && content.includes('"tool_name"')) {
+    const blockMatch = content.match(/^Action:\s*```(?:json)?\s*([\s\S]*?)```/m);
+    if (blockMatch) {
+      try {
+        const arr = JSON.parse(blockMatch[1]!.trim());
+        const items: Array<Record<string, unknown>> = Array.isArray(arr) ? arr : [arr];
+        const calls = items
+          .map((item, i) => {
+            const name = item.tool_name as string;
+            return name && name !== "directly_answer"
+              ? _makeTC(name, item.parameters, undefined, i)
+              : null;
+          })
+          .filter((c): c is ChatCompletionMessageToolCall => c !== null);
+        if (calls.length) {
+          const textContent = content.replace(blockMatch[0], "").trim();
+          return { toolCalls: calls, textContent };
+        }
+      } catch { /* fall through */ }
+    }
+  }
+
+  // ── 12. GLM-4 / ChatGLM Python-style ──────────────────────────────────────
+  // ```python\ntool_call(name="...", arguments={...})\n```
+  // Python dict literals need True/False/None → true/false/null conversion
+  if (/```python[\s\S]*?tool_call\s*\(/.test(content)) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /```python\s*([\s\S]*?)```/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const block = m[1]!;
+      if (!block.includes("tool_call(")) continue;
+      const name = block.match(/name\s*=\s*["']([^"']+)["']/)?.[1];
+      if (!name) continue;
+      const argsMatch = block.match(/arguments\s*=\s*(\{[\s\S]*?\})\s*\)/);
+      let args: unknown = {};
+      if (argsMatch) {
+        const jsonStr = argsMatch[1]!
+          .replace(/'/g, '"')
+          .replace(/\bTrue\b/g, "true")
+          .replace(/\bFalse\b/g, "false")
+          .replace(/\bNone\b/g, "null");
+        args = _tryObj(jsonStr) ?? jsonStr;
+      }
+      calls.push(_makeTC(name, args, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/```python[\s\S]*?```/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 13. Granite 20B ──────────────────────────────────────────────────────
+  // <function_call> {"name":"...","arguments":{...}}
+  if (content.includes("<function_call>")) {
+    const calls: ChatCompletionMessageToolCall[] = [];
+    const re = /<function_call>\s*([\s\S]*?)(?=<function_call>|$)/g;
+    let m: RegExpExecArray | null;
+    let idx = 0;
+    while ((m = re.exec(content)) !== null) {
+      const obj = _tryObj(m[1]!.trim());
+      const name = obj?.name as string;
+      if (name) calls.push(_makeTC(name, obj?.arguments, undefined, idx++));
+    }
+    if (!calls.length) return null;
+    const textContent = content.replace(/<function_call>[\s\S]*/g, "").trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  // ── 14. Llama 3.1 / 3.2 pythonic ─────────────────────────────────────────
+  // Built-in tools: <|python_tag|>brave_search.call(query="...") <|eom_id|>
+  // Custom list:    <|python_tag|>[get_weather(location="Paris")] <|eom_id|>
+  // Only handles simple key="value" / key=number kwargs; complex args are skipped
+  if (content.includes("<|python_tag|>")) {
+    const tagIdx = content.indexOf("<|python_tag|>");
+    const after = content
+      .slice(tagIdx + "<|python_tag|>".length)
+      .replace(/<\|eom_id\|>[\s\S]*$/, "")
+      .trim();
+    const calls: ChatCompletionMessageToolCall[] = [];
+    // unwrap optional [...] list wrapper, then split on top-level commas before func(
+    const inner = after.match(/^\[([\s\S]+)\]$/) ? after.slice(1, -1) : after;
+    const targets = inner.split(/,\s*(?=[a-zA-Z_]\w*\s*\()/);
+    for (let i = 0; i < targets.length; i++) {
+      const fnMatch = targets[i]!.trim().match(/^([a-zA-Z_][\w.]*)\s*\(([\s\S]*)\)$/);
+      if (!fnMatch) continue;
+      const name = fnMatch[1]!.replace(/\.call$/, "");
+      const args: Record<string, string | number> = {};
+      const kvRe = /([a-zA-Z_]\w*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([\d.]+))/g;
+      let kv: RegExpExecArray | null;
+      while ((kv = kvRe.exec(fnMatch[2]!)) !== null) {
+        args[kv[1]!] = kv[4] !== undefined ? Number(kv[4]) : (kv[2] ?? kv[3] ?? "");
+      }
+      calls.push(_makeTC(name, args, undefined, i));
+    }
+    if (!calls.length) return null;
+    const textContent = content.slice(0, tagIdx).trim();
+    return { toolCalls: calls, textContent };
+  }
+
+  return null;
 }
 
 // step tracking for dynamic status updates
@@ -757,14 +1068,14 @@ export class Agent {
       let content = message.content || "";
       let toolCalls = message.tool_calls || [];
 
-      // kimi k2 outputs tool calls as text using special tokens when the provider's
-      // openai-compatibility layer fails to translate them into structured tool_calls
-      if (toolCalls.length === 0 && content.includes("<|tool_call_begin|>")) {
-        const parsed = parseKimiK2ToolCalls(content);
-        if (parsed.length > 0) {
-          toolCalls = parsed;
-          content = extractKimiK2Text(content);
-          debug(`[kimi k2] parsed ${parsed.length} tool call(s) from text content`);
+      // some providers embed tool calls as plain text rather than the structured
+      // tool_calls field — detect and translate into standard format
+      if (toolCalls.length === 0) {
+        const parsed = parseProviderToolCalls(content);
+        if (parsed && parsed.toolCalls.length > 0) {
+          toolCalls = parsed.toolCalls;
+          content = parsed.textContent;
+          debug(`[tool-parser] parsed ${toolCalls.length} text-embedded tool call(s)`);
         }
       }
 
