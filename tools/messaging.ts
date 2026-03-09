@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { debug } from "../utils/debug.ts";
-import { getCurrentModel, setCurrentModel } from "../core/model-state.ts";
+import {
+  getCurrentModel,
+  setCurrentModel,
+  persistModelToEnv,
+} from "../core/model-state.ts";
 
 // bridge for delivering messages to paired users across all channels
 // set by index.ts on startup so tools can send messages without depending on specific bot implementations
@@ -61,6 +65,7 @@ async function handleSetModel(
 
   const previous = getCurrentModel();
   setCurrentModel(model);
+  persistModelToEnv(model);
   debug(`[messaging] model switched from ${previous} to ${model}`);
   return `Model switched from "${previous}" to "${model}". This will take effect on the next agent call.`;
 }

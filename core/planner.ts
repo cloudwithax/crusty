@@ -5,10 +5,12 @@
 import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { debug } from "../utils/debug.ts";
+import { withRetry } from "../utils/retry.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const SUMMARIZE_MODEL = process.env.SUMMARIZE_MODEL || "gpt-4o-mini";
+const SUMMARIZE_MODEL =
+  process.env.SUMMARIZE_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
@@ -41,6 +43,53 @@ export interface VerificationResult {
   suggested_next_step?: string;
 }
 
+// extract a json object from model output, stripping tool call tags, thinking
+// blocks, markdown fences, and other non-json noise that models interleave
+function extractJson(raw: string): string | null {
+  let text = raw;
+
+  // strip markdown code fences
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    text = fenceMatch[1]!.trim();
+  }
+
+  // strip known interleaved tool call and reasoning tags
+  // covers openai-style, anthropic-style, deepseek, qwen, mistral, etc
+  text = text.replace(
+    /<\|?(tool_call|toolcall|function_call|tool_use|invoke|action|thinking|think|reasoning|reflection|scratch|pad|inner_monologue|antml:[\w]+)[^>]*>[\s\S]*?<\/?\|?\1[^>]*>/gi,
+    "",
+  );
+
+  // strip self-closing and orphan tags that didnt have a closing pair
+  text = text.replace(
+    /<\|?(tool_call|toolcall|function_call|tool_use|invoke|action|thinking|think|reasoning|reflection|scratch|pad|inner_monologue|antml:[\w]+)[^>]*\/?>/gi,
+    "",
+  );
+
+  // strip the crusty custom tool call format
+  text = text.replace(
+    /<\|toolcallsectionbegin\|>[\s\S]*?<\|toolcallsectionend\|>/g,
+    "",
+  );
+
+  text = text.trim();
+
+  // isolate the json object
+  const braceStart = text.indexOf("{");
+  if (braceStart === -1) return null;
+  if (braceStart > 0) {
+    text = text.slice(braceStart);
+  }
+  const braceEnd = text.lastIndexOf("}");
+  if (braceEnd === -1) return null;
+  if (braceEnd < text.length - 1) {
+    text = text.slice(0, braceEnd + 1);
+  }
+
+  return text;
+}
+
 // determine if a message is simple enough to skip planning
 function isSimpleQuery(message: string): boolean {
   const simple_patterns = [
@@ -66,7 +115,7 @@ function isSimpleQuery(message: string): boolean {
 export async function createPlan(
   userMessage: string,
   conversationContext: string,
-  availableTools: string[]
+  availableTools: string[],
 ): Promise<TaskPlan | null> {
   // skip planning for simple queries
   if (isSimpleQuery(userMessage)) {
@@ -107,29 +156,32 @@ user request: ${userMessage}
 create plan:`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: SUMMARIZE_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: 400,
-      temperature: 0.3,
-    });
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: SUMMARIZE_MODEL,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          max_tokens: 400,
+          temperature: 0.3,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const content = response.choices[0]?.message?.content?.trim();
     if (!content) return null;
 
-    // extract json from response (handle markdown code blocks)
-    let jsonStr = content;
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1]!.trim();
+    const jsonStr = extractJson(content);
+    if (!jsonStr) {
+      debug("[planner] response was not valid json, skipping");
+      return null;
     }
 
     const plan = JSON.parse(jsonStr) as TaskPlan;
     debug(
-      `[planner] created plan: ${plan.intent} (${plan.complexity}, ${plan.estimated_steps} steps)`
+      `[planner] created plan: ${plan.intent} (${plan.complexity}, ${plan.estimated_steps} steps)`,
     );
     return plan;
   } catch (err) {
@@ -142,7 +194,7 @@ create plan:`;
 export async function verifyCompletion(
   originalIntent: string,
   toolResults: string[],
-  assistantResponse: string
+  assistantResponse: string,
 ): Promise<VerificationResult> {
   // skip verification for empty results
   if (toolResults.length === 0) {
@@ -172,23 +224,27 @@ assistant's response: ${assistantResponse.slice(0, 500)}
 is this complete?`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: SUMMARIZE_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: 150,
-      temperature: 0.2,
-    });
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: SUMMARIZE_MODEL,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          max_tokens: 150,
+          temperature: 0.2,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const content = response.choices[0]?.message?.content?.trim();
     if (!content) return { is_complete: true, confidence: 0.6 };
 
-    let jsonStr = content;
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1]!.trim();
+    const jsonStr = extractJson(content);
+    if (!jsonStr) {
+      debug("[planner] verification response was not valid json, skipping");
+      return { is_complete: true, confidence: 0.5 };
     }
 
     return JSON.parse(jsonStr) as VerificationResult;
@@ -207,7 +263,7 @@ export function classifyIntent(message: string): MessageIntent {
   // commands - explicit instructions
   if (
     /^(do|make|create|build|write|edit|delete|run|execute|search|find|browse|open|read)\b/.test(
-      msg
+      msg,
     )
   ) {
     return "command";
@@ -217,7 +273,7 @@ export function classifyIntent(message: string): MessageIntent {
   if (
     msg.includes("?") ||
     /^(what|where|when|who|why|how|is|are|can|could|would|should|does|do)\b/.test(
-      msg
+      msg,
     )
   ) {
     return "question";

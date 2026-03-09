@@ -637,7 +637,7 @@ export class Agent {
               tools: tools.length > 0 ? tools : undefined,
               tool_choice: tools.length > 0 ? "auto" : undefined,
             }),
-          { maxRetries: 2, baseDelayMs: 1000 },
+          { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 },
         );
       } catch (apiError) {
         // extract detailed error info from openai sdk
@@ -660,9 +660,10 @@ export class Agent {
           }
         }
 
-        debug(`[api error: ${errorDetails}]`);
+        debug(`[api error after 10 retries: ${errorDetails}]`);
         return (
-          lastTextResponse || "i ran into a connection issue. please try again."
+          lastTextResponse ||
+          "the inference endpoint is not responding after multiple retries. this could be a provider outage or network issue - give it a few minutes and try again."
         );
       }
 

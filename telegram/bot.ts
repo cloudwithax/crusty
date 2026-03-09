@@ -6,6 +6,7 @@ import {
   setCurrentModel,
   getOpenAIClient,
 } from "../core/agent.ts";
+import { persistModelToEnv } from "../core/model-state.ts";
 import { initializeContextLimits } from "../core/context-config.ts";
 import { cleanupTools } from "../tools/registry.ts";
 import {
@@ -35,8 +36,14 @@ import {
   detectInjection,
 } from "../core/skill-url.ts";
 import { getRunningHooks } from "../scheduler/hooks.ts";
-import { getDatabase } from "../data/db.ts";
+import { getDatabase, getAsyncDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
+import { learningsService } from "../memory/learnings.ts";
+import { getHeartbeatConfig } from "../data/heartbeat-config.ts";
+import {
+  getRecentSessions,
+  getSessionStats,
+} from "../memory/session-memory.ts";
 
 // Environment configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -287,9 +294,7 @@ const commands: Record<
         "• Answer questions with fresh data from the web\n" +
         "• Help with research - I love a good treasure hunt\n\n" +
         "Just send me a message or ask me to visit a website!\n\n" +
-        "Available commands:\n" +
-        "/clear - Clear our conversation history\n" +
-        "/help - Show this help message",
+        "Type /help for all available commands.",
       { message_thread_id: messageThreadId },
     );
   },
@@ -308,25 +313,30 @@ const commands: Record<
     await sendMessage(
       chatId,
       "*Crusty's Commands*\n\n" +
+        "*general:*\n" +
         "/start - Wake up the crab\n" +
         "/clear - Clean the shell (clear conversation)\n" +
         "/model - View or change the AI model\n" +
+        "/context - View context window stats\n" +
+        "/help - Show this message\n\n" +
+        "*memory & knowledge:*\n" +
         "/memory - View memory stats\n" +
         "/memory clear - Wipe long-term memory\n" +
-        "/reminders - View pending reminders\n" +
+        "/forget <keyword> - Search memories by keyword\n" +
+        "/learnings - View learning stats\n" +
+        "/sessions - View recent conversation sessions\n\n" +
+        "*tasks & reminders:*\n" +
+        "/todos - View all todo lists\n" +
+        "/reminders - View pending reminders\n\n" +
+        "*personality & skills:*\n" +
         "/soul - View current persona\n" +
         "/soul new - Define a new persona\n" +
         "/skill - List available skills\n" +
-        "/skill new - Create a new skill\n" +
-        "/skill <name> - View skill details\n" +
-        "/skill <url> - Load skill from URL\n" +
-        "/help - Show this message\n\n" +
-        "You can also just chat with me naturally. I can:\n" +
-        "• Scuttle across websites and summarize content\n" +
-        '• Set reminders (try: "remind me in 10 minutes to...")\n' +
-        "• Answer questions with my claws on the keyboard\n" +
-        "• Help with research - digging is my specialty\n\n" +
-        'Try asking: "What\'s on example.com?"',
+        "/skill new - Create a new skill\n\n" +
+        "*system:*\n" +
+        "/hooks - View running hooks\n" +
+        "/heartbeat - View heartbeat config\n" +
+        "/export - Export memories, learnings, or conversation",
       { message_thread_id: messageThreadId },
     );
   },
@@ -698,6 +708,448 @@ const commands: Record<
     // /model <model-id> - set model directly
     await switchModel(chatId, messageThreadId, arg, userId);
   },
+
+  async todos(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const asyncDb = getAsyncDatabase();
+
+    if (asyncDb) {
+      const todos = await asyncDb.all<{ id: string; title: string }>(
+        "SELECT id, title FROM todos WHERE user_id = $1",
+        userId,
+      );
+
+      if (todos.length === 0) {
+        await sendMessage(
+          chatId,
+          "no todo lists found.\n\njust ask me to create one for you.",
+          { message_thread_id: messageThreadId },
+        );
+        return;
+      }
+
+      const lines: string[] = [];
+      for (const t of todos) {
+        const items = await asyncDb.all<{ completed: number }>(
+          "SELECT completed FROM todo_items WHERE todo_id = $1",
+          t.id,
+        );
+        const done = items.filter((i) => i.completed === 1).length;
+        lines.push(`- ${t.title} (${done}/${items.length})`);
+      }
+
+      await sendMessage(
+        chatId,
+        `*Todo Lists (${todos.length}):*\n\n${lines.join("\n")}`,
+        { message_thread_id: messageThreadId },
+      );
+    } else {
+      const db = getDatabase();
+      const todos = db
+        .query<{ id: string; title: string }>(
+          "SELECT id, title FROM todos WHERE user_id = ?",
+        )
+        .all(userId);
+
+      if (todos.length === 0) {
+        await sendMessage(
+          chatId,
+          "no todo lists found.\n\njust ask me to create one for you.",
+          { message_thread_id: messageThreadId },
+        );
+        return;
+      }
+
+      const lines = todos.map((t) => {
+        const items = db
+          .query<{ completed: number }>(
+            "SELECT completed FROM todo_items WHERE todo_id = ?",
+          )
+          .all(t.id);
+        const done = items.filter((i) => i.completed === 1).length;
+        return `- ${t.title} (${done}/${items.length})`;
+      });
+
+      await sendMessage(
+        chatId,
+        `*Todo Lists (${todos.length}):*\n\n${lines.join("\n")}`,
+        { message_thread_id: messageThreadId },
+      );
+    }
+  },
+
+  async learnings(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const stats = await learningsService.getStats(userId);
+
+    if (stats.total === 0) {
+      await sendMessage(
+        chatId,
+        "no learnings stored yet.\n\nthe agent discovers patterns, fixes, and gotchas automatically over time.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    // build category breakdown
+    const categories = Object.entries(stats.byCategory)
+      .filter(([, count]) => count > 0)
+      .map(([cat, count]) => `  ${cat}: ${count}`)
+      .join("\n");
+
+    await sendMessage(
+      chatId,
+      `*Learning Stats*\n\n` +
+        `total: ${stats.total}\n` +
+        `avg confidence: ${(stats.avgConfidence * 100).toFixed(0)}%\n` +
+        `total applications: ${stats.totalApplications}\n\n` +
+        `*by category:*\n${categories}`,
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async hooks(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const running = getRunningHooks();
+
+    if (running.length === 0) {
+      await sendMessage(
+        chatId,
+        "no hooks running.\n\nadd hook files to `cogs/hooks/` to get started.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const lines = running.map(
+      (h) => `- *${h.name}* (every ${h.interval})`,
+    );
+
+    await sendMessage(
+      chatId,
+      `*Running Hooks (${running.length}):*\n\n${lines.join("\n")}`,
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async heartbeat(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const dbConfig = await getHeartbeatConfig();
+
+    // fall back to env vars for defaults
+    const every = dbConfig?.every ?? process.env.HEARTBEAT_EVERY ?? "30m";
+    const timezone =
+      dbConfig?.timezone ?? process.env.HEARTBEAT_TIMEZONE ?? "not set";
+    const days = dbConfig?.days ?? process.env.HEARTBEAT_DAYS ?? "not set";
+    const start =
+      dbConfig?.start_time ?? process.env.HEARTBEAT_START ?? "not set";
+    const end = dbConfig?.end_time ?? process.env.HEARTBEAT_END ?? "not set";
+    const source = dbConfig ? "database override" : "env defaults";
+
+    await sendMessage(
+      chatId,
+      `*Heartbeat Config*\n\n` +
+        `interval: ${every}\n` +
+        `timezone: ${timezone}\n` +
+        `active days: ${days}\n` +
+        `active hours: ${start} - ${end}\n` +
+        `source: ${source}`,
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async sessions(userId, chatId, messageThreadId, _args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const sessions = await getRecentSessions(userId, 10);
+    const stats = await getSessionStats(userId);
+
+    if (sessions.length === 0) {
+      await sendMessage(
+        chatId,
+        "no past sessions found.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const lines = sessions.map((s) => {
+      const date = new Date(s.startTime).toISOString().split("T")[0];
+      const duration = Math.round((s.endTime - s.startTime) / (1000 * 60));
+      return `- ${s.title} (${date}, ${s.messageCount} msgs, ~${duration}min)`;
+    });
+
+    await sendMessage(
+      chatId,
+      `*Sessions* (${stats.totalSessions} total, ${stats.totalMessages} msgs)\n\n` +
+        `*recent:*\n${lines.join("\n")}`,
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async forget(userId, chatId, messageThreadId, args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const query = args.trim();
+
+    if (!query) {
+      await sendMessage(
+        chatId,
+        "usage: `/forget <keyword>`\n\nsearches your memories and shows matches.\nuse `/memory clear` to wipe all memories.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const results = await memoryService.searchMemories(userId, query, 10);
+
+    if (results.length === 0) {
+      await sendMessage(
+        chatId,
+        `no memories found matching "${query}".`,
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const lines = results.map(
+      (r) =>
+        `- "${(r.memory.rawContent || r.memory.content).substring(0, 80)}..."`,
+    );
+
+    await sendMessage(
+      chatId,
+      `*Found ${results.length} memories matching "${query}":*\n\n${lines.join("\n")}\n\n` +
+        `individual deletion not yet supported.\nuse \`/memory clear\` to wipe all memories.`,
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async export(userId, chatId, messageThreadId, args) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    const arg = args.trim().toLowerCase();
+
+    if (!arg || arg === "help") {
+      await sendMessage(
+        chatId,
+        "*Export Data*\n\n" +
+          "`/export memories` - export all saved memories\n" +
+          "`/export learnings` - export all learnings\n" +
+          "`/export conversation` - export current conversation",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    if (arg === "memories") {
+      const asyncDb = getAsyncDatabase();
+      let rows: { content: string; context: string | null; emotional_weight: number; created_at: number }[];
+
+      if (asyncDb) {
+        rows = await asyncDb.all<{
+          content: string;
+          context: string | null;
+          emotional_weight: number;
+          created_at: number;
+        }>(
+          "SELECT content, context, emotional_weight, created_at FROM memories WHERE user_id = $1 ORDER BY created_at DESC",
+          userId,
+        );
+      } else {
+        const db = getDatabase();
+        rows = db
+          .query<{
+            content: string;
+            context: string | null;
+            emotional_weight: number;
+            created_at: number;
+          }>(
+            "SELECT content, context, emotional_weight, created_at FROM memories WHERE user_id = ? ORDER BY created_at DESC",
+          )
+          .all(userId);
+      }
+
+      if (rows.length === 0) {
+        await sendMessage(chatId, "no memories to export.", {
+          message_thread_id: messageThreadId,
+        });
+        return;
+      }
+
+      const lines = rows.map((r) => {
+        const date = new Date(r.created_at * 1000).toISOString().split("T")[0];
+        const ctx = r.context ? ` [${r.context}]` : "";
+        return `[${date}] (w:${r.emotional_weight})${ctx} ${r.content}`;
+      });
+
+      const text = lines.join("\n");
+      const truncated =
+        text.length > 3800
+          ? text.slice(0, 3800) + "\n\n... [truncated]"
+          : text;
+
+      await sendMessage(
+        chatId,
+        `*Memories Export (${rows.length}):*\n\n${truncated}`,
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    if (arg === "learnings") {
+      const asyncDb = getAsyncDatabase();
+      let rows: { title: string; category: string; content: string; confidence: number; application_count: number }[];
+
+      if (asyncDb) {
+        rows = await asyncDb.all<{
+          title: string;
+          category: string;
+          content: string;
+          confidence: number;
+          application_count: number;
+        }>(
+          "SELECT title, category, content, confidence, application_count FROM learnings WHERE user_id = $1 ORDER BY confidence DESC",
+          userId,
+        );
+      } else {
+        const db = getDatabase();
+        rows = db
+          .query<{
+            title: string;
+            category: string;
+            content: string;
+            confidence: number;
+            application_count: number;
+          }>(
+            "SELECT title, category, content, confidence, application_count FROM learnings WHERE user_id = ? ORDER BY confidence DESC",
+          )
+          .all(userId);
+      }
+
+      if (rows.length === 0) {
+        await sendMessage(chatId, "no learnings to export.", {
+          message_thread_id: messageThreadId,
+        });
+        return;
+      }
+
+      const lines = rows.map(
+        (r) =>
+          `[${r.category}] ${r.title} (conf: ${(r.confidence * 100).toFixed(0)}%, applied: ${r.application_count}x)\n  ${r.content.substring(0, 120)}`,
+      );
+
+      const text = lines.join("\n\n");
+      const truncated =
+        text.length > 3800
+          ? text.slice(0, 3800) + "\n\n... [truncated]"
+          : text;
+
+      await sendMessage(
+        chatId,
+        `*Learnings Export (${rows.length}):*\n\n${truncated}`,
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    if (arg === "conversation") {
+      const agent = getOrCreateAgent(userId);
+      await agent.initialize();
+      const messages = agent.messages;
+
+      // skip system message, format user/assistant turns
+      const turns = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => {
+          const role = m.role === "user" ? "You" : "Bot";
+          const content =
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content);
+          return `[${role}] ${content.substring(0, 200)}`;
+        });
+
+      if (turns.length === 0) {
+        await sendMessage(chatId, "no conversation to export.", {
+          message_thread_id: messageThreadId,
+        });
+        return;
+      }
+
+      const text = turns.join("\n\n");
+      const truncated =
+        text.length > 3800
+          ? text.slice(0, 3800) + "\n\n... [truncated]"
+          : text;
+
+      await sendMessage(
+        chatId,
+        `*Conversation Export (${turns.length} turns):*\n\n${truncated}`,
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    await sendMessage(
+      chatId,
+      `unknown export type "${arg}".\n\nuse \`/export memories\`, \`/export learnings\`, or \`/export conversation\`.`,
+      { message_thread_id: messageThreadId },
+    );
+  },
 };
 
 // fetch available models from the OpenAI-compatible API's /models endpoint
@@ -796,6 +1248,7 @@ async function switchModel(
 
   if (works) {
     setCurrentModel(modelId);
+    persistModelToEnv(modelId);
 
     // reinitialize context limits for the new model
     await initializeContextLimits(modelId);

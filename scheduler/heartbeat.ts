@@ -4,6 +4,7 @@ import { initSelfReview, selfReviewCycle, cleanupSelfReview } from "./self-revie
 import { debug } from "../utils/debug.ts";
 import { getFullHeartbeatContent, getActionableItems } from "../tools/heartbeat.ts";
 import { Agent } from "../core/agent.ts";
+import { getHeartbeatConfig } from "../data/heartbeat-config.ts";
 
 // Heartbeat configuration types
 export interface HeartbeatActiveHours {
@@ -140,8 +141,8 @@ function getDayOfWeekInTimezone(date: Date, timezone: string): number {
   return targetDate.getUTCDay();
 }
 
-// Load heartbeat configuration from environment
-function loadConfig(): HeartbeatConfig {
+// load heartbeat configuration from environment (sync fallback)
+function loadConfigFromEnv(): HeartbeatConfig {
   const every = process.env.HEARTBEAT_EVERY || DEFAULT_CONFIG.every;
   const maxAckChars = parseInt(process.env.HEARTBEAT_MAX_ACK_CHARS || `${DEFAULT_CONFIG.maxAckChars}`, 10);
 
@@ -162,6 +163,42 @@ function loadConfig(): HeartbeatConfig {
   }
 
   return { every, maxAckChars, activeHours };
+}
+
+// load heartbeat configuration with database override taking precedence
+async function loadConfig(): Promise<HeartbeatConfig> {
+  const envConfig = loadConfigFromEnv();
+
+  try {
+    const dbConfig = await getHeartbeatConfig();
+    if (!dbConfig) {
+      return envConfig;
+    }
+
+    // database config overrides environment
+    let activeHours: HeartbeatActiveHours | undefined;
+    const timezone = dbConfig.timezone;
+    const daysStr = dbConfig.days;
+    const start = dbConfig.start_time;
+    const end = dbConfig.end_time;
+
+    if (timezone && daysStr && start && end) {
+      const days = daysStr.split(",").map((d) => parseInt(d.trim(), 10));
+      activeHours = { timezone, days, start, end };
+    } else if (envConfig.activeHours) {
+      // fall back to env active hours if db only has partial config
+      activeHours = envConfig.activeHours;
+    }
+
+    return {
+      every: dbConfig.every || envConfig.every,
+      maxAckChars: envConfig.maxAckChars,
+      activeHours,
+    };
+  } catch (error) {
+    debug("[heartbeat] error loading db config, using env defaults:", error);
+    return envConfig;
+  }
 }
 
 // Path to audit log
@@ -198,8 +235,11 @@ async function getHeartbeatAgent(): Promise<Agent> {
 // runs actionable items through the agent silently in background
 export async function heartbeatTick(
   _sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
-  config: HeartbeatConfig = loadConfig()
+  config?: HeartbeatConfig,
 ): Promise<void> {
+  if (!config) {
+    config = await loadConfig();
+  }
   // check if within active hours
   if (!isWithinActiveHours(config.activeHours)) {
     debug("[heartbeat] outside active hours, skipping");
@@ -259,11 +299,12 @@ ${items.map((item, i) => `${i + 1}. ${item}`).join("\n")}
   }
 }
 
-// Scheduler state
+// scheduler state
 let heartbeatInterval: Timer | null = null;
 let isRunning = false;
+let lastSendMessage: ((text: string, isHeartbeat?: boolean) => Promise<void>) | null = null;
 
-// Start the heartbeat scheduler
+// start the heartbeat scheduler
 export async function startHeartbeat(
   sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
   config?: HeartbeatConfig
@@ -273,10 +314,13 @@ export async function startHeartbeat(
     return;
   }
 
+  // store reference for restarts
+  lastSendMessage = sendMessage;
+
   // initialize self-review system on heartbeat start
   await initSelfReview();
 
-  const effectiveConfig = config || loadConfig();
+  const effectiveConfig = config || await loadConfig();
   const intervalMs = parseDuration(effectiveConfig.every);
 
   if (intervalMs === 0) {
@@ -286,12 +330,12 @@ export async function startHeartbeat(
 
   debug(`[heartbeat] starting with interval: ${effectiveConfig.every} (${intervalMs}ms)`);
 
-  // Run immediately on start
+  // run immediately on start
   heartbeatTick(sendMessage, effectiveConfig).catch((error) => {
     console.error("[heartbeat] initial tick error:", error);
   });
 
-  // Schedule recurring ticks
+  // schedule recurring ticks
   heartbeatInterval = setInterval(() => {
     heartbeatTick(sendMessage, effectiveConfig).catch((error) => {
       console.error("[heartbeat] tick error:", error);
@@ -299,6 +343,18 @@ export async function startHeartbeat(
   }, intervalMs);
 
   isRunning = true;
+}
+
+// restart the heartbeat with fresh config from database/env
+export async function restartHeartbeat(): Promise<void> {
+  if (!lastSendMessage) {
+    debug("[heartbeat] cannot restart: no sendMessage reference");
+    return;
+  }
+
+  const sendMessage = lastSendMessage;
+  stopHeartbeat();
+  await startHeartbeat(sendMessage);
 }
 
 // Stop the heartbeat scheduler

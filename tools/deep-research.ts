@@ -5,6 +5,7 @@ import { z } from "zod";
 import { OpenAI } from "openai";
 import { executeTool } from "./registry.ts";
 import { debug } from "../utils/debug.ts";
+import { withRetry } from "../utils/retry.ts";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
@@ -96,12 +97,16 @@ respond with a json array of query strings only, no explanation:
 ["query 1", "query 2", "query 3"]`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 300,
-      temperature: 0.7,
-    });
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 300,
+          temperature: 0.7,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const content = response.choices[0]?.message?.content?.trim();
     if (!content) return [];
@@ -128,12 +133,14 @@ async function assessRelevance(
   const truncated = content.slice(0, 3000);
 
   try {
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: `rate the relevance of this content to the research topic and extract key points.
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: `rate the relevance of this content to the research topic and extract key points.
 
 topic: ${topic}
 
@@ -142,11 +149,13 @@ ${truncated}
 
 respond with json only:
 {"relevance": 0.0-1.0, "key_points": "2-3 sentence summary of relevant information"}`,
-        },
-      ],
-      max_tokens: 200,
-      temperature: 0.2,
-    });
+            },
+          ],
+          max_tokens: 200,
+          temperature: 0.2,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return { relevance: 0.3, keyPoints: content.slice(0, 200) };
@@ -176,12 +185,14 @@ async function identifyGaps(state: ResearchState): Promise<string[]> {
     .join("\n");
 
   try {
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: `given this research topic and findings so far, identify 2-3 knowledge gaps that still need to be filled.
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: `given this research topic and findings so far, identify 2-3 knowledge gaps that still need to be filled.
 
 topic: ${state.topic}
 
@@ -190,11 +201,13 @@ ${summaries}
 
 respond with a json array of gap descriptions:
 ["gap 1", "gap 2"]`,
-        },
-      ],
-      max_tokens: 200,
-      temperature: 0.4,
-    });
+            },
+          ],
+          max_tokens: 200,
+          temperature: 0.4,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return [];
@@ -295,12 +308,14 @@ async function synthesizeReport(state: ResearchState): Promise<string> {
   const elapsed = Math.round((Date.now() - state.startTime) / 1000);
 
   try {
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: `you are a research synthesizer. combine the provided findings into a clear, well-structured research summary. use markdown formatting.
+    const response = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          messages: [
+            {
+              role: "system",
+              content: `you are a research synthesizer. combine the provided findings into a clear, well-structured research summary. use markdown formatting.
 
 rules:
 - write in lowercase, no punctuation in comments style
@@ -310,19 +325,21 @@ rules:
 - note any contradictions or areas where information is uncertain
 - keep it comprehensive but readable
 - do not use emojis`,
-        },
-        {
-          role: "user",
-          content: `synthesize these research findings on "${state.topic}" into a comprehensive summary.
+            },
+            {
+              role: "user",
+              content: `synthesize these research findings on "${state.topic}" into a comprehensive summary.
 
 ${findingsText}
 
 research stats: ${state.queriesUsed.length} queries, ${state.findings.length} sources found, ${state.urlsVisited.size} pages read, ${elapsed}s elapsed`,
-        },
-      ],
-      max_tokens: 4000,
-      temperature: 0.3,
-    });
+            },
+          ],
+          max_tokens: 4000,
+          temperature: 0.3,
+        }),
+      { maxRetries: 10, baseDelayMs: 1000 },
+    );
 
     const report = response.choices[0]?.message?.content?.trim();
     if (!report) return buildFallbackReport(state, elapsed);

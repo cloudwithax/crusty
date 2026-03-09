@@ -10,9 +10,9 @@ export interface RetryOptions {
 }
 
 const DEFAULT_OPTIONS: Required<RetryOptions> = {
-  maxRetries: 3,
+  maxRetries: 10,
   baseDelayMs: 1000,
-  maxDelayMs: 30000,
+  maxDelayMs: 60000,
   retryOn: isRetryableError,
 };
 
@@ -31,15 +31,23 @@ export function isRetryableError(error: unknown): boolean {
     }
   }
 
-  // network errors
+  // network and transient errors
   if (err instanceof Error) {
     const message = err.message.toLowerCase();
     if (
       message.includes("timeout") ||
       message.includes("econnreset") ||
       message.includes("econnrefused") ||
+      message.includes("econnaborted") ||
+      message.includes("enotfound") ||
+      message.includes("epipe") ||
       message.includes("network") ||
-      message.includes("socket hang up")
+      message.includes("socket hang up") ||
+      message.includes("fetch failed") ||
+      message.includes("aborted") ||
+      message.includes("connection") ||
+      message.includes("ssl") ||
+      message.includes("tls")
     ) {
       return true;
     }
@@ -74,8 +82,9 @@ export async function withRetry<T>(
       }
 
       const delay = calculateDelay(attempt, opts.baseDelayMs, opts.maxDelayMs);
+      const errorHint = error instanceof Error ? error.message.slice(0, 80) : "unknown";
       debug(
-        `[retry] attempt ${attempt + 1}/${opts.maxRetries} failed, retrying in ${Math.round(delay)}ms`
+        `[retry] attempt ${attempt + 1}/${opts.maxRetries} failed (${errorHint}), retrying in ${Math.round(delay / 1000)}s`
       );
       await sleep(delay);
     }

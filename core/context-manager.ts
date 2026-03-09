@@ -14,6 +14,7 @@ import {
   estimateTotalTokens,
 } from "./context-config";
 import { debug } from "../utils/debug";
+import { withRetry } from "../utils/retry";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
@@ -171,18 +172,22 @@ Create a concise running summary of this conversation. Preserve:
 Keep it under 500 words. Focus on information that would be useful for continuing the conversation.`;
 
     try {
-      const response = await openai.chat.completions.create({
-        model: SUMMARIZE_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a summarizer. Create concise, factual summaries of conversations. Preserve important details and context.",
-          },
-          { role: "user", content: prompt },
-        ],
-        max_tokens: 800,
-      });
+      const response = await withRetry(
+        () =>
+          openai.chat.completions.create({
+            model: SUMMARIZE_MODEL,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a summarizer. Create concise, factual summaries of conversations. Preserve important details and context.",
+              },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 800,
+          }),
+        { maxRetries: 10, baseDelayMs: 1000 },
+      );
 
       const newSummary = response.choices[0]?.message?.content;
 

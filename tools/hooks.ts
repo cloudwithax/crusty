@@ -100,6 +100,50 @@ const createHookSchema = z.object({
     ),
 });
 
+// schema for reading a hook
+const readHookSchema = z.object({
+  name: z.string().describe("the name/id of the hook to inspect"),
+});
+
+// schema for updating a hook
+const updateHookSchema = z.object({
+  name: z
+    .string()
+    .describe("the name/id of the existing hook to update"),
+  description: z
+    .string()
+    .optional()
+    .describe("new description (omit to keep current)"),
+  every: z
+    .string()
+    .optional()
+    .describe("new interval like 5m, 1h, 30s (omit to keep current)"),
+  instructions: z
+    .string()
+    .optional()
+    .describe("new instructions content (omit to keep current)"),
+  timezone: z
+    .string()
+    .optional()
+    .describe("new timezone (omit to keep current)"),
+  days: z
+    .string()
+    .optional()
+    .describe("new days (omit to keep current)"),
+  start: z
+    .string()
+    .optional()
+    .describe("new start time in 24h format (omit to keep current)"),
+  end: z
+    .string()
+    .optional()
+    .describe("new end time in 24h format (omit to keep current)"),
+  timeout: z
+    .string()
+    .optional()
+    .describe("new timeout (omit to keep current)"),
+});
+
 // schema for removing a hook
 const removeHookSchema = z.object({
   name: z.string().describe("the name/id of the hook to remove"),
@@ -269,6 +313,195 @@ async function handleCreateHook(
     } catch (error) {
       return `[Error] Failed to create hook: ${error instanceof Error ? error.message : String(error)}`;
     }
+  }
+}
+
+// handler for reading a single hook's full details
+async function handleReadHook(
+  args: z.infer<typeof readHookSchema>,
+): Promise<string> {
+  const safeName = args.name
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const hooks = await discoverHooks();
+  const hook = hooks.find((h) => h.id === safeName);
+
+  if (!hook) {
+    return `[Error] Hook "${args.name}" not found. Use list_hooks to see available hooks.`;
+  }
+
+  const running = getRunningHooks();
+  const isRunning = running.some((r) => r.id === hook.id);
+  const status = isRunning
+    ? "running"
+    : hook.config.enabled
+      ? "enabled"
+      : "disabled";
+
+  const lines: string[] = [
+    `**Hook: ${hook.config.name}**`,
+    "",
+    `- Status: ${status}`,
+    `- Interval: ${hook.config.every}`,
+    `- Scope: ${hook.scope}`,
+    `- Source: ${hook.sourceType}`,
+  ];
+
+  if (hook.config.description) {
+    lines.push(`- Description: ${hook.config.description}`);
+  }
+  if (hook.config.timeout) {
+    lines.push(`- Timeout: ${hook.config.timeout}`);
+  }
+  if (hook.config.activeHours) {
+    const ah = hook.config.activeHours;
+    lines.push(`- Timezone: ${ah.timezone}`);
+    lines.push(`- Days: ${ah.days.join(",")}`);
+    lines.push(`- Active: ${ah.start} - ${ah.end}`);
+  }
+
+  lines.push("", "**Instructions:**", "", hook.content);
+
+  return lines.join("\n");
+}
+
+// handler for updating an existing hook
+async function handleUpdateHook(
+  args: z.infer<typeof updateHookSchema>,
+): Promise<string> {
+  const safeName = args.name
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  // validate interval format if provided
+  if (args.every) {
+    const intervalMatch = args.every.match(/^(\d+)([smhd])$/);
+    if (!intervalMatch) {
+      return `[Error] Invalid interval format "${args.every}". Use format like: 5m, 1h, 30s, 1d`;
+    }
+  }
+
+  // check database first
+  const dbHook = await getHookByName(safeName);
+  if (dbHook) {
+    try {
+      await saveHook({
+        name: safeName,
+        description: args.description ?? dbHook.description ?? undefined,
+        content: args.instructions ?? dbHook.content,
+        every: args.every ?? dbHook.every,
+        enabled: dbHook.enabled === 1,
+        timeout: args.timeout ?? dbHook.timeout ?? undefined,
+        timezone: args.timezone ?? dbHook.timezone ?? undefined,
+        days: args.days ?? dbHook.days ?? undefined,
+        startTime: args.start ?? dbHook.start_time ?? undefined,
+        endTime: args.end ?? dbHook.end_time ?? undefined,
+        sourceType: dbHook.source_type,
+        sourceUrl: dbHook.source_url ?? undefined,
+      });
+
+      debug(`[hooks] updated db hook: ${safeName}`);
+
+      if (hookMessageSender) {
+        await reloadHooks(hookMessageSender);
+      }
+
+      return `Hook "${safeName}" updated successfully.`;
+    } catch (error) {
+      return `[Error] Failed to update hook: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  // check filesystem
+  const filePath = findHookFile(args.name);
+  if (!filePath) {
+    return `[Error] Hook "${args.name}" not found in filesystem or database.`;
+  }
+
+  try {
+    const content = await Bun.file(filePath).text();
+    let updated = content;
+
+    // update frontmatter fields
+    if (args.description !== undefined) {
+      if (updated.match(/^description:\s*.+$/m)) {
+        updated = updated.replace(
+          /^description:\s*.+$/m,
+          `description: ${args.description}`,
+        );
+      } else {
+        // add after name line
+        updated = updated.replace(/^(name:\s*.+)$/m, `$1\ndescription: ${args.description}`);
+      }
+    }
+
+    if (args.every) {
+      updated = updated.replace(/^every:\s*.+$/m, `every: ${args.every}`);
+    }
+
+    if (args.timeout !== undefined) {
+      if (updated.match(/^timeout:\s*.+$/m)) {
+        updated = updated.replace(/^timeout:\s*.+$/m, `timeout: ${args.timeout}`);
+      } else {
+        updated = updated.replace(/^(every:\s*.+)$/m, `$1\ntimeout: ${args.timeout}`);
+      }
+    }
+
+    if (args.timezone !== undefined) {
+      if (updated.match(/^timezone:\s*.+$/m)) {
+        updated = updated.replace(/^timezone:\s*.+$/m, `timezone: ${args.timezone}`);
+      } else {
+        updated = updated.replace(/^---\n/, `---\ntimezone: ${args.timezone}\n`);
+      }
+    }
+
+    if (args.days !== undefined) {
+      if (updated.match(/^days:\s*.+$/m)) {
+        updated = updated.replace(/^days:\s*.+$/m, `days: ${args.days}`);
+      } else {
+        updated = updated.replace(/^---\n/, `---\ndays: ${args.days}\n`);
+      }
+    }
+
+    if (args.start !== undefined) {
+      if (updated.match(/^start:\s*.+$/m)) {
+        updated = updated.replace(/^start:\s*.+$/m, `start: ${args.start}`);
+      } else {
+        updated = updated.replace(/^---\n/, `---\nstart: ${args.start}\n`);
+      }
+    }
+
+    if (args.end !== undefined) {
+      if (updated.match(/^end:\s*.+$/m)) {
+        updated = updated.replace(/^end:\s*.+$/m, `end: ${args.end}`);
+      } else {
+        updated = updated.replace(/^---\n/, `---\nend: ${args.end}\n`);
+      }
+    }
+
+    // update instructions (body content after frontmatter)
+    if (args.instructions) {
+      const parts = updated.split("---");
+      if (parts.length >= 3) {
+        updated = `---${parts[1]}---\n\n${args.instructions}`;
+      }
+    }
+
+    await Bun.write(filePath, updated);
+    debug(`[hooks] updated hook file: ${filePath}`);
+
+    if (hookMessageSender) {
+      await reloadHooks(hookMessageSender);
+    }
+
+    return `Hook "${args.name}" updated successfully.`;
+  } catch (error) {
+    return `[Error] Failed to update hook: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -532,5 +765,33 @@ PARAMETERS:
 - enabled (required): true to enable, false to disable`,
     schema: toggleHookSchema,
     handler: handleToggleHook,
+  },
+
+  read_hook: {
+    description: `Read the full details and instructions of a specific hook. Shows status, interval, active hours, and the complete instructions content.
+
+PARAMETERS:
+- name (required): The name/id of the hook to inspect`,
+    schema: readHookSchema,
+    handler: handleReadHook,
+  },
+
+  update_hook: {
+    description: `Update an existing hook's configuration or instructions. Only the fields you provide will be changed; omitted fields keep their current values.
+
+WHEN TO USE:
+- User wants to change how often a hook runs
+- User wants to modify what a hook does
+- User wants to adjust active hours or timezone
+
+PARAMETERS:
+- name (required): The hook to update
+- every (optional): New interval like "5m", "1h"
+- instructions (optional): New instructions content
+- description (optional): New description
+- timezone/days/start/end (optional): New active hours config
+- timeout (optional): New timeout for the hook's AI request`,
+    schema: updateHookSchema,
+    handler: handleUpdateHook,
   },
 };

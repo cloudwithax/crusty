@@ -11,13 +11,14 @@ import {
   getPairedPhoneNumberAsync,
   isImessageConfigured,
 } from "./imessage/index.ts";
-import { startHeartbeat, cleanupHeartbeat } from "./scheduler/heartbeat.ts";
+import { startHeartbeat, cleanupHeartbeat, restartHeartbeat } from "./scheduler/heartbeat.ts";
 import { startHooks, cleanupHooks } from "./scheduler/hooks.ts";
 import {
   startReminderScheduler,
   cleanupReminderScheduler,
 } from "./scheduler/reminders.ts";
 import { setHookMessageSender } from "./tools/hooks.ts";
+import { setHeartbeatRestartFn } from "./tools/heartbeat.ts";
 import { setMessagingSender } from "./tools/messaging.ts";
 import { closeDatabase } from "./data/db.ts";
 import { preloadEmbeddingModel } from "./memory/embeddings.ts";
@@ -103,6 +104,9 @@ async function main(): Promise<void> {
 
   // set hook message sender for tools to use when reloading
   setHookMessageSender(sendHookMessage);
+
+  // set heartbeat restart function for runtime config changes
+  setHeartbeatRestartFn(restartHeartbeat);
 
   // wire the send_message and set_model tools to deliver through all channels
   setMessagingSender(sendHookMessage);

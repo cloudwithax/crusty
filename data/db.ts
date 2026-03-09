@@ -505,6 +505,19 @@ function initTables(): void {
     )
   `);
 
+  // heartbeat config table for runtime-configurable heartbeat settings
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS heartbeat_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      every TEXT NOT NULL DEFAULT '30m',
+      timezone TEXT,
+      days TEXT,
+      start_time TEXT,
+      end_time TEXT,
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
   debug("[db] tables initialized");
 }
 
@@ -706,6 +719,19 @@ async function initTablesAsync(): Promise<void> {
       id SERIAL PRIMARY KEY,
       content TEXT NOT NULL,
       created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
+
+  // heartbeat config table for runtime-configurable heartbeat settings
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS heartbeat_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      every TEXT NOT NULL DEFAULT '30m',
+      timezone TEXT,
+      days TEXT,
+      start_time TEXT,
+      end_time TEXT,
+      updated_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
     )
   `);
 
