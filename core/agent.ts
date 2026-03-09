@@ -136,6 +136,83 @@ function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(stripProviderArtifacts(text)));
 }
 
+// kimi k2 emits tool calls as text using pipe-delimited special tokens instead of
+// the structured tool_calls field. parse them into standard openai tool call objects.
+// format: <|tool_calls_section_begin|><|tool_call_begin|>JSON<|tool_call_end|><|tool_calls_section_end|>
+function parseKimiK2ToolCalls(
+  content: string,
+): ChatCompletionMessageToolCall[] {
+  if (!content.includes("<|tool_call_begin|>")) return [];
+
+  const toolCalls: ChatCompletionMessageToolCall[] = [];
+  const callRegex = /<\|tool_call_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+  let match;
+  let index = 0;
+
+  while ((match = callRegex.exec(content)) !== null) {
+    const rawCall = match[1]!.trim();
+    try {
+      const parsed = JSON.parse(rawCall);
+
+      let name: string | undefined;
+      let args: string;
+
+      if (parsed.function?.name) {
+        // openai-shaped: {"type":"function","function":{"name":"...","arguments":"..."}}
+        name = parsed.function.name;
+        args =
+          typeof parsed.function.arguments === "string"
+            ? parsed.function.arguments
+            : JSON.stringify(parsed.function.arguments ?? {});
+      } else if (parsed.name) {
+        // flat: {"name":"...","arguments":{...}}
+        name = parsed.name;
+        args =
+          typeof parsed.arguments === "string"
+            ? parsed.arguments
+            : JSON.stringify(parsed.arguments ?? {});
+      }
+
+      if (!name) continue;
+
+      toolCalls.push({
+        id: parsed.id ?? `kimi_${Date.now()}_${index}`,
+        type: "function",
+        function: { name, arguments: args! },
+      });
+      index++;
+    } catch {
+      debug(`[kimi k2] failed to parse tool call: ${rawCall.slice(0, 200)}`);
+    }
+  }
+
+  return toolCalls;
+}
+
+// extract the plain text portion from kimi k2 content, stripping tool call sections
+// and the python-style content block prefix e.g. [{'type': 'text', 'text': 'hi'}]
+function extractKimiK2Text(content: string): string {
+  let text = content;
+  // remove tool call sections entirely
+  text = text.replace(
+    /<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g,
+    "",
+  );
+  // remove any orphan pipe tokens
+  text = text.replace(/<\|[a-z_]+\|>/g, "");
+  // extract text value from python-style content block array prefix
+  const pyTextMatch = text.match(
+    /^\s*\[[\s\S]*?'type'\s*:\s*'text'\s*,\s*'text'\s*:\s*'([\s\S]*?)'[\s\S]*?\]/,
+  );
+  if (pyTextMatch) {
+    text = pyTextMatch[1]!;
+  } else {
+    // strip the array wrapper if present but no extractable text
+    text = text.replace(/^\s*\[[\s\S]*?'type'\s*:\s*'(?:text|image_url)'[\s\S]*?\]\s*/g, "");
+  }
+  return text.trim();
+}
+
 // step tracking for dynamic status updates
 interface AgentStep {
   tool: string;
@@ -677,8 +754,19 @@ export class Agent {
       }
 
       const message = choice.message;
-      const content = message.content || "";
-      const toolCalls = message.tool_calls || [];
+      let content = message.content || "";
+      let toolCalls = message.tool_calls || [];
+
+      // kimi k2 outputs tool calls as text using special tokens when the provider's
+      // openai-compatibility layer fails to translate them into structured tool_calls
+      if (toolCalls.length === 0 && content.includes("<|tool_call_begin|>")) {
+        const parsed = parseKimiK2ToolCalls(content);
+        if (parsed.length > 0) {
+          toolCalls = parsed;
+          content = extractKimiK2Text(content);
+          debug(`[kimi k2] parsed ${parsed.length} tool call(s) from text content`);
+        }
+      }
 
       // collect text response
       if (content.trim()) {
