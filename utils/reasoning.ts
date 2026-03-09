@@ -20,3 +20,23 @@ export function stripReasoningTags(text: string): string {
   }
   return result.replace(/\n{3,}/g, "\n\n").trim();
 }
+
+// strip provider-specific special tokens that sometimes leak into response content
+// e.g. kimi k2 pipe-delimited tokens: <|tool_call_end|>, <|tool_calls_section_end|>
+export function stripProviderArtifacts(text: string): string {
+  let result = text;
+
+  // kimi k2: strip complete tool call sections
+  result = result.replace(/<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g, "");
+  result = result.replace(/<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>/g, "");
+
+  // kimi k2: strip any orphan pipe-delimited special tokens
+  result = result.replace(/<\|[a-z_]+\|>/g, "");
+
+  // kimi k2: strip python-style content block arrays that leak into text
+  // e.g. [{'type': 'text', 'text': ''}] or [{"type": "text", "text": ""}]
+  result = result.replace(/^\s*\[[\s\S]*?'type'\s*:\s*'(?:text|image_url)'[\s\S]*?\]\s*/g, "");
+  result = result.replace(/^\s*\[[\s\S]*?"type"\s*:\s*"(?:text|image_url)"[\s\S]*?\]\s*/g, "");
+
+  return result.trim();
+}
