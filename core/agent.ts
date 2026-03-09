@@ -15,7 +15,7 @@ import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
-import { stripReasoningTags } from "../utils/reasoning.ts";
+import { stripReasoningTags, stripProviderArtifacts } from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
 import { withRetry, isRetryableError } from "../utils/retry.ts";
@@ -133,7 +133,7 @@ function stripEmojis(text: string): string {
 
 // combined cleanup for model responses
 function cleanModelResponse(text: string): string {
-  return stripEmojis(stripReasoningTags(text));
+  return stripEmojis(stripReasoningTags(stripProviderArtifacts(text)));
 }
 
 // step tracking for dynamic status updates
