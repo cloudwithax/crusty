@@ -1015,6 +1015,7 @@ export class Agent {
     let loopGuardMessage: string | null = null;
     const toolResults: string[] = []; // track for verification
     let hadToolError = false;
+    let actionNudgeSent = false; // ensure we only nudge once per conversation turn
     const stepTracker = new StepTracker();
 
     // iteration extension tracking
@@ -1168,8 +1169,22 @@ export class Agent {
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
 
-      // no tools = done
+      // no tools = done, but nudge the model once if it talked instead of acting on a task
       if (toolCalls.length === 0) {
+        const isTask = taskPlan !== null;
+        const nothingDoneYet = toolResults.length === 0;
+        if (isTask && nothingDoneYet && !actionNudgeSent) {
+          actionNudgeSent = true;
+          this._messages.push({
+            role: "user",
+            content:
+              "stop planning in text. start executing right now using your tools. do not explain what you're going to do - just do it.",
+          });
+          debug(
+            "[agent] model returned text-only on first task turn - nudging to use tools",
+          );
+          continue;
+        }
         break;
       }
 
