@@ -644,6 +644,19 @@ format: {"command": "<shell command>"}
 
 received: ${args.slice(0, 150)}${args.length > 150 ? "..." : ""}`;
     }
+
+    // for zod validation errors, emit a clear schema hint so the ai can self-correct
+    if (err instanceof z.ZodError) {
+      const issues = err.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ");
+      const schemaFields =
+        tool.schema instanceof z.ZodObject
+          ? Object.keys(tool.schema.shape).join(", ")
+          : "unknown";
+      return `error: invalid arguments for ${name}. expected fields: [${schemaFields}]. issues: ${issues}. received: ${args.slice(0, 200)}${args.length > 200 ? "..." : ""}`;
+    }
+
     return `error: ${errMsg}`;
   }
 }

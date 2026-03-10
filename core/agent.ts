@@ -15,7 +15,10 @@ import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
 import { debug } from "../utils/debug.ts";
-import { stripReasoningTags, stripProviderArtifacts } from "../utils/reasoning.ts";
+import {
+  stripReasoningTags,
+  stripProviderArtifacts,
+} from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
 import { withRetry, isRetryableError } from "../utils/retry.ts";
@@ -203,7 +206,10 @@ function _tryObj(s: string): Record<string, unknown> | null {
 }
 
 function _stripFences(s: string): string {
-  return s.replace(/^```(?:json|python)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+  return s
+    .replace(/^```(?:json|python)?\s*/m, "")
+    .replace(/\s*```\s*$/m, "")
+    .trim();
 }
 
 function parseProviderToolCalls(content: string): ProviderParseResult | null {
@@ -221,11 +227,15 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
       const fn = obj.function as Record<string, unknown> | undefined;
       const name = (fn?.name ?? obj.name) as string | undefined;
       const args = fn?.arguments ?? obj.arguments;
-      if (name) calls.push(_makeTC(name, args, obj.id as string | undefined, idx++));
+      if (name)
+        calls.push(_makeTC(name, args, obj.id as string | undefined, idx++));
     }
     if (!calls.length) return null;
     const textContent = content
-      .replace(/<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g, "")
+      .replace(
+        /<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>/g,
+        "",
+      )
       .replace(/<\|[a-z_]+\|>/g, "")
       .replace(/^\s*\[[\s\S]*?'type'\s*:\s*'text'[\s\S]*?\]\s*/g, "")
       .trim();
@@ -248,16 +258,23 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
         const block = m[1]!;
         const sepMatch = block.match(/<[|｜]tool[_▁]sep[|｜]>/);
         if (!sepMatch) continue;
-        const afterSep = block.slice(block.search(/<[|｜]tool[_▁]sep[|｜]>/) + sepMatch[0].length);
+        const afterSep = block.slice(
+          block.search(/<[|｜]tool[_▁]sep[|｜]>/) + sepMatch[0].length,
+        );
         const nlIdx = afterSep.search(/[\n`]/);
-        const name = (nlIdx === -1 ? afterSep : afterSep.slice(0, nlIdx)).trim();
+        const name = (
+          nlIdx === -1 ? afterSep : afterSep.slice(0, nlIdx)
+        ).trim();
         const argsRaw = nlIdx === -1 ? "{}" : afterSep.slice(nlIdx);
         const obj = _tryObj(_stripFences(argsRaw));
         if (name) calls.push(_makeTC(name, obj ?? {}, undefined, idx++));
       }
       if (!calls.length) return null;
       const textContent = content
-        .replace(/<[|｜]tool[_▁]calls[_▁]begin[|｜]>[\s\S]*?<[|｜]tool[_▁]calls[_▁]end[|｜]>/g, "")
+        .replace(
+          /<[|｜]tool[_▁]calls[_▁]begin[|｜]>[\s\S]*?<[|｜]tool[_▁]calls[_▁]end[|｜]>/g,
+          "",
+        )
         .trim();
       return { toolCalls: calls, textContent };
     }
@@ -276,13 +293,20 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
         const calls = arr
           .map((item, i) => {
             const name = item.name as string;
-            return name ? _makeTC(name, item.arguments, item.id as string | undefined, i) : null;
+            return name
+              ? _makeTC(name, item.arguments, item.id as string | undefined, i)
+              : null;
           })
           .filter((c): c is ChatCompletionMessageToolCall => c !== null);
         if (calls.length) {
-          return { toolCalls: calls, textContent: content.slice(0, cut).trim() };
+          return {
+            toolCalls: calls,
+            textContent: content.slice(0, cut).trim(),
+          };
         }
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
   }
 
@@ -296,15 +320,21 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
     while ((m = re.exec(content)) !== null) {
       try {
         const arr = JSON.parse(m[1]!.trim());
-        const items: Array<Record<string, unknown>> = Array.isArray(arr) ? arr : [arr];
+        const items: Array<Record<string, unknown>> = Array.isArray(arr)
+          ? arr
+          : [arr];
         for (const item of items) {
           const name = item.name as string;
           if (name) calls.push(_makeTC(name, item.arguments, undefined, idx++));
         }
-      } catch { /* skip malformed */ }
+      } catch {
+        /* skip malformed */
+      }
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<\|tool_calls\|>[\s\S]*?<\|\/tool_calls\|>/g, "").trim();
+    const textContent = content
+      .replace(/<\|tool_calls\|>[\s\S]*?<\|\/tool_calls\|>/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -319,14 +349,16 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
     while ((m = re.exec(content)) !== null) {
       const obj = _tryObj(m[1]!.trim());
       if (!obj) continue;
-      const inner = (obj.tool && typeof obj.tool === "object"
-        ? obj.tool
-        : obj) as Record<string, unknown>;
+      const inner = (
+        obj.tool && typeof obj.tool === "object" ? obj.tool : obj
+      ) as Record<string, unknown>;
       const name = inner.name as string;
       if (name) calls.push(_makeTC(name, inner.arguments, undefined, idx++));
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<\|tool_call\|>[\s\S]*?(?=<\||$)/g, "").trim();
+    const textContent = content
+      .replace(/<\|tool_call\|>[\s\S]*?(?=<\||$)/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -341,10 +373,15 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
     while ((m = re.exec(content)) !== null) {
       const obj = _tryObj(m[1]!.trim());
       const name = obj?.name as string;
-      if (name) calls.push(_makeTC(name, obj?.parameters ?? obj?.arguments, undefined, idx++));
+      if (name)
+        calls.push(
+          _makeTC(name, obj?.parameters ?? obj?.arguments, undefined, idx++),
+        );
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<\|action_start\|>[\s\S]*?<\|action_end\|>/g, "").trim();
+    const textContent = content
+      .replace(/<\|action_start\|>[\s\S]*?<\|action_end\|>/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -359,10 +396,13 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
     while ((m = re.exec(content)) !== null) {
       const name = m[1]!.trim();
       const obj = _tryObj(m[2]!.trim());
-      if (name) calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
+      if (name)
+        calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<function=[^>]+>[\s\S]*?<\/function>/g, "").trim();
+    const textContent = content
+      .replace(/<function=[^>]+>[\s\S]*?<\/function>/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -371,14 +411,16 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
   // "all" as recipient means final text response; skip it
   if (content.includes("<|from|>") && content.includes("<|recipient|>")) {
     const calls: ChatCompletionMessageToolCall[] = [];
-    const re = /<\|recipient\|>([^\n<]+)\n<\|content\|>([\s\S]*?)(?=<\|from\|>|$)/g;
+    const re =
+      /<\|recipient\|>([^\n<]+)\n<\|content\|>([\s\S]*?)(?=<\|from\|>|$)/g;
     let m: RegExpExecArray | null;
     let idx = 0;
     while ((m = re.exec(content)) !== null) {
       const name = m[1]!.trim();
       if (name === "all") continue;
       const obj = _tryObj(m[2]!.trim());
-      if (name) calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
+      if (name)
+        calls.push(_makeTC(name, obj ?? m[2]!.trim(), undefined, idx++));
     }
     if (!calls.length) return null;
     const textContent = content.slice(0, content.indexOf("<|from|>")).trim();
@@ -398,7 +440,8 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
       const name = block.match(/^([^\n<]+)/)?.[1]?.trim();
       if (!name) continue;
       const args: Record<string, string> = {};
-      const pairRe = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/g;
+      const pairRe =
+        /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/g;
       let pair: RegExpExecArray | null;
       while ((pair = pairRe.exec(block)) !== null) {
         args[pair[1]!.trim()] = pair[2]!.trim();
@@ -406,7 +449,9 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
       calls.push(_makeTC(name, args, undefined, idx++));
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+    const textContent = content
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -424,7 +469,9 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
       if (name) calls.push(_makeTC(name, obj?.arguments, undefined, idx++));
     }
     if (!calls.length) return null;
-    const textContent = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+    const textContent = content
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+      .trim();
     return { toolCalls: calls, textContent };
   }
 
@@ -433,11 +480,15 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
   // Uses "tool_name" and "parameters" instead of "name" and "arguments"
   // "directly_answer" is a pseudo-tool signaling no external call needed
   if (/^Action:\s*```/m.test(content) && content.includes('"tool_name"')) {
-    const blockMatch = content.match(/^Action:\s*```(?:json)?\s*([\s\S]*?)```/m);
+    const blockMatch = content.match(
+      /^Action:\s*```(?:json)?\s*([\s\S]*?)```/m,
+    );
     if (blockMatch) {
       try {
         const arr = JSON.parse(blockMatch[1]!.trim());
-        const items: Array<Record<string, unknown>> = Array.isArray(arr) ? arr : [arr];
+        const items: Array<Record<string, unknown>> = Array.isArray(arr)
+          ? arr
+          : [arr];
         const calls = items
           .map((item, i) => {
             const name = item.tool_name as string;
@@ -450,7 +501,9 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
           const textContent = content.replace(blockMatch[0], "").trim();
           return { toolCalls: calls, textContent };
         }
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
   }
 
@@ -516,14 +569,17 @@ function parseProviderToolCalls(content: string): ProviderParseResult | null {
     const inner = after.match(/^\[([\s\S]+)\]$/) ? after.slice(1, -1) : after;
     const targets = inner.split(/,\s*(?=[a-zA-Z_]\w*\s*\()/);
     for (let i = 0; i < targets.length; i++) {
-      const fnMatch = targets[i]!.trim().match(/^([a-zA-Z_][\w.]*)\s*\(([\s\S]*)\)$/);
+      const fnMatch = targets[i]!.trim().match(
+        /^([a-zA-Z_][\w.]*)\s*\(([\s\S]*)\)$/,
+      );
       if (!fnMatch) continue;
       const name = fnMatch[1]!.replace(/\.call$/, "");
       const args: Record<string, string | number> = {};
       const kvRe = /([a-zA-Z_]\w*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([\d.]+))/g;
       let kv: RegExpExecArray | null;
       while ((kv = kvRe.exec(fnMatch[2]!)) !== null) {
-        args[kv[1]!] = kv[4] !== undefined ? Number(kv[4]) : (kv[2] ?? kv[3] ?? "");
+        args[kv[1]!] =
+          kv[4] !== undefined ? Number(kv[4]) : (kv[2] ?? kv[3] ?? "");
       }
       calls.push(_makeTC(name, args, undefined, i));
     }
@@ -958,6 +1014,7 @@ export class Agent {
     let repeatToolCount = 0;
     let loopGuardMessage: string | null = null;
     const toolResults: string[] = []; // track for verification
+    let hadToolError = false;
     const stepTracker = new StepTracker();
 
     // iteration extension tracking
@@ -1091,7 +1148,9 @@ export class Agent {
         if (parsed && parsed.toolCalls.length > 0) {
           toolCalls = parsed.toolCalls;
           content = parsed.textContent;
-          debug(`[tool-parser] parsed ${toolCalls.length} text-embedded tool call(s)`);
+          debug(
+            `[tool-parser] parsed ${toolCalls.length} text-embedded tool call(s)`,
+          );
         }
       }
 
@@ -1276,6 +1335,7 @@ export class Agent {
             error instanceof Error ? error.message : String(error);
           result = `[Error] ${errorMessage}`;
           debug(`[tool error]: ${errorMessage}`);
+          hadToolError = true;
 
           // track failed step too
           stepTracker.addStep(name, args, result);
@@ -1292,6 +1352,11 @@ export class Agent {
         // track results for potential verification
         toolResults.push(result.slice(0, 500));
 
+        // flag any error result so we can nudge the ai to self-correct after the loop
+        if (result.startsWith("error:") || result.startsWith("[Error]")) {
+          hadToolError = true;
+        }
+
         // compress large tool outputs before storing in context
         const compressedResult = compressToolOutput(result, name);
         this._messages.push({
@@ -1299,6 +1364,17 @@ export class Agent {
           content: compressedResult,
           tool_call_id: toolCall.id,
         });
+      }
+
+      // immediately surface errors back to the ai so it fixes them in the next turn
+      if (hadToolError) {
+        hadToolError = false;
+        this._messages.push({
+          role: "user",
+          content:
+            "one or more tool calls returned errors. review each error message above, fix your arguments, and retry the failed calls now.",
+        });
+        debug("[agent] tool error detected - injecting fix prompt");
       }
     }
 
@@ -1332,7 +1408,10 @@ export class Agent {
     hasSummary: boolean;
     summaryLength: number;
     actualUsage: import("./context-config").TokenUsage | null;
-    smartTokenCount: { tokens: number; source: "actual" | "actual+delta" | "tiktoken" };
+    smartTokenCount: {
+      tokens: number;
+      source: "actual" | "actual+delta" | "tiktoken";
+    };
   } {
     const base = this.contextManager.getStats(this._messages);
     return {
