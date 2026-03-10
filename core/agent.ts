@@ -1155,10 +1155,16 @@ export class Agent {
         }
       }
 
-      // collect text response
+      // collect text response - only update if cleaned result is non-empty
+      // models that respond with only reasoning tags (e.g. <think>...</think>) will
+      // produce an empty string after stripping, so we avoid overwriting a valid
+      // previous response with nothing
       if (content.trim()) {
-        lastTextResponse = cleanModelResponse(content);
-        debug(`[text]: ${lastTextResponse.slice(0, 100)}...`);
+        const cleaned = cleanModelResponse(content);
+        if (cleaned) {
+          lastTextResponse = cleaned;
+        }
+        debug(`[text]: ${(cleaned || lastTextResponse).slice(0, 100)}...`);
       }
 
       // add assistant message to history (strip reasoning tags to reduce context bloat)
