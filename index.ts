@@ -23,6 +23,7 @@ import { setMessagingSender } from "./tools/messaging.ts";
 import { closeDatabase } from "./data/db.ts";
 import { preloadEmbeddingModel } from "./memory/embeddings.ts";
 import { debug } from "./utils/debug.ts";
+import { freeEncoders } from "./core/tokenizer.ts";
 
 // handle graceful shutdown
 process.on("SIGINT", async () => {
@@ -31,6 +32,7 @@ process.on("SIGINT", async () => {
   cleanupReminderScheduler();
   await cleanupBot();
   await cleanupImessageBot();
+  freeEncoders();
   closeDatabase();
   process.exit(0);
 });
@@ -41,6 +43,7 @@ process.on("SIGTERM", async () => {
   cleanupReminderScheduler();
   await cleanupBot();
   await cleanupImessageBot();
+  freeEncoders();
   closeDatabase();
   process.exit(0);
 });
@@ -133,6 +136,7 @@ main().catch(async (error) => {
   cleanupReminderScheduler();
   await cleanupBot();
   await cleanupImessageBot();
+  freeEncoders();
   closeDatabase();
   process.exit(1);
 });

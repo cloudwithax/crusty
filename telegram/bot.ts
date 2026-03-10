@@ -407,11 +407,21 @@ const commands: Record<
     await agent.initialize();
     const stats = agent.getContextStats();
 
+    const tokenLine = stats.smartTokenCount.source === "tiktoken"
+      ? `tokens: ~${stats.smartTokenCount.tokens} (tiktoken)`
+      : stats.smartTokenCount.source === "actual"
+        ? `tokens: ${stats.smartTokenCount.tokens} (actual)`
+        : `tokens: ~${stats.smartTokenCount.tokens} (actual+delta)`;
+
+    const usageLine = stats.actualUsage
+      ? `\nlast api usage: ${stats.actualUsage.promptTokens} prompt / ${stats.actualUsage.completionTokens} completion`
+      : "";
+
     await sendMessage(
       chatId,
       `*Context Stats*\n\n` +
         `messages in context: ${stats.messageCount}\n` +
-        `estimated tokens: ${stats.estimatedTokens}\n` +
+        `${tokenLine}${usageLine}\n` +
         `has summary: ${stats.hasSummary ? "yes" : "no"}\n` +
         `summary length: ${stats.summaryLength} chars`,
       { message_thread_id: messageThreadId },

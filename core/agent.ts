@@ -38,14 +38,18 @@ import {
   archiveConversation,
   isFlushResponse,
 } from "../memory/memory-flush.ts";
+import {
+  recordTokenUsage,
+  clearTokenUsage,
+  getLastTokenUsage,
+  getSmartTokenCount,
+} from "./context-config";
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const SUMMARIZE_MODEL =
-  process.env.SUMMARIZE_MODEL ||
-  process.env.OPENAI_MODEL ||
-  "gpt-4o";
+  process.env.SUMMARIZE_MODEL || process.env.OPENAI_MODEL || "gpt-4o";
 
 // re-export model accessors so callers (telegram/bot.ts) don't need to know about model-state
 export { getCurrentModel, setCurrentModel } from "./model-state.ts";
@@ -62,7 +66,7 @@ if (!OPENAI_API_KEY) {
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
   baseURL: OPENAI_BASE_URL,
-  timeout: 60 * 1000,
+  timeout: 60 * 100000, // increase timeout for long-running requests
 });
 
 export function getOpenAIClient(): OpenAI {
@@ -81,6 +85,7 @@ class RateLimiter {
   }
 
   async acquire(): Promise<void> {
+    let attempts = 0;
     while (true) {
       const now = Date.now();
       this.timestamps = this.timestamps.filter(
@@ -92,9 +97,15 @@ class RateLimiter {
         return;
       }
 
+      attempts++;
       const oldestTimestamp = this.timestamps[0]!;
-      const waitTime = this.windowMs - (now - oldestTimestamp) + 10;
-      debug(`[rate limit] waiting ${waitTime}ms`);
+      const baseWait = this.windowMs - (now - oldestTimestamp) + 10;
+      // add exponential backoff/jitter based on attempts to prevent thundering herd
+      const backoff = Math.min(100 * Math.pow(2, attempts - 1), 5000);
+      const jitter = Math.random() * backoff;
+      const waitTime = baseWait + jitter;
+
+      debug(`[rate limit] waiting ${Math.round(waitTime)}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
   }
@@ -1058,6 +1069,11 @@ export class Agent {
       // check for interrupt after api call completes
       checkAbort();
 
+      // capture actual token usage from api response
+      if (response.usage) {
+        recordTokenUsage(this.userId, response.usage, validMessages.length);
+      }
+
       const choice = response.choices[0];
       if (!choice) {
         debug("[no choice in response]");
@@ -1315,14 +1331,22 @@ export class Agent {
     estimatedTokens: number;
     hasSummary: boolean;
     summaryLength: number;
+    actualUsage: import("./context-config").TokenUsage | null;
+    smartTokenCount: { tokens: number; source: "actual" | "actual+delta" | "tiktoken" };
   } {
-    return this.contextManager.getStats(this._messages);
+    const base = this.contextManager.getStats(this._messages);
+    return {
+      ...base,
+      actualUsage: getLastTokenUsage(this.userId),
+      smartTokenCount: getSmartTokenCount(this.userId, this._messages),
+    };
   }
 
   clearMemory(): void {
     const systemMessage = this._messages[0];
     this._messages = systemMessage ? [systemMessage] : [];
     this.contextManager = new ContextManager();
+    clearTokenUsage(this.userId);
   }
 
   async clearMemoryAndPersist(): Promise<void> {

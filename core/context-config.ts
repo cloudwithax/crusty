@@ -1,5 +1,7 @@
 // context management configuration
 // controls how conversation history is managed to stay within model limits
+// uses tiktoken for accurate token counting, with actual api usage data
+// as source of truth when available
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
@@ -7,6 +9,11 @@ import {
   getModelContextLengthSync,
   prefetchModelInfo,
 } from "./model-info";
+import {
+  countTokens,
+  countMessageTokens,
+  countAllTokens,
+} from "./tokenizer";
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
@@ -72,50 +79,95 @@ export const SUMMARIZE_TARGET_TOKENS = Math.floor(MAX_CONTEXT_TOKENS * 0.45);
 // minimum messages to keep unsummarized (recent context)
 export const MIN_RECENT_MESSAGES = 8;
 
-// approximate token count for a string
-// uses a conservative heuristic (english average ~4 chars per token)
+// --- token counting (delegates to tiktoken-based tokenizer) ---
+
+// count tokens in a string using bpe tokenization
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return countTokens(text);
 }
 
-// extract string content from message (handles various content types)
-function getMessageContentString(message: ChatCompletionMessageParam): string {
-  if (!("content" in message) || message.content === null || message.content === undefined) {
-    return "";
-  }
-  
-  if (typeof message.content === "string") {
-    return message.content;
-  }
-  
-  // handle array content (ChatCompletionContentPart[])
-  if (Array.isArray(message.content)) {
-    return message.content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if ("text" in part) return part.text;
-        return "";
-      })
-      .join("");
-  }
-  
-  return "";
-}
-
-// estimate tokens for a chat message including role overhead
+// count tokens for a chat message including role overhead
 export function estimateMessageTokens(message: ChatCompletionMessageParam): number {
-  let tokens = 4; // base overhead per message (role, formatting)
-  
-  tokens += estimateTokens(getMessageContentString(message));
-  
-  if ("tool_calls" in message && message.tool_calls) {
-    tokens += estimateTokens(JSON.stringify(message.tool_calls));
-  }
-  
-  return tokens;
+  return countMessageTokens(message);
 }
 
-// estimate total tokens for an array of messages
+// count total tokens for an array of messages
 export function estimateTotalTokens(messages: ChatCompletionMessageParam[]): number {
-  return messages.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
+  return countAllTokens(messages);
+}
+
+// --- actual token usage tracking from api responses ---
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  timestamp: number;
+  // how many messages were in the conversation when this was recorded
+  messageCount: number;
+}
+
+// per-user actual usage from the most recent api response
+const usageByUser = new Map<number, TokenUsage>();
+
+// record actual token counts from an api response
+export function recordTokenUsage(
+  userId: number,
+  usage: {
+    prompt_tokens?: number | null;
+    completion_tokens?: number | null;
+    total_tokens?: number | null;
+  } | null | undefined,
+  messageCount: number,
+): void {
+  if (!usage?.prompt_tokens) return;
+
+  usageByUser.set(userId, {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens || 0,
+    totalTokens: usage.total_tokens || 0,
+    timestamp: Date.now(),
+    messageCount,
+  });
+}
+
+// get last known actual usage for a user
+export function getLastTokenUsage(userId: number): TokenUsage | null {
+  return usageByUser.get(userId) || null;
+}
+
+// clear usage tracking (on session clear)
+export function clearTokenUsage(userId: number): void {
+  usageByUser.delete(userId);
+}
+
+// get the best available token count for a conversation
+// prefers actual usage from the last api response when messages havent changed,
+// uses actual + tiktoken delta when new messages were added since last response,
+// falls back to full tiktoken count otherwise
+export function getSmartTokenCount(
+  userId: number,
+  messages: ChatCompletionMessageParam[],
+): { tokens: number; source: "actual" | "actual+delta" | "tiktoken" } {
+  const lastUsage = usageByUser.get(userId);
+
+  if (lastUsage) {
+    // exact match: no new messages since last api call
+    if (messages.length === lastUsage.messageCount) {
+      return { tokens: lastUsage.promptTokens, source: "actual" };
+    }
+
+    // messages were added since last call, use actual as baseline + tiktoken for the delta
+    if (messages.length > lastUsage.messageCount) {
+      const newMessages = messages.slice(lastUsage.messageCount);
+      const delta = countAllTokens(newMessages);
+      return {
+        tokens: lastUsage.promptTokens + lastUsage.completionTokens + delta,
+        source: "actual+delta",
+      };
+    }
+  }
+
+  // no actual data or messages were pruned, full tiktoken estimate
+  return { tokens: countAllTokens(messages), source: "tiktoken" };
 }

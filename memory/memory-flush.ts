@@ -10,6 +10,7 @@ import {
   getMaxContextTokens,
   RESERVED_COMPLETION_TOKENS,
   estimateTotalTokens,
+  getSmartTokenCount,
 } from "../core/context-config";
 
 // flush config
@@ -92,7 +93,9 @@ export function shouldTriggerFlush(
   if (!cfg.enabled) return false;
 
   const state = getFlushState(userId);
-  const currentTokens = estimateTotalTokens(messages);
+  // prefer actual api usage data when available, fall back to tiktoken
+  const { tokens: currentTokens, source } = getSmartTokenCount(userId, messages);
+  debug(`[memory-flush] token count: ${currentTokens} (${source})`);
   const contextWindow = getMaxContextTokens();
 
   // calculate threshold

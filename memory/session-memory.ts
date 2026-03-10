@@ -15,6 +15,7 @@ import {
   type HybridCandidate,
 } from "./hybrid-search";
 import { generateEmbedding, isEmbeddingsAvailable } from "./embeddings";
+import { estimateTokens } from "../core/context-config";
 
 // session message format
 export interface SessionMessage {
@@ -158,11 +159,6 @@ function generateSlug(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .substring(0, 50);
-}
-
-// estimate tokens in text (simple heuristic: 4 chars = 1 token)
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 // format date for session naming

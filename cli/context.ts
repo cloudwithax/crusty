@@ -53,7 +53,7 @@ async function listConversations(): Promise<void> {
 
     console.log(`  user ${row.user_id}:`);
     console.log(`    messages: ${messageCount}`);
-    console.log(`    estimated tokens: ${tokens}`);
+    console.log(`    tokens: ${tokens} (tiktoken)`);
     console.log(`    has summary: ${row.summary ? "yes" : "no"}`);
     console.log(`    last updated: ${updatedAt}`);
     console.log();
