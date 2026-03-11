@@ -392,13 +392,10 @@ export class MemoryService {
       `[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`,
     );
 
-    // async store embedding if postgres/pgvector available
-    // dont await - fire and forget to avoid slowing down the response
-    if (isUsingPostgres()) {
-      storeMemoryWithEmbedding(memory.id, content).catch((err) => {
-        debug(`[memory] embedding storage failed:`, err);
-      });
-    }
+    // async store embedding - fire and forget, storeMemoryWithEmbedding handles backend routing
+    storeMemoryWithEmbedding(memory.id, content).catch((err) => {
+      debug(`[memory] embedding storage failed:`, err);
+    });
 
     return memory;
   }

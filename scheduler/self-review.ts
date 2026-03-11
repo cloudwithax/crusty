@@ -1,10 +1,8 @@
-import { OpenAI } from "openai";
+import { nativeChatCompletion } from "../core/api.ts";
 import { getDatabase, getAsyncDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 
 // environment configuration
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
 const LOOKBACK_DAYS = 7;
@@ -30,28 +28,13 @@ interface WatchlistEntry extends ReviewEntry {
 let watchlist: WatchlistEntry[] = [];
 let isInitialized = false;
 
-// openai client for self-check introspection
-let openai: OpenAI | null = null;
-
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    if (!OPENAI_API_KEY) {
-      throw new Error("OPENAI_API_KEY required for self-review");
-    }
-    openai = new OpenAI({
-      apiKey: OPENAI_API_KEY,
-      baseURL: OPENAI_BASE_URL,
-      timeout: 15 * 1000,
-    });
-  }
-  return openai;
-}
-
 // calculate recency weight (1.0 for today, decaying over time)
 function calculateWeight(dateStr: string): number {
   const entryDate = new Date(dateStr);
   const now = new Date();
-  const daysDiff = Math.floor((now.getTime() - entryDate.getTime()) / (1000 * 60 * 60 * 24));
+  const daysDiff = Math.floor(
+    (now.getTime() - entryDate.getTime()) / (1000 * 60 * 60 * 24),
+  );
 
   if (daysDiff < 0 || daysDiff > LOOKBACK_DAYS) {
     return 0;
@@ -68,9 +51,15 @@ async function loadEntriesFromDb(): Promise<ReviewEntry[]> {
 
   const asyncDb = getAsyncDatabase();
   if (asyncDb) {
-    const rows = await asyncDb.all<{ id: number; date: string; tag: string; miss: string; fix: string }>(
+    const rows = await asyncDb.all<{
+      id: number;
+      date: string;
+      tag: string;
+      miss: string;
+      fix: string;
+    }>(
       "SELECT id, date, tag, miss, fix FROM self_review WHERE date >= $1 ORDER BY date DESC",
-      cutoffStr!
+      cutoffStr!,
     );
 
     return rows.map((row) => ({
@@ -84,8 +73,14 @@ async function loadEntriesFromDb(): Promise<ReviewEntry[]> {
 
   const db = getDatabase();
   const rows = db
-    .query<{ id: number; date: string; tag: string; miss: string; fix: string }>(
-      "SELECT id, date, tag, miss, fix FROM self_review WHERE date >= ? ORDER BY date DESC"
+    .query<{
+      id: number;
+      date: string;
+      tag: string;
+      miss: string;
+      fix: string;
+    }>(
+      "SELECT id, date, tag, miss, fix FROM self_review WHERE date >= ? ORDER BY date DESC",
     )
     .all(cutoffStr!);
 
@@ -120,7 +115,9 @@ export async function initSelfReview(): Promise<void> {
   try {
     const entries = await loadEntriesFromDb();
     watchlist = buildWatchlist(entries);
-    debug(`[self-review] loaded ${watchlist.length} entries from last ${LOOKBACK_DAYS} days`);
+    debug(
+      `[self-review] loaded ${watchlist.length} entries from last ${LOOKBACK_DAYS} days`,
+    );
 
     if (watchlist.length > 0) {
       debug("[self-review] top patterns to watch:");
@@ -142,7 +139,9 @@ export function getWatchlist(): WatchlistEntry[] {
 }
 
 // check if a task context overlaps with any MISS patterns
-export async function checkForOverlaps(taskContext: string): Promise<WatchlistEntry[]> {
+export async function checkForOverlaps(
+  taskContext: string,
+): Promise<WatchlistEntry[]> {
   if (!isInitialized || watchlist.length === 0) {
     return [];
   }
@@ -187,21 +186,26 @@ explicitly consider the opposite of your first instinct. if any of these pattern
 }
 
 // append a new entry to the database
-export async function logReviewEntry(tag: ReviewTag, miss: string, fix: string): Promise<void> {
+export async function logReviewEntry(
+  tag: ReviewTag,
+  miss: string,
+  fix: string,
+): Promise<void> {
   const date = new Date().toISOString().split("T")[0];
 
   try {
     const asyncDb = getAsyncDatabase();
     if (asyncDb) {
-      await asyncDb.run("INSERT INTO self_review (date, tag, miss, fix) VALUES ($1, $2, $3, $4)", [
-        date!,
-        tag,
-        miss,
-        fix,
-      ]);
+      await asyncDb.run(
+        "INSERT INTO self_review (date, tag, miss, fix) VALUES ($1, $2, $3, $4)",
+        [date!, tag, miss, fix],
+      );
     } else {
       const db = getDatabase();
-      db.run("INSERT INTO self_review (date, tag, miss, fix) VALUES (?, ?, ?, ?)", [date!, tag, miss, fix]);
+      db.run(
+        "INSERT INTO self_review (date, tag, miss, fix) VALUES (?, ?, ?, ?)",
+        [date!, tag, miss, fix],
+      );
     }
 
     debug(`[self-review] logged entry: [${tag}] ${miss.substring(0, 40)}...`);
@@ -221,8 +225,6 @@ export async function runSelfCheck(recentContext: string): Promise<{
   miss?: string;
   fix?: string;
 }> {
-  const client = getOpenAI();
-
   const systemPrompt = `you are an introspection module that analyzes recent behavior for failure patterns.
 
 given the recent context below, answer these three questions:
@@ -242,7 +244,7 @@ DETECTED: no
 be specific and actionable. dont log trivial issues.`;
 
   try {
-    const response = await client.chat.completions.create({
+    const response = await nativeChatCompletion({
       model: OPENAI_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
@@ -257,7 +259,9 @@ be specific and actionable. dont log trivial issues.`;
       return { detected: false };
     }
 
-    const tagMatch = output.match(/TAG:\s*(confidence|uncertainty|speed|depth)/i);
+    const tagMatch = output.match(
+      /TAG:\s*(confidence|uncertainty|speed|depth)/i,
+    );
     const missMatch = output.match(/MISS:\s*(.+?)(?:\n|$)/i);
     const fixMatch = output.match(/FIX:\s*(.+?)(?:\n|$)/i);
 

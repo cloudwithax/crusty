@@ -4,8 +4,8 @@ import {
   type AgentCallbacks,
   getCurrentModel,
   setCurrentModel,
-  getOpenAIClient,
 } from "../core/agent.ts";
+import { nativeChatCompletion } from "../core/api.ts";
 import { persistModelToEnv } from "../core/model-state.ts";
 import { initializeContextLimits } from "../core/context-config.ts";
 import { cleanupTools } from "../tools/registry.ts";
@@ -407,11 +407,12 @@ const commands: Record<
     await agent.initialize();
     const stats = agent.getContextStats();
 
-    const tokenLine = stats.smartTokenCount.source === "tiktoken"
-      ? `tokens: ~${stats.smartTokenCount.tokens} (tiktoken)`
-      : stats.smartTokenCount.source === "actual"
-        ? `tokens: ${stats.smartTokenCount.tokens} (actual)`
-        : `tokens: ~${stats.smartTokenCount.tokens} (actual+delta)`;
+    const tokenLine =
+      stats.smartTokenCount.source === "tiktoken"
+        ? `tokens: ~${stats.smartTokenCount.tokens} (tiktoken)`
+        : stats.smartTokenCount.source === "actual"
+          ? `tokens: ${stats.smartTokenCount.tokens} (actual)`
+          : `tokens: ~${stats.smartTokenCount.tokens} (actual+delta)`;
 
     const usageLine = stats.actualUsage
       ? `\nlast api usage: ${stats.actualUsage.promptTokens} prompt / ${stats.actualUsage.completionTokens} completion`
@@ -764,9 +765,10 @@ const commands: Record<
     } else {
       const db = getDatabase();
       const todos = db
-        .query<{ id: string; title: string }>(
-          "SELECT id, title FROM todos WHERE user_id = ?",
-        )
+        .query<{
+          id: string;
+          title: string;
+        }>("SELECT id, title FROM todos WHERE user_id = ?")
         .all(userId);
 
       if (todos.length === 0) {
@@ -780,9 +782,9 @@ const commands: Record<
 
       const lines = todos.map((t) => {
         const items = db
-          .query<{ completed: number }>(
-            "SELECT completed FROM todo_items WHERE todo_id = ?",
-          )
+          .query<{
+            completed: number;
+          }>("SELECT completed FROM todo_items WHERE todo_id = ?")
           .all(t.id);
         const done = items.filter((i) => i.completed === 1).length;
         return `- ${t.title} (${done}/${items.length})`;
@@ -855,9 +857,7 @@ const commands: Record<
       return;
     }
 
-    const lines = running.map(
-      (h) => `- *${h.name}* (every ${h.interval})`,
-    );
+    const lines = running.map((h) => `- *${h.name}* (every ${h.interval})`);
 
     await sendMessage(
       chatId,
@@ -914,11 +914,9 @@ const commands: Record<
     const stats = await getSessionStats(userId);
 
     if (sessions.length === 0) {
-      await sendMessage(
-        chatId,
-        "no past sessions found.",
-        { message_thread_id: messageThreadId },
-      );
+      await sendMessage(chatId, "no past sessions found.", {
+        message_thread_id: messageThreadId,
+      });
       return;
     }
 
@@ -960,11 +958,9 @@ const commands: Record<
     const results = await memoryService.searchMemories(userId, query, 10);
 
     if (results.length === 0) {
-      await sendMessage(
-        chatId,
-        `no memories found matching "${query}".`,
-        { message_thread_id: messageThreadId },
-      );
+      await sendMessage(chatId, `no memories found matching "${query}".`, {
+        message_thread_id: messageThreadId,
+      });
       return;
     }
 
@@ -1007,7 +1003,12 @@ const commands: Record<
 
     if (arg === "memories") {
       const asyncDb = getAsyncDatabase();
-      let rows: { content: string; context: string | null; emotional_weight: number; created_at: number }[];
+      let rows: {
+        content: string;
+        context: string | null;
+        emotional_weight: number;
+        created_at: number;
+      }[];
 
       if (asyncDb) {
         rows = await asyncDb.all<{
@@ -1048,9 +1049,7 @@ const commands: Record<
 
       const text = lines.join("\n");
       const truncated =
-        text.length > 3800
-          ? text.slice(0, 3800) + "\n\n... [truncated]"
-          : text;
+        text.length > 3800 ? text.slice(0, 3800) + "\n\n... [truncated]" : text;
 
       await sendMessage(
         chatId,
@@ -1062,7 +1061,13 @@ const commands: Record<
 
     if (arg === "learnings") {
       const asyncDb = getAsyncDatabase();
-      let rows: { title: string; category: string; content: string; confidence: number; application_count: number }[];
+      let rows: {
+        title: string;
+        category: string;
+        content: string;
+        confidence: number;
+        application_count: number;
+      }[];
 
       if (asyncDb) {
         rows = await asyncDb.all<{
@@ -1104,9 +1109,7 @@ const commands: Record<
 
       const text = lines.join("\n\n");
       const truncated =
-        text.length > 3800
-          ? text.slice(0, 3800) + "\n\n... [truncated]"
-          : text;
+        text.length > 3800 ? text.slice(0, 3800) + "\n\n... [truncated]" : text;
 
       await sendMessage(
         chatId,
@@ -1142,9 +1145,7 @@ const commands: Record<
 
       const text = turns.join("\n\n");
       const truncated =
-        text.length > 3800
-          ? text.slice(0, 3800) + "\n\n... [truncated]"
-          : text;
+        text.length > 3800 ? text.slice(0, 3800) + "\n\n... [truncated]" : text;
 
       await sendMessage(
         chatId,
@@ -1166,9 +1167,10 @@ const commands: Record<
 async function fetchAvailableModels(): Promise<
   { id: string; owned_by?: string }[] | null
 > {
-  const openai = getOpenAIClient();
-  const baseURL = (openai as any).baseURL || "https://api.openai.com/v1";
-  const apiKey = (openai as any).apiKey;
+  const baseURL = (
+    process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
+  ).replace(/\/$/, "");
+  const apiKey = process.env.OPENAI_API_KEY;
 
   try {
     const modelsUrl = `${baseURL.replace(/\/$/, "")}/models`;
@@ -1203,31 +1205,23 @@ async function fetchAvailableModels(): Promise<
 
 // verify a model works by streaming a quick "who are you" test with 10s timeout
 async function verifyModel(modelId: string): Promise<boolean> {
-  const openai = getOpenAIClient();
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
-    const stream = await openai.chat.completions.create(
+    const response = await nativeChatCompletion(
       {
         model: modelId,
-        messages: [{ role: "user", content: "who are you? reply in one sentence." }],
+        messages: [
+          { role: "user", content: "who are you? reply in one sentence." },
+        ],
         max_tokens: 100,
-        stream: true,
       },
-      { signal: controller.signal },
+      controller.signal,
     );
 
-    let gotContent = false;
-    for await (const chunk of stream) {
-      if (chunk.choices?.[0]?.delta?.content) {
-        gotContent = true;
-        break; // we got at least one streamed token, model works
-      }
-    }
-
     clearTimeout(timeout);
-    return gotContent;
+    return !!response.choices[0]?.message?.content?.trim();
   } catch (err) {
     debug(`[model] verification failed for ${modelId}:`, err);
     return false;
@@ -1291,7 +1285,9 @@ async function handleCallbackQuery(
 
   // acknowledge the callback to remove loading state
   try {
-    await makeRequest("answerCallbackQuery", { callback_query_id: callbackQuery.id });
+    await makeRequest("answerCallbackQuery", {
+      callback_query_id: callbackQuery.id,
+    });
   } catch {
     // ignore errors from answering callback
   }

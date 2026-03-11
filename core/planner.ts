@@ -2,21 +2,13 @@
 // lightweight cognitive planning layer
 // adds plan -> act -> verify loop for complex tasks
 
-import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { nativeChatCompletion } from "./api.ts";
 import { debug } from "../utils/debug.ts";
 import { withRetry } from "../utils/retry.ts";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const SUMMARIZE_MODEL =
   process.env.SUMMARIZE_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 15 * 1000,
-});
 
 export interface PlanStep {
   tool: string;
@@ -158,7 +150,7 @@ create plan:`;
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: SUMMARIZE_MODEL,
           messages: [
             { role: "system", content: systemPrompt },
@@ -226,7 +218,7 @@ is this complete?`;
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: SUMMARIZE_MODEL,
           messages: [
             { role: "system", content: systemPrompt },

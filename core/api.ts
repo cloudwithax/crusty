@@ -1,10 +1,17 @@
-import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionMessageToolCall } from "openai/resources/chat/completions";
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+  ChatCompletionMessageToolCall,
+} from "openai/resources/chat/completions";
 
 export interface NativeChatOptions {
   model: string;
   messages: ChatCompletionMessageParam[];
   tools?: ChatCompletionTool[];
   tool_choice?: any;
+  max_tokens?: number;
+  temperature?: number;
+  response_format?: any;
 }
 
 export interface NativeChatResponse {
@@ -24,9 +31,11 @@ export interface NativeChatResponse {
 
 export async function nativeChatCompletion(
   options: NativeChatOptions,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<NativeChatResponse> {
-  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+  const baseUrl = (
+    process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
+  ).replace(/\/$/, "");
   const url = `${baseUrl}/chat/completions`;
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -36,14 +45,14 @@ export async function nativeChatCompletion(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${apiKey}`,
+    Authorization: `Bearer ${apiKey}`,
   };
 
   if (url.includes("openrouter.ai")) {
     headers["HTTP-Referer"] = "https://github.com/clxudiaea/crusty";
     headers["X-Title"] = "Crusty";
   }
-  
+
   const payload = {
     ...options,
     stream: true,
@@ -70,7 +79,7 @@ export async function nativeChatCompletion(
     } catch (e) {
       if ((e as any).status) throw e;
     }
-    
+
     const err = new Error(`HTTP ${response.status}: ${errorBody}`);
     (err as any).status = response.status;
     (err as any).error = errorBody;
@@ -121,8 +130,8 @@ export async function nativeChatCompletion(
               type: tc.type || "function",
               function: {
                 name: tc.function?.name || "",
-                arguments: tc.function?.arguments || ""
-              }
+                arguments: tc.function?.arguments || "",
+              },
             });
           } else {
             const existing = toolCallsMap.get(index);
@@ -154,7 +163,9 @@ export async function nativeChatCompletion(
     processLine(buffer);
   }
 
-  const tool_calls = Array.from(toolCallsMap.values()) as ChatCompletionMessageToolCall[];
+  const tool_calls = Array.from(
+    toolCallsMap.values(),
+  ) as ChatCompletionMessageToolCall[];
 
   return {
     choices: [
@@ -163,9 +174,9 @@ export async function nativeChatCompletion(
           role: "assistant",
           content: content,
           ...(tool_calls.length > 0 ? { tool_calls } : {}),
-        }
-      }
+        },
+      },
     ],
-    usage: finalUsage
+    usage: finalUsage,
   };
 }

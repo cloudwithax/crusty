@@ -2,20 +2,12 @@
 // uses ddg lite search and web_fetch under the hood to gather, read, and synthesize information
 
 import { z } from "zod";
-import { OpenAI } from "openai";
+import { nativeChatCompletion } from "../core/api.ts";
 import { executeTool } from "./registry.ts";
 import { debug } from "../utils/debug.ts";
 import { withRetry } from "../utils/retry.ts";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 30 * 1000,
-});
 
 // research config
 const MAX_SEARCH_QUERIES = 25;
@@ -49,9 +41,7 @@ interface ResearchState {
 const DeepResearchSchema = z.object({
   topic: z
     .string()
-    .describe(
-      "the research topic or question to deeply investigate",
-    ),
+    .describe("the research topic or question to deeply investigate"),
   focus: z
     .string()
     .optional()
@@ -70,7 +60,8 @@ async function generateSearchQueries(
     .slice(-5)
     .map((f) => `[${f.title}]: ${f.content.slice(0, 150)}`)
     .join("\n");
-  const gapsList = state.gaps.length > 0 ? state.gaps.join("\n- ") : "none identified yet";
+  const gapsList =
+    state.gaps.length > 0 ? state.gaps.join("\n- ") : "none identified yet";
 
   const prompt = `you are a research query generator. given a topic and previous research, generate 3-5 new search queries that would help fill knowledge gaps and explore different angles.
 
@@ -99,7 +90,7 @@ respond with a json array of query strings only, no explanation:
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: OPENAI_MODEL,
           messages: [{ role: "user", content: prompt }],
           max_tokens: 300,
@@ -117,7 +108,8 @@ respond with a json array of query strings only, no explanation:
 
     const queries = JSON.parse(jsonStr) as string[];
     return queries.filter(
-      (q) => typeof q === "string" && q.length > 2 && !state.queriesUsed.includes(q),
+      (q) =>
+        typeof q === "string" && q.length > 2 && !state.queriesUsed.includes(q),
     );
   } catch (err) {
     debug(`[deep-research] query generation failed:`, err);
@@ -135,7 +127,7 @@ async function assessRelevance(
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: OPENAI_MODEL,
           messages: [
             {
@@ -187,7 +179,7 @@ async function identifyGaps(state: ResearchState): Promise<string[]> {
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: OPENAI_MODEL,
           messages: [
             {
@@ -227,7 +219,11 @@ async function executeSearch(
   query: string,
   userId: number,
 ): Promise<Array<{ title: string; url: string; snippet: string }>> {
-  const raw = await executeTool("web_search", JSON.stringify({ query }), userId);
+  const raw = await executeTool(
+    "web_search",
+    JSON.stringify({ query }),
+    userId,
+  );
 
   if (raw.startsWith("[Search failed") || raw.startsWith("[Error")) {
     debug(`[deep-research] search failed for "${query}": ${raw.slice(0, 100)}`);
@@ -266,10 +262,7 @@ async function executeSearch(
 }
 
 // fetch and extract content from a url
-async function fetchPage(
-  url: string,
-  userId: number,
-): Promise<string | null> {
+async function fetchPage(url: string, userId: number): Promise<string | null> {
   try {
     const result = await executeTool(
       "web_fetch",
@@ -299,10 +292,7 @@ async function synthesizeReport(state: ResearchState): Promise<string> {
   }
 
   const findingsText = topFindings
-    .map(
-      (f) =>
-        `### ${f.title}\nurl: ${f.url}\n${f.content}`,
-    )
+    .map((f) => `### ${f.title}\nurl: ${f.url}\n${f.content}`)
     .join("\n\n---\n\n");
 
   const elapsed = Math.round((Date.now() - state.startTime) / 1000);
@@ -310,7 +300,7 @@ async function synthesizeReport(state: ResearchState): Promise<string> {
   try {
     const response = await withRetry(
       () =>
-        openai.chat.completions.create({
+        nativeChatCompletion({
           model: OPENAI_MODEL,
           messages: [
             {
@@ -352,7 +342,10 @@ research stats: ${state.queriesUsed.length} queries, ${state.findings.length} so
 }
 
 // fallback if llm synthesis fails
-function buildFallbackReport(state: ResearchState, elapsedSeconds: number): string {
+function buildFallbackReport(
+  state: ResearchState,
+  elapsedSeconds: number,
+): string {
   const topFindings = state.findings
     .sort((a, b) => b.relevance - a.relevance)
     .slice(0, 15);
@@ -394,7 +387,9 @@ function shouldContinue(state: ResearchState): boolean {
   // if we have enough high-quality findings and past minimum time, wrap up
   const highQuality = state.findings.filter((f) => f.relevance >= 0.6);
   if (highQuality.length >= 15 && elapsed >= TARGET_DURATION_MS) {
-    debug(`[deep-research] sufficient findings (${highQuality.length} high quality)`);
+    debug(
+      `[deep-research] sufficient findings (${highQuality.length} high quality)`,
+    );
     return false;
   }
 
@@ -444,7 +439,9 @@ async function runDeepResearch(
       searchesExecuted++;
       state.iteration++;
 
-      debug(`[deep-research] searching: "${query}" (${searchesExecuted}/${MAX_SEARCH_QUERIES})`);
+      debug(
+        `[deep-research] searching: "${query}" (${searchesExecuted}/${MAX_SEARCH_QUERIES})`,
+      );
 
       const results = await executeSearch(query, userId);
 

@@ -1,4 +1,3 @@
-import { OpenAI } from "openai";
 import { nativeChatCompletion } from "./api.ts";
 import type {
   ChatCompletionMessageParam,
@@ -51,7 +50,6 @@ import {
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const SUMMARIZE_MODEL =
   process.env.SUMMARIZE_MODEL || process.env.OPENAI_MODEL || "gpt-4o";
 
@@ -65,16 +63,6 @@ const INFERENCE_RPM_LIMIT = parseInt(
 
 if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY environment variable is required");
-}
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 60 * 100000, // increase timeout for long-running requests
-});
-
-export function getOpenAIClient(): OpenAI {
-  return openai;
 }
 
 // simple rate limiter with iterative wait loop (avoids stack growth)
@@ -1034,51 +1022,73 @@ export class Agent {
     // OUTER RUN LOOP
     const maxRunAttempts = 3;
     let runAttempt = 0;
-    
+
     while (runAttempt < maxRunAttempts) {
       try {
-        const combinedContext = [memoryContext, learningContext].filter(Boolean).join("\n\n") || undefined;
-        return await this.executeAttempt(combinedContext, taskPlan, userMessage, callbacks);
+        const combinedContext =
+          [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
+          undefined;
+        return await this.executeAttempt(
+          combinedContext,
+          taskPlan,
+          userMessage,
+          callbacks,
+        );
       } catch (error: any) {
         if (this.isContextOverflowError(error)) {
-          debug(`[agent] Caught context overflow, summarizing and retrying attempt (${runAttempt + 1}/${maxRunAttempts})`);
+          debug(
+            `[agent] Caught context overflow, summarizing and retrying attempt (${runAttempt + 1}/${maxRunAttempts})`,
+          );
           this.truncateOversizedToolResults();
-          const { summarized, messagesToDrop } = await this.contextManager.maybeSummarize(this._messages, true);
+          const { summarized, messagesToDrop } =
+            await this.contextManager.maybeSummarize(this._messages, true);
           if (summarized && messagesToDrop > 0) {
-            this._messages = this.contextManager.pruneMessages(this._messages, messagesToDrop);
+            this._messages = this.contextManager.pruneMessages(
+              this._messages,
+              messagesToDrop,
+            );
           }
           runAttempt++;
           if (runAttempt >= maxRunAttempts) {
-             throw error;
+            throw error;
           }
         } else {
           throw error;
         }
       }
     }
-    
+
     return "i couldn't complete that request. please try again.";
   }
 
   private isContextOverflowError(error: any): boolean {
     if (!error) return false;
     const msg = error.message?.toLowerCase() || String(error).toLowerCase();
-    return msg.includes("context_length_exceeded") ||
-           msg.includes("maximum context length") ||
-           msg.includes("too many tokens") ||
-           msg.includes("context window");
+    return (
+      msg.includes("context_length_exceeded") ||
+      msg.includes("maximum context length") ||
+      msg.includes("too many tokens") ||
+      msg.includes("context window")
+    );
   }
 
   private truncateOversizedToolResults(): void {
     let truncated = false;
     for (const msg of this._messages) {
-      if (msg.role === "tool" && typeof msg.content === "string" && msg.content.length > 50000) {
-        msg.content = msg.content.substring(0, 50000) + "\n...[truncated due to length]...";
+      if (
+        msg.role === "tool" &&
+        typeof msg.content === "string" &&
+        msg.content.length > 50000
+      ) {
+        msg.content =
+          msg.content.substring(0, 50000) + "\n...[truncated due to length]...";
         truncated = true;
       }
     }
     if (truncated) {
-      debug("[agent] Truncated oversized tool results to help with context overflow");
+      debug(
+        "[agent] Truncated oversized tool results to help with context overflow",
+      );
     }
   }
 
@@ -1086,9 +1096,8 @@ export class Agent {
     combinedContext: string | undefined,
     taskPlan: TaskPlan | null,
     userMessage: string,
-    callbacks?: AgentCallbacks
+    callbacks?: AgentCallbacks,
   ): Promise<string> {
-
     // helper to check if we should abort
     const checkAbort = () => {
       if (callbacks?.abortSignal?.aborted) {
@@ -1176,13 +1185,16 @@ export class Agent {
         // api call with automatic retry for transient errors
         response = await withRetry(
           () =>
-            nativeChatCompletion({
-              model: getCurrentModel(),
-              messages: validMessages,
-              tools: tools.length > 0 ? tools : undefined,
-              tool_choice: tools.length > 0 ? "auto" : undefined,
-            }, callbacks?.abortSignal),
-          { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 }
+            nativeChatCompletion(
+              {
+                model: getCurrentModel(),
+                messages: validMessages,
+                tools: tools.length > 0 ? tools : undefined,
+                tool_choice: tools.length > 0 ? "auto" : undefined,
+              },
+              callbacks?.abortSignal,
+            ),
+          { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 },
         );
       } catch (apiError) {
         // extract detailed error info from openai sdk

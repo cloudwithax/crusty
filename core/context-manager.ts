@@ -1,8 +1,8 @@
 // context manager
 // handles rolling window, summarization, and prompt building
 
-import { OpenAI } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { nativeChatCompletion } from "./api";
 import {
   getMaxContextTokens,
   RESERVED_COMPLETION_TOKENS,
@@ -16,18 +16,8 @@ import {
 import { debug } from "../utils/debug";
 import { withRetry } from "../utils/retry";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
-
 // smaller/faster model for summarization to reduce cost
 const SUMMARIZE_MODEL = process.env.SUMMARIZE_MODEL || "gpt-4o-mini";
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-  timeout: 30 * 1000,
-});
 
 export interface ContextState {
   messages: ChatCompletionMessageParam[];
@@ -49,14 +39,15 @@ export class ContextManager {
   // returns a pruned list that fits within token budget
   buildMessagesForModel(
     allMessages: ChatCompletionMessageParam[],
-    memoryContext?: string
+    memoryContext?: string,
   ): ChatCompletionMessageParam[] {
     if (allMessages.length === 0) return [];
 
     const budget = getMaxContextTokens() - RESERVED_COMPLETION_TOKENS;
 
     // identify system message (always first)
-    const systemMessage = allMessages[0]?.role === "system" ? allMessages[0] : null;
+    const systemMessage =
+      allMessages[0]?.role === "system" ? allMessages[0] : null;
     const historyMessages = systemMessage ? allMessages.slice(1) : allMessages;
 
     // build pinned prefix (system + summary + memory)
@@ -106,7 +97,7 @@ export class ContextManager {
     const result = [...pinnedPrefix, ...recentMessages];
 
     debug(
-      `[context-manager] built ${result.length} messages (${prefixTokens + accumulatedTokens} estimated tokens, budget: ${budget})`
+      `[context-manager] built ${result.length} messages (${prefixTokens + accumulatedTokens} estimated tokens, budget: ${budget})`,
     );
 
     return result;
@@ -116,7 +107,7 @@ export class ContextManager {
   // returns true if summarization occurred
   async maybeSummarize(
     messages: ChatCompletionMessageParam[],
-    force: boolean = false
+    force: boolean = false,
   ): Promise<{ summarized: boolean; messagesToDrop: number }> {
     // skip if too few messages
     if (messages.length < MIN_RECENT_MESSAGES * 2) {
@@ -135,7 +126,7 @@ export class ContextManager {
     }
 
     debug(
-      `[context-manager] triggering summarization (${totalTokens} tokens > ${triggerTokens} trigger)`
+      `[context-manager] triggering summarization (${totalTokens} tokens > ${triggerTokens} trigger)`,
     );
 
     // figure out how many messages to summarize
@@ -155,8 +146,14 @@ export class ContextManager {
 
     const messagesToSummarizeText = toSummarize
       .map((m) => {
-        const role = m.role === "assistant" ? "Assistant" : m.role === "user" ? "User" : m.role;
-        const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+        const role =
+          m.role === "assistant"
+            ? "Assistant"
+            : m.role === "user"
+              ? "User"
+              : m.role;
+        const content =
+          typeof m.content === "string" ? m.content : JSON.stringify(m.content);
         return `${role}: ${content?.substring(0, 500) || "[no content]"}`;
       })
       .join("\n\n");
@@ -175,7 +172,7 @@ Keep it under 500 words. Focus on information that would be useful for continuin
     try {
       const response = await withRetry(
         () =>
-          openai.chat.completions.create({
+          nativeChatCompletion({
             model: SUMMARIZE_MODEL,
             messages: [
               {
@@ -195,7 +192,7 @@ Keep it under 500 words. Focus on information that would be useful for continuin
       if (newSummary) {
         this._summary = newSummary;
         debug(
-          `[context-manager] summarized ${toSummarize.length} messages into ${newSummary.length} chars`
+          `[context-manager] summarized ${toSummarize.length} messages into ${newSummary.length} chars`,
         );
         return { summarized: true, messagesToDrop: toSummarize.length };
       }
@@ -210,7 +207,7 @@ Keep it under 500 words. Focus on information that would be useful for continuin
   // keeps system message + recent messages, drops summarized ones
   pruneMessages(
     messages: ChatCompletionMessageParam[],
-    dropCount: number
+    dropCount: number,
   ): ChatCompletionMessageParam[] {
     if (dropCount === 0) return messages;
 
@@ -223,7 +220,7 @@ Keep it under 500 words. Focus on information that would be useful for continuin
     const result = systemMessage ? [systemMessage, ...remaining] : remaining;
 
     debug(
-      `[context-manager] pruned ${dropCount} messages, ${result.length} remaining`
+      `[context-manager] pruned ${dropCount} messages, ${result.length} remaining`,
     );
 
     return result;

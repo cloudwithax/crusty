@@ -78,6 +78,11 @@ class SQLiteAdapter implements DatabaseAdapter {
   close(): void {
     this.db.close();
   }
+
+  // expose raw db for sqlite extension loading (e.g. sqlite-vec)
+  getDb(): BunSQLite {
+    return this.db;
+  }
 }
 
 // postgres adapter using postgres.js with sync-like interface
@@ -275,6 +280,19 @@ let pgAdapter: PostgresAdapter | null = null;
 // detect if we should use postgres
 export function isUsingPostgres(): boolean {
   return !!DATABASE_URL && DATABASE_URL.startsWith("postgres");
+}
+
+// load a sqlite extension (e.g. sqlite-vec) into the current sqlite connection
+// returns false if using postgres or if loading fails
+export function tryLoadSqliteExtension(fn: (db: any) => void): boolean {
+  if (isUsingPostgres()) return false;
+  const adapter = getDatabase();
+  try {
+    fn((adapter as any).getDb());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // get the sync database adapter (for sqlite or postgres with sync wrapper)
