@@ -5,17 +5,12 @@ import {
   storeMemoryWithEmbedding,
   searchByEmbedding,
   isEmbeddingsAvailable,
-  generateEmbedding,
 } from "./embeddings";
 import {
-  chunkText,
-  indexChunk,
   searchBm25,
-  getOrCreateEmbedding,
   mergeHybridResults,
   getHybridConfig,
   getEmbeddingCacheStats,
-  type HybridCandidate,
 } from "./hybrid-search";
 
 export interface Memory {
@@ -24,7 +19,6 @@ export interface Memory {
   content: string;
   rawContent?: string;
   keywords: string[];
-  emotionalWeight: number;
   timestamp: number;
   lastRecalled?: number;
   recallCount: number;
@@ -217,52 +211,6 @@ const STOP_WORDS = new Set([
   "bye",
 ]);
 
-// emotional indicators that boost memory importance
-const EMOTIONAL_MARKERS = [
-  "love",
-  "hate",
-  "fear",
-  "scared",
-  "happy",
-  "sad",
-  "angry",
-  "excited",
-  "worried",
-  "anxious",
-  "proud",
-  "ashamed",
-  "guilty",
-  "jealous",
-  "hurt",
-  "painful",
-  "amazing",
-  "terrible",
-  "wonderful",
-  "awful",
-  "best",
-  "worst",
-  "favorite",
-  "remember",
-  "forgot",
-  "miss",
-  "wish",
-  "hope",
-  "dream",
-  "nightmare",
-  "secret",
-  "confession",
-  "admit",
-  "honestly",
-  "truth",
-  "never",
-  "always",
-  "forever",
-  "first",
-  "last",
-  "only",
-  "important",
-];
-
 export class MemoryService {
   private initialized = false;
 
@@ -311,25 +259,6 @@ export class MemoryService {
     return [...unique, ...phrases].slice(0, 20);
   }
 
-  // calculate emotional weight of content (1-10 scale)
-  calculateEmotionalWeight(text: string): number {
-    const lowerText = text.toLowerCase();
-    let weight = 5;
-
-    for (const marker of EMOTIONAL_MARKERS) {
-      if (lowerText.includes(marker)) {
-        weight += 1;
-      }
-    }
-
-    if (text.includes("?")) weight += 1;
-
-    const exclamations = (text.match(/!/g) || []).length;
-    weight += Math.min(exclamations, 2);
-
-    return Math.min(weight, 10);
-  }
-
   // store a new memory
   async storeMemory(userId: number, content: string): Promise<Memory | null> {
     this.ensureTable();
@@ -341,15 +270,12 @@ export class MemoryService {
     }
 
     const keywords = this.extractKeywords(content);
-    const emotionalWeight = this.calculateEmotionalWeight(content);
-
     const memory: Memory = {
       id: uuidv4(),
       userId,
       content: content.substring(0, 500),
       rawContent: content.substring(0, 500),
       keywords,
-      emotionalWeight,
       timestamp: Date.now(),
       recallCount: 0,
     };
@@ -357,15 +283,14 @@ export class MemoryService {
     const asyncDb = getAsyncDatabase();
     if (asyncDb) {
       await asyncDb.run(
-        `INSERT INTO memories (id, user_id, content, raw_content, keywords, emotional_weight, timestamp, recall_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO memories (id, user_id, content, raw_content, keywords, timestamp, recall_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           memory.id,
           memory.userId,
           memory.content,
           memory.rawContent || null,
           JSON.stringify(memory.keywords),
-          memory.emotionalWeight,
           memory.timestamp,
           memory.recallCount,
         ],
@@ -373,15 +298,14 @@ export class MemoryService {
     } else {
       const db = getDatabase();
       db.run(
-        `INSERT INTO memories (id, user_id, content, raw_content, keywords, emotional_weight, timestamp, recall_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO memories (id, user_id, content, raw_content, keywords, timestamp, recall_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           memory.id,
           memory.userId,
           memory.content,
           memory.rawContent || null,
           JSON.stringify(memory.keywords),
-          memory.emotionalWeight,
           memory.timestamp,
           memory.recallCount,
         ],
@@ -389,7 +313,7 @@ export class MemoryService {
     }
 
     debug(
-      `[memory] stored for user ${userId}: "${content.substring(0, 40)}..." (weight: ${emotionalWeight})`,
+      `[memory] stored for user ${userId}: "${content.substring(0, 40)}..."`,
     );
 
     // async store embedding - fire and forget, storeMemoryWithEmbedding handles backend routing
@@ -461,7 +385,6 @@ export class MemoryService {
               content: embeddingResult.content,
               rawContent: embeddingResult.rawContent,
               keywords: [],
-              emotionalWeight: embeddingResult.emotionalWeight,
               timestamp: embeddingResult.timestamp,
               recallCount: embeddingResult.recallCount,
             },
@@ -504,7 +427,6 @@ export class MemoryService {
       content: row.content,
       rawContent: row.raw_content || undefined,
       keywords: JSON.parse(row.keywords),
-      emotionalWeight: row.emotional_weight,
       timestamp: row.timestamp,
       lastRecalled: row.last_recalled,
       recallCount: row.recall_count,
@@ -606,7 +528,6 @@ export class MemoryService {
       content: row.content,
       rawContent: row.raw_content || undefined,
       keywords: JSON.parse(row.keywords),
-      emotionalWeight: row.emotional_weight,
       timestamp: row.timestamp,
       lastRecalled: row.last_recalled,
       recallCount: row.recall_count,
@@ -664,35 +585,29 @@ Use this context to inform your response naturally, without explicitly mentionin
   }
 
   // get memory stats for a user
-  async getStats(
-    userId: number,
-  ): Promise<{ total: number; avgWeight: number }> {
+  async getStats(userId: number): Promise<{ total: number }> {
     this.ensureTable();
 
     const asyncDb = getAsyncDatabase();
     if (asyncDb) {
-      const row = await asyncDb.get<{ total: number; avg_weight: number }>(
-        `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
-         FROM memories WHERE user_id = $1`,
+      const row = await asyncDb.get<{ total: number }>(
+        `SELECT COUNT(*) as total FROM memories WHERE user_id = $1`,
         userId,
       );
       return {
         total: row?.total || 0,
-        avgWeight: row?.avg_weight || 5,
       };
     }
 
     const db = getDatabase();
     const row = db
-      .query<{ total: number; avg_weight: number }>(
-        `SELECT COUNT(*) as total, AVG(emotional_weight) as avg_weight 
-         FROM memories WHERE user_id = ?`,
-      )
+      .query<{
+        total: number;
+      }>(`SELECT COUNT(*) as total FROM memories WHERE user_id = ?`)
       .get(userId);
 
     return {
       total: row?.total || 0,
-      avgWeight: row?.avg_weight || 5,
     };
   }
 
@@ -726,7 +641,7 @@ Use this context to inform your response naturally, without explicitly mentionin
 
   // get comprehensive memory system stats
   async getComprehensiveStats(userId: number): Promise<{
-    memories: { total: number; avgWeight: number };
+    memories: { total: number };
     hybridSearch: {
       vectorWeight: number;
       textWeight: number;

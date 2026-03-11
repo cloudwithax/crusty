@@ -57,7 +57,11 @@ export function isRetryableError(error: unknown): boolean {
 }
 
 // calculate delay with exponential backoff + jitter
-function calculateDelay(attempt: number, baseMs: number, maxMs: number): number {
+function calculateDelay(
+  attempt: number,
+  baseMs: number,
+  maxMs: number,
+): number {
   const exponentialDelay = baseMs * Math.pow(2, attempt);
   const jitter = Math.random() * baseMs * 0.5; // up to 50% jitter
   return Math.min(exponentialDelay + jitter, maxMs);
@@ -66,7 +70,7 @@ function calculateDelay(attempt: number, baseMs: number, maxMs: number): number 
 // wrap an async function with retry logic
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  options?: RetryOptions
+  options?: RetryOptions,
 ): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let lastError: unknown;
@@ -82,9 +86,10 @@ export async function withRetry<T>(
       }
 
       const delay = calculateDelay(attempt, opts.baseDelayMs, opts.maxDelayMs);
-      const errorHint = error instanceof Error ? error.message.slice(0, 80) : "unknown";
+      const errorHint =
+        error instanceof Error ? error.message.slice(0, 80) : "unknown";
       debug(
-        `[retry] attempt ${attempt + 1}/${opts.maxRetries} failed (${errorHint}), retrying in ${Math.round(delay / 1000)}s`
+        `[retry] attempt ${attempt + 1}/${opts.maxRetries} failed (${errorHint}), retrying in ${Math.round(delay / 1000)}s`,
       );
       await sleep(delay);
     }
@@ -94,14 +99,6 @@ export async function withRetry<T>(
 }
 
 // simple sleep utility
-export function sleep(ms: number): Promise<void> {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// create a retryable version of an async function
-export function retryable<TArgs extends unknown[], TResult>(
-  fn: (...args: TArgs) => Promise<TResult>,
-  options?: RetryOptions
-): (...args: TArgs) => Promise<TResult> {
-  return (...args: TArgs) => withRetry(() => fn(...args), options);
 }

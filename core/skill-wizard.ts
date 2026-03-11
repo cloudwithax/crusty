@@ -285,25 +285,3 @@ export async function writeSkill(
     return { success: false, path: skillPath, error: message };
   }
 }
-
-// list available skills for display
-export function listSkillNames(): string[] {
-  const skillsDir = join(process.cwd(), "cogs", "skills");
-  if (!existsSync(skillsDir)) {
-    return [];
-  }
-
-  try {
-    const { readdirSync, statSync } = require("fs");
-    const entries = readdirSync(skillsDir) as string[];
-    return entries.filter((entry: string) => {
-      const entryPath = join(skillsDir, entry);
-      return (
-        statSync(entryPath).isDirectory() &&
-        existsSync(join(entryPath, "SKILL.md"))
-      );
-    });
-  } catch {
-    return [];
-  }
-}

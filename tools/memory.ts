@@ -5,7 +5,6 @@ import {
   searchSessions,
   getRecentSessions,
   getSessionStats,
-  type SessionSearchResult,
 } from "../memory/session-memory.ts";
 
 // schema for saving a memory
@@ -57,7 +56,7 @@ const searchMemorySchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "include full metadata like keywords and emotional weight (default: false)",
+      "include full metadata like keywords and storage time (default: false)",
     ),
 });
 
@@ -98,7 +97,7 @@ async function handleSaveMemory(
     `[memory-tool] saved memory for user ${userId}: "${args.content.substring(0, 50)}..."`,
   );
 
-  return `[Memory] Saved successfully (id: ${memory.id.substring(0, 8)}, weight: ${memory.emotionalWeight}/10, keywords: ${memory.keywords.slice(0, 5).join(", ")})`;
+  return `[Memory] Saved successfully (id: ${memory.id.substring(0, 8)}, keywords: ${memory.keywords.slice(0, 5).join(", ")})`;
 }
 
 // handler for recalling memories
@@ -207,7 +206,7 @@ async function handleSearchMemory(
 
     if (includeMetadata) {
       lines.push(
-        `- [score: ${score}] "${content}"\n  ├─ stored: ${timeAgo}\n  ├─ keywords: ${r.memory.keywords.slice(0, 8).join(", ")}\n  └─ emotional weight: ${r.memory.emotionalWeight}/10`,
+        `- [score: ${score}] "${content}"\n  ├─ stored: ${timeAgo}\n  └─ keywords: ${r.memory.keywords.slice(0, 8).join(", ")}`,
       );
     } else {
       lines.push(`- [${score}] "${content}" (${timeAgo})`);
@@ -270,7 +269,6 @@ async function handleMemoryStats(
 
   return `[Memory Stats]
 - Total memories: ${stats.memories.total}
-- Average emotional weight: ${stats.memories.avgWeight.toFixed(1)}/10
 - Search mode: ${stats.searchMode}
 - Hybrid config: vector=${(stats.hybridSearch.vectorWeight * 100).toFixed(0)}% / text=${(stats.hybridSearch.textWeight * 100).toFixed(0)}%
 - Embedding cache: ${stats.embeddingCache.totalEntries} entries (${Math.round(stats.embeddingCache.totalSize / 1024)}KB)`;
@@ -421,7 +419,7 @@ CAPABILITIES:
 - Natural language queries (semantic search)
 - Explicit keyword filtering for precise matches
 - Adjustable relevance threshold
-- Optional metadata in results (keywords, emotional weight)
+- Optional metadata in results (keywords, storage time)
 
 EXAMPLES:
 - query: "where did I put the api key" - finds memories about api keys/credentials
@@ -449,7 +447,7 @@ CAUTION: Memory deletion cannot be undone. Always confirm with the user before c
   memory_stats: {
     description: `Get statistics about stored memories.
 
-Returns the total number of memories, average emotional weight, search mode info,
+Returns the total number of memories, search mode info,
 hybrid search configuration, and embedding cache statistics.
 Useful for understanding the memory system's current state.`,
     schema: memoryStatsSchema,

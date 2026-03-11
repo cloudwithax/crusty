@@ -2,7 +2,7 @@
 // combines bm25 (lexical) + vector (semantic) search
 // gives balanced precision/recall for memory retrieval
 
-import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
+import { getDatabase, isUsingPostgres } from "../data/db";
 import { debug } from "../utils/debug";
 import { generateEmbedding } from "./embeddings";
 import { createHash } from "crypto";
@@ -421,14 +421,6 @@ export async function getChunkById(
     startLine: row.start_line,
     endLine: row.end_line,
   };
-}
-
-// embedding cache interface
-interface CachedEmbedding {
-  hash: string;
-  embedding: number[];
-  model: string;
-  dimension: number;
 }
 
 // check embedding cache for a content hash

@@ -2,7 +2,6 @@ import { nativeChatCompletion } from "./api.ts";
 import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
-  ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import {
   getOpenAITools,
@@ -10,7 +9,7 @@ import {
   executeTool,
   cleanupTools,
 } from "../tools/registry.ts";
-import { getCurrentModel, setCurrentModel } from "./model-state.ts";
+import { getCurrentModel } from "./model-state.ts";
 import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
@@ -21,7 +20,7 @@ import {
 } from "../utils/reasoning.ts";
 import { ContextManager } from "./context-manager";
 import { conversationStore } from "./conversation-store";
-import { withRetry, isRetryableError } from "../utils/retry.ts";
+import { withRetry } from "../utils/retry.ts";
 import { compressToolOutput } from "../utils/compress.ts";
 import {
   shouldStoreMemory,
@@ -39,7 +38,6 @@ import {
   markFlushPerformed,
   getMemoryFlushConfig,
   archiveConversation,
-  isFlushResponse,
 } from "../memory/memory-flush.ts";
 import {
   recordTokenUsage,
@@ -50,8 +48,6 @@ import {
 
 // environment configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUMMARIZE_MODEL =
-  process.env.SUMMARIZE_MODEL || process.env.OPENAI_MODEL || "gpt-4o";
 
 // re-export model accessors so callers (telegram/bot.ts) don't need to know about model-state
 export { getCurrentModel, setCurrentModel } from "./model-state.ts";
@@ -615,12 +611,12 @@ interface AgentStep {
 class StepTracker {
   private steps: AgentStep[] = [];
 
-  addStep(tool: string, args: string, result: string): void {
-    const summary = this.summarizeStep(tool, args, result);
+  addStep(tool: string, args: string): void {
+    const summary = this.summarizeStep(tool, args);
     this.steps.push({ tool, summary, timestamp: Date.now() });
   }
 
-  private summarizeStep(tool: string, args: string, result: string): string {
+  private summarizeStep(tool: string, args: string): string {
     // extract key info from tool execution for human-readable summary
     try {
       const parsed = JSON.parse(args);
@@ -897,14 +893,6 @@ export class Agent {
     replyContext?: string,
   ): Promise<string> {
     await this.initialize();
-
-    // helper to check if we should abort
-    const checkAbort = () => {
-      if (callbacks?.abortSignal?.aborted) {
-        debug(`[agent] interrupted by user`);
-        throw new AgentInterruptedError();
-      }
-    };
 
     // pre-compaction memory flush
     // triggered when approaching context limit to preserve important information
@@ -1449,7 +1437,7 @@ export class Agent {
           debug(`[result]: ${result.slice(0, 200)}...`);
 
           // track step for status summarization
-          stepTracker.addStep(name, args, result);
+          stepTracker.addStep(name, args);
         } catch (error) {
           // capture tool failure for learning machine
           const errorMessage =
@@ -1459,7 +1447,7 @@ export class Agent {
           hadToolError = true;
 
           // track failed step too
-          stepTracker.addStep(name, args, result);
+          stepTracker.addStep(name, args);
 
           // auto-capture the failure (fire and forget)
           captureToolFailure(

@@ -133,11 +133,6 @@ export async function initSelfReview(): Promise<void> {
   isInitialized = true;
 }
 
-// get the current watchlist
-export function getWatchlist(): WatchlistEntry[] {
-  return watchlist;
-}
-
 // check if a task context overlaps with any MISS patterns
 export async function checkForOverlaps(
   taskContext: string,
@@ -164,25 +159,6 @@ export async function checkForOverlaps(
   }
 
   return matches.sort((a, b) => b.weight - a.weight);
-}
-
-// generate counter-check prompt for overlapping patterns
-export function generateCounterCheckPrompt(matches: WatchlistEntry[]): string {
-  if (matches.length === 0) {
-    return "";
-  }
-
-  const patterns = matches
-    .slice(0, 3)
-    .map((m) => `- [${m.tag}] MISS: ${m.miss} → FIX: ${m.fix}`)
-    .join("\n");
-
-  return `[SELF-REVIEW COUNTER-CHECK]
-before responding, pause and consider these recent failure patterns:
-
-${patterns}
-
-explicitly consider the opposite of your first instinct. if any of these patterns apply to the current task, adjust accordingly.`;
 }
 
 // append a new entry to the database

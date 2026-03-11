@@ -204,7 +204,7 @@ class PostgresConversationStore implements ConversationStore {
 }
 
 // factory function to get the appropriate store
-export function getConversationStore(): ConversationStore {
+function createConversationStore(): ConversationStore {
   if (isUsingPostgres()) {
     return new PostgresConversationStore();
   }
@@ -216,7 +216,7 @@ let storeInstance: ConversationStore | null = null;
 
 export function conversationStore(): ConversationStore {
   if (!storeInstance) {
-    storeInstance = getConversationStore();
+    storeInstance = createConversationStore();
   }
   return storeInstance;
 }

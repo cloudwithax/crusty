@@ -385,9 +385,7 @@ const commands: Record<
     const stats = await memoryService.getStats(userId);
     await sendMessage(
       chatId,
-      `*Memory Stats*\n\n` +
-        `total memories: ${stats.total}\n` +
-        `avg emotional weight: ${stats.avgWeight.toFixed(1)}/10`,
+      `*Memory Stats*\n\n` + `total memories: ${stats.total}`,
       { message_thread_id: messageThreadId },
     );
   },
@@ -1005,19 +1003,15 @@ const commands: Record<
       const asyncDb = getAsyncDatabase();
       let rows: {
         content: string;
-        context: string | null;
-        emotional_weight: number;
-        created_at: number;
+        timestamp: number;
       }[];
 
       if (asyncDb) {
         rows = await asyncDb.all<{
           content: string;
-          context: string | null;
-          emotional_weight: number;
-          created_at: number;
+          timestamp: number;
         }>(
-          "SELECT content, context, emotional_weight, created_at FROM memories WHERE user_id = $1 ORDER BY created_at DESC",
+          "SELECT COALESCE(raw_content, content) as content, timestamp FROM memories WHERE user_id = $1 ORDER BY timestamp DESC",
           userId,
         );
       } else {
@@ -1025,11 +1019,9 @@ const commands: Record<
         rows = db
           .query<{
             content: string;
-            context: string | null;
-            emotional_weight: number;
-            created_at: number;
+            timestamp: number;
           }>(
-            "SELECT content, context, emotional_weight, created_at FROM memories WHERE user_id = ? ORDER BY created_at DESC",
+            "SELECT COALESCE(raw_content, content) as content, timestamp FROM memories WHERE user_id = ? ORDER BY timestamp DESC",
           )
           .all(userId);
       }
@@ -1042,9 +1034,8 @@ const commands: Record<
       }
 
       const lines = rows.map((r) => {
-        const date = new Date(r.created_at * 1000).toISOString().split("T")[0];
-        const ctx = r.context ? ` [${r.context}]` : "";
-        return `[${date}] (w:${r.emotional_weight})${ctx} ${r.content}`;
+        const date = new Date(r.timestamp).toISOString().split("T")[0];
+        return `[${date}] ${r.content}`;
       });
 
       const text = lines.join("\n");
@@ -1712,7 +1703,7 @@ export async function cleanupBot(): Promise<void> {
   console.log("\ncrusty is retreating to the shell...");
 
   // Cleanup all user sessions
-  for (const [userId, agent] of userSessions) {
+  for (const [, agent] of userSessions) {
     await agent.cleanup();
   }
   userSessions.clear();

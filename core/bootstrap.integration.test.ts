@@ -7,12 +7,9 @@ import {
   buildSystemPrompt,
   ensureSoulTemplate,
   createSoulTemplate,
-  type BootstrapConfig,
-  type BootstrapFile,
-  type InjectionResult,
 } from "./bootstrap.ts";
 import { Agent } from "./agent.ts";
-import { existsSync, mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -44,33 +41,34 @@ function cleanupTempDir(tempDir: string): void {
 }
 
 // Helper to create cogs directory with required files
-async function setupCogsDir(tempDir: string, soulContent?: string): Promise<void> {
+async function setupCogsDir(
+  tempDir: string,
+  soulContent?: string,
+): Promise<void> {
   const cogsDir = join(tempDir, "cogs");
   mkdirSync(cogsDir, { recursive: true });
 
   // Create identity.md
   await Bun.write(
     join(cogsDir, "identity.md"),
-    "# Identity\n\nTest identity content."
+    "# Identity\n\nTest identity content.",
   );
 
   // Create memory.md
   await Bun.write(
     join(cogsDir, "memory.md"),
-    "# Memory\n\nTest memory content."
+    "# Memory\n\nTest memory content.",
   );
 
   // Create runtime.md
   await Bun.write(
     join(cogsDir, "runtime.md"),
-    "# Runtime\n\nCurrent time: {{CURRENT_TIME}}\nWorking dir: {{WORKING_DIR}}"
+    "# Runtime\n\nCurrent time: {{CURRENT_TIME}}\nWorking dir: {{WORKING_DIR}}",
   );
 
   // Create SOUL.md
   const soulMdContent = soulContent || createSoulTemplate();
   await Bun.write(join(cogsDir, "SOUL.md"), soulMdContent);
-
-
 }
 
 describe("bootstrap integration tests", () => {
@@ -102,7 +100,10 @@ describe("bootstrap integration tests", () => {
       await agent.initialize();
 
       // Get system prompt from agent's internal state
-      const messages1 = agent.messages as Array<{ role: string; content: string }>;
+      const messages1 = agent.messages as Array<{
+        role: string;
+        content: string;
+      }>;
       const systemPrompt1 = messages1.find((m) => m.role === "system")?.content;
 
       expect(systemPrompt1).toBeDefined();
@@ -114,7 +115,10 @@ describe("bootstrap integration tests", () => {
       const agent2 = new Agent(2);
       await agent2.initialize();
 
-      const messages2 = agent2.messages as Array<{ role: string; content: string }>;
+      const messages2 = agent2.messages as Array<{
+        role: string;
+        content: string;
+      }>;
       const systemPrompt2 = messages2.find((m) => m.role === "system")?.content;
 
       // Verify both prompts contain the same SOUL.md content
@@ -153,10 +157,17 @@ describe("bootstrap integration tests", () => {
       const agent2 = new Agent(2);
       const agent3 = new Agent(3);
 
-      await Promise.all([agent1.initialize(), agent2.initialize(), agent3.initialize()]);
+      await Promise.all([
+        agent1.initialize(),
+        agent2.initialize(),
+        agent3.initialize(),
+      ]);
 
       const prompts = [agent1, agent2, agent3].map((agent) => {
-        const messages = agent.messages as Array<{ role: string; content: string }>;
+        const messages = agent.messages as Array<{
+          role: string;
+          content: string;
+        }>;
         return messages.find((m) => m.role === "system")?.content;
       });
 
@@ -187,7 +198,10 @@ describe("bootstrap integration tests", () => {
       const agent1 = new Agent(1);
       await agent1.initialize();
 
-      const messages1 = agent1.messages as Array<{ role: string; content: string }>;
+      const messages1 = agent1.messages as Array<{
+        role: string;
+        content: string;
+      }>;
       const systemPrompt1 = messages1.find((m) => m.role === "system")?.content;
 
       expect(systemPrompt1).toContain("initial tone");
@@ -207,7 +221,10 @@ describe("bootstrap integration tests", () => {
       const agent2 = new Agent(2);
       await agent2.initialize();
 
-      const messages2 = agent2.messages as Array<{ role: string; content: string }>;
+      const messages2 = agent2.messages as Array<{
+        role: string;
+        content: string;
+      }>;
       const systemPrompt2 = messages2.find((m) => m.role === "system")?.content;
 
       // Verify new agent has updated content
@@ -224,7 +241,10 @@ describe("bootstrap integration tests", () => {
       const agent = new Agent(1);
       await agent.initialize();
 
-      const messages = agent.messages as Array<{ role: string; content: string }>;
+      const messages = agent.messages as Array<{
+        role: string;
+        content: string;
+      }>;
       const initialPrompt = messages.find((m) => m.role === "system")?.content;
 
       // Update SOUL.md
@@ -232,8 +252,13 @@ describe("bootstrap integration tests", () => {
       await Bun.write(join(cogsDir, "SOUL.md"), "# Soul\n\nUpdated content");
 
       // Verify existing agent still has original content
-      const messagesAfter = agent.messages as Array<{ role: string; content: string }>;
-      const promptAfter = messagesAfter.find((m) => m.role === "system")?.content;
+      const messagesAfter = agent.messages as Array<{
+        role: string;
+        content: string;
+      }>;
+      const promptAfter = messagesAfter.find(
+        (m) => m.role === "system",
+      )?.content;
 
       expect(promptAfter).toBe(initialPrompt);
       expect(promptAfter).toContain("Initial content");
@@ -255,7 +280,6 @@ describe("bootstrap integration tests", () => {
       // Setup normal SOUL.md
       await setupCogsDir(tempDir, "# Soul\n\nGood soul content");
 
-
       // Configure soul-evil hook with 100% chance
       // Use a time window that includes current time
       const now = new Date();
@@ -267,7 +291,8 @@ describe("bootstrap integration tests", () => {
       process.env.AGENTS_SOUL_EVIL_CHANCE = "1.0";
       process.env.AGENTS_SOUL_EVIL_WINDOW_START = `${startHour.toString().padStart(2, "0")}:00`;
       process.env.AGENTS_SOUL_EVIL_WINDOW_END = `${endHour.toString().padStart(2, "0")}:00`;
-      process.env.AGENTS_SOUL_EVIL_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      process.env.AGENTS_SOUL_EVIL_TIMEZONE =
+        Intl.DateTimeFormat().resolvedOptions().timeZone;
 
       // Run multiple times to verify consistency
       const results: boolean[] = [];
@@ -275,7 +300,9 @@ describe("bootstrap integration tests", () => {
         const config = loadConfig();
         const files = getBootstrapFiles();
         const loadedFiles = await Promise.all(
-          files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars))
+          files.map((file) =>
+            loadBootstrapFile(file, config.bootstrapMaxChars),
+          ),
         );
         const processedFiles = await applyHooks(loadedFiles, config);
         const soulFile = processedFiles.find((f) => f.name === "SOUL.md");
@@ -301,7 +328,6 @@ Evil content here`;
 Normal good content`;
       await setupCogsDir(tempDir, normalSoulContent);
 
-
       // Get initial SOUL.md content
       const cogsDir = join(tempDir, "cogs");
       const soulPath = join(cogsDir, "SOUL.md");
@@ -317,13 +343,16 @@ Normal good content`;
       process.env.AGENTS_SOUL_EVIL_CHANCE = "1.0";
       process.env.AGENTS_SOUL_EVIL_WINDOW_START = `${startHour.toString().padStart(2, "0")}:00`;
       process.env.AGENTS_SOUL_EVIL_WINDOW_END = `${endHour.toString().padStart(2, "0")}:00`;
-      process.env.AGENTS_SOUL_EVIL_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      process.env.AGENTS_SOUL_EVIL_TIMEZONE =
+        Intl.DateTimeFormat().resolvedOptions().timeZone;
 
       for (let i = 0; i < 3; i++) {
         const config = loadConfig();
         const files = getBootstrapFiles();
         const loadedFiles = await Promise.all(
-          files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars))
+          files.map((file) =>
+            loadBootstrapFile(file, config.bootstrapMaxChars),
+          ),
         );
         await applyHooks(loadedFiles, config);
       }
@@ -349,7 +378,10 @@ Normal good content`;
 
       // Create other files
       await Bun.write(join(tempDir, "TOOLS.md"), "# Tools\n\nTool definitions");
-      await Bun.write(join(tempDir, "IDENTITY.md"), "# Identity\n\nIdentity content");
+      await Bun.write(
+        join(tempDir, "IDENTITY.md"),
+        "# Identity\n\nIdentity content",
+      );
 
       // Step 2: loadConfig
       const config = loadConfig();
@@ -364,7 +396,7 @@ Normal good content`;
 
       // Step 4: loadBootstrapFile
       const loadedFiles = await Promise.all(
-        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars))
+        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars)),
       );
 
       // Verify all files loaded
@@ -409,7 +441,7 @@ Normal good content`;
       const config = loadConfig();
       const files = getBootstrapFiles();
       const loadedFiles = await Promise.all(
-        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars))
+        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars)),
       );
       const processedFiles = await applyHooks(loadedFiles, config);
       const prompt = buildSystemPrompt("# Core", processedFiles);
@@ -442,14 +474,16 @@ Normal good content`;
 
       const files = getBootstrapFiles();
       const loadedFiles = await Promise.all(
-        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars))
+        files.map((file) => loadBootstrapFile(file, config.bootstrapMaxChars)),
       );
 
       // Verify TOOLS.md was truncated
       const toolsFile = loadedFiles.find((f) => f.name === "TOOLS.md");
       expect(toolsFile?.truncated).toBe(true);
       expect(toolsFile?.content).toContain("[truncated");
-      expect(toolsFile?.injectedChars).toBeLessThanOrEqual(100 + "... [truncated: 5006 -> 100]".length);
+      expect(toolsFile?.injectedChars).toBeLessThanOrEqual(
+        100 + "... [truncated: 5006 -> 100]".length,
+      );
     });
   });
 });

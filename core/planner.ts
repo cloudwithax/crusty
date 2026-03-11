@@ -2,7 +2,6 @@
 // lightweight cognitive planning layer
 // adds plan -> act -> verify loop for complex tasks
 
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { nativeChatCompletion } from "./api.ts";
 import { debug } from "../utils/debug.ts";
 import { withRetry } from "../utils/retry.ts";
@@ -179,70 +178,6 @@ create plan:`;
   } catch (err) {
     debug(`[planner] failed:`, err);
     return null;
-  }
-}
-
-// verify if the task has been completed based on tool results
-export async function verifyCompletion(
-  originalIntent: string,
-  toolResults: string[],
-  assistantResponse: string,
-): Promise<VerificationResult> {
-  // skip verification for empty results
-  if (toolResults.length === 0) {
-    return { is_complete: true, confidence: 0.8 };
-  }
-
-  const systemPrompt = `you verify if an ai assistant has completed a task. respond with json only:
-{
-  "is_complete": true/false,
-  "confidence": 0.0-1.0,
-  "missing_info": "what's still needed if incomplete",
-  "suggested_next_step": "specific action if incomplete"
-}
-
-be practical - if the core request is addressed, consider it complete even if minor details could be added.`;
-
-  const userPrompt = `original intent: ${originalIntent}
-
-tool results summary:
-${toolResults
-  .slice(-3)
-  .map((r, i) => `${i + 1}. ${r.slice(0, 200)}...`)
-  .join("\n")}
-
-assistant's response: ${assistantResponse.slice(0, 500)}
-
-is this complete?`;
-
-  try {
-    const response = await withRetry(
-      () =>
-        nativeChatCompletion({
-          model: SUMMARIZE_MODEL,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          max_tokens: 150,
-          temperature: 0.2,
-        }),
-      { maxRetries: 10, baseDelayMs: 1000 },
-    );
-
-    const content = response.choices[0]?.message?.content?.trim();
-    if (!content) return { is_complete: true, confidence: 0.6 };
-
-    const jsonStr = extractJson(content);
-    if (!jsonStr) {
-      debug("[planner] verification response was not valid json, skipping");
-      return { is_complete: true, confidence: 0.5 };
-    }
-
-    return JSON.parse(jsonStr) as VerificationResult;
-  } catch (err) {
-    debug(`[planner] verification failed:`, err);
-    return { is_complete: true, confidence: 0.5 };
   }
 }
 

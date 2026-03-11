@@ -232,7 +232,6 @@ async function executeSearch(
 
   // parse the formatted search results
   const results: Array<{ title: string; url: string; snippet: string }> = [];
-  const blocks = raw.split("\n\n- ").slice(0); // split on result boundaries
 
   // handle first block which starts with "Search results for..."
   const firstSplit = raw.indexOf("\n\n- ");

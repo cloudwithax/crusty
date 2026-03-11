@@ -69,9 +69,6 @@ interface HookRuntime {
   timer: Timer | null;
   lastRun: Date | null;
 }
-
-// legacy path for backwards compatibility
-const LEGACY_HOOKS_DIR = join(process.cwd(), "cogs", "hooks");
 const HOOKS_LOG_PATH = join(process.cwd(), "hooks.log");
 
 // default hook timeout: 60s (configurable via HOOK_TIMEOUT env var, e.g. "60s", "2m")
@@ -556,7 +553,10 @@ Otherwise, carry out the instructions. You have access to all tools including se
 
     debug(`[hooks] ${hook.id}: output: ${output.substring(0, 100)}`);
 
-    if (output.trim() === "HOOK_OK" || output.trim().toUpperCase() === "HOOK_OK") {
+    if (
+      output.trim() === "HOOK_OK" ||
+      output.trim().toUpperCase() === "HOOK_OK"
+    ) {
       writeHookLog(hook.id, "HOOK_OK - no action needed");
       debug(`[hooks] ${hook.id}: HOOK_OK - suppressed delivery`);
       // clear memory after a no-op tick to avoid unbounded context growth
@@ -685,11 +685,6 @@ export function getRunningHooks(): {
     name: runtime.hook.config.name,
     interval: runtime.hook.config.every,
   }));
-}
-
-// check if hooks system is running
-export function isHooksRunning(): boolean {
-  return isRunning;
 }
 
 // cleanup for graceful shutdown

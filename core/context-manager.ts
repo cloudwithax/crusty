@@ -8,7 +8,6 @@ import {
   RESERVED_COMPLETION_TOKENS,
   MAX_TURNS,
   getSummarizeTriggerTokens,
-  getSummarizeTargetTokens,
   MIN_RECENT_MESSAGES,
   estimateMessageTokens,
   estimateTotalTokens,

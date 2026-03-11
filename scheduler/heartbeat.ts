@@ -1,8 +1,12 @@
 import { appendFileSync } from "fs";
 import { join } from "path";
-import { initSelfReview, selfReviewCycle, cleanupSelfReview } from "./self-review.ts";
+import {
+  initSelfReview,
+  selfReviewCycle,
+  cleanupSelfReview,
+} from "./self-review.ts";
 import { debug } from "../utils/debug.ts";
-import { getFullHeartbeatContent, getActionableItems } from "../tools/heartbeat.ts";
+import { getActionableItems } from "../tools/heartbeat.ts";
 import { Agent } from "../core/agent.ts";
 import { getHeartbeatConfig } from "../data/heartbeat-config.ts";
 
@@ -32,7 +36,12 @@ const DEFAULT_CONFIG: HeartbeatConfig = {
 export function parseDuration(duration: string): number {
   const trimmed = duration.trim().toLowerCase();
 
-  if (trimmed === "0m" || trimmed === "0h" || trimmed === "0d" || trimmed === "0") {
+  if (
+    trimmed === "0m" ||
+    trimmed === "0h" ||
+    trimmed === "0d" ||
+    trimmed === "0"
+  ) {
     return 0;
   }
 
@@ -73,7 +82,9 @@ function parseTime(timeStr: string): number {
 }
 
 // Check if current time is within active hours
-export function isWithinActiveHours(config: HeartbeatActiveHours | undefined): boolean {
+export function isWithinActiveHours(
+  config: HeartbeatActiveHours | undefined,
+): boolean {
   if (!config) {
     return true; // No restrictions
   }
@@ -90,8 +101,14 @@ export function isWithinActiveHours(config: HeartbeatActiveHours | undefined): b
     });
 
     const timeParts = timeFormatter.formatToParts(now);
-    const hour = parseInt(timeParts.find((p) => p.type === "hour")?.value || "0", 10);
-    const minute = parseInt(timeParts.find((p) => p.type === "minute")?.value || "0", 10);
+    const hour = parseInt(
+      timeParts.find((p) => p.type === "hour")?.value || "0",
+      10,
+    );
+    const minute = parseInt(
+      timeParts.find((p) => p.type === "minute")?.value || "0",
+      10,
+    );
 
     // Get the day of week in the target timezone
     const dayOfWeek = getDayOfWeekInTimezone(now, config.timezone);
@@ -130,7 +147,10 @@ function getDayOfWeekInTimezone(date: Date, timezone: string): number {
 
   const parts = formatter.formatToParts(date);
   const year = parseInt(parts.find((p) => p.type === "year")?.value || "0", 10);
-  const month = parseInt(parts.find((p) => p.type === "month")?.value || "0", 10);
+  const month = parseInt(
+    parts.find((p) => p.type === "month")?.value || "0",
+    10,
+  );
   const day = parseInt(parts.find((p) => p.type === "day")?.value || "0", 10);
 
   // Create a date object for midnight in the target timezone
@@ -144,7 +164,10 @@ function getDayOfWeekInTimezone(date: Date, timezone: string): number {
 // load heartbeat configuration from environment (sync fallback)
 function loadConfigFromEnv(): HeartbeatConfig {
   const every = process.env.HEARTBEAT_EVERY || DEFAULT_CONFIG.every;
-  const maxAckChars = parseInt(process.env.HEARTBEAT_MAX_ACK_CHARS || `${DEFAULT_CONFIG.maxAckChars}`, 10);
+  const maxAckChars = parseInt(
+    process.env.HEARTBEAT_MAX_ACK_CHARS || `${DEFAULT_CONFIG.maxAckChars}`,
+    10,
+  );
 
   let activeHours: HeartbeatActiveHours | undefined;
 
@@ -217,7 +240,11 @@ function writeAuditLog(entry: string): void {
 }
 
 // re-export context buffer functions for backward compatibility
-export { addRecentContext, clearRecentContext, getRecentContext } from "./context-buffer.ts";
+export {
+  addRecentContext,
+  clearRecentContext,
+  getRecentContext,
+} from "./context-buffer.ts";
 import { getRecentContext, clearRecentContext } from "./context-buffer.ts";
 
 // dedicated agent instance for heartbeat tasks (user id 0 = system)
@@ -253,7 +280,9 @@ export async function heartbeatTick(
       await selfReviewCycle(recentContext);
     } catch (error) {
       console.error("[heartbeat] self-review cycle failed:", error);
-      writeAuditLog(`SELF-REVIEW ERROR: ${error instanceof Error ? error.message : String(error)}`);
+      writeAuditLog(
+        `SELF-REVIEW ERROR: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -292,22 +321,25 @@ ${items.map((item, i) => `${i + 1}. ${item}`).join("\n")}
 
     // clear agent memory after heartbeat to avoid context buildup
     agent.clearMemory();
-
   } catch (error) {
     console.error("[heartbeat] agent execution failed:", error);
-    writeAuditLog(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    writeAuditLog(
+      `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 // scheduler state
 let heartbeatInterval: Timer | null = null;
 let isRunning = false;
-let lastSendMessage: ((text: string, isHeartbeat?: boolean) => Promise<void>) | null = null;
+let lastSendMessage:
+  | ((text: string, isHeartbeat?: boolean) => Promise<void>)
+  | null = null;
 
 // start the heartbeat scheduler
 export async function startHeartbeat(
   sendMessage: (text: string, isHeartbeat?: boolean) => Promise<void>,
-  config?: HeartbeatConfig
+  config?: HeartbeatConfig,
 ): Promise<void> {
   if (isRunning) {
     debug("[heartbeat] already running");
@@ -320,7 +352,7 @@ export async function startHeartbeat(
   // initialize self-review system on heartbeat start
   await initSelfReview();
 
-  const effectiveConfig = config || await loadConfig();
+  const effectiveConfig = config || (await loadConfig());
   const intervalMs = parseDuration(effectiveConfig.every);
 
   if (intervalMs === 0) {
@@ -328,7 +360,9 @@ export async function startHeartbeat(
     return;
   }
 
-  debug(`[heartbeat] starting with interval: ${effectiveConfig.every} (${intervalMs}ms)`);
+  debug(
+    `[heartbeat] starting with interval: ${effectiveConfig.every} (${intervalMs}ms)`,
+  );
 
   // run immediately on start
   heartbeatTick(sendMessage, effectiveConfig).catch((error) => {
@@ -378,9 +412,4 @@ export async function cleanupHeartbeat(): Promise<void> {
     await heartbeatAgent.cleanup();
     heartbeatAgent = null;
   }
-}
-
-// Check if heartbeat is currently running
-export function isHeartbeatRunning(): boolean {
-  return isRunning;
 }

@@ -1,13 +1,8 @@
 import { existsSync, readdirSync, statSync } from "fs";
-import { join, basename, dirname } from "path";
+import { join, basename } from "path";
 import { homedir } from "os";
 import { debug } from "../utils/debug.ts";
-import {
-  saveSkill,
-  loadAllSkills,
-  type SkillRecord,
-  type CreateSkillInput,
-} from "../data/skills.ts";
+import { saveSkill, loadAllSkills } from "../data/skills.ts";
 
 // skill metadata extracted from frontmatter
 export interface SkillMetadata {

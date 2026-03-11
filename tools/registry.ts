@@ -189,11 +189,6 @@ export function getOpenAITools(): ChatCompletionTool[] {
   return _cachedTools;
 }
 
-// force regeneration if tools change at runtime (rare)
-export function invalidateToolCache(): void {
-  _cachedTools = null;
-}
-
 // sanitize and coerce argument values to fix common model quirks
 // handles: type coercion, leading colons, malformed urls, escaped quotes, etc
 function sanitizeArgs(
@@ -330,8 +325,6 @@ function recoverMalformedArgs(
   const urlMatch = brokenArgs.match(
     /"?url"?\s*[:=]\s*"?((?:https?:)?\/\/[^"}\s]+|[^"}\s]+\.[a-z]{2,}[^"}\s]*)/i,
   );
-  const selectorMatch = brokenArgs.match(/"?selector"?\s*[:=]\s*"([^"]+)"/i);
-  const textMatch = brokenArgs.match(/"?text"?\s*[:=]\s*"([^"]+)"/i);
   // query extraction: handle both quoted and unquoted values
   const queryMatch = brokenArgs.match(
     /"?query"?\s*[:=]\s*"?([^"{}]+?)(?:"|,|\s*}|$)/i,

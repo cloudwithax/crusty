@@ -514,6 +514,9 @@ function initTables(): void {
     // column already exists, ignore
   }
 
+  // migration: normalize legacy memories schema for seamless upgrades
+  migrateLegacyMemoriesTable();
+
   // heartbeat items table for user-customizable actionable items
   db.exec(`
     CREATE TABLE IF NOT EXISTS heartbeat_items (
@@ -537,6 +540,77 @@ function initTables(): void {
   `);
 
   debug("[db] tables initialized");
+}
+
+function sqliteColumnExists(tableName: string, columnName: string): boolean {
+  if (!db || db.type === "postgres") return false;
+
+  const rows = db
+    .query<{ name: string }>(`PRAGMA table_info(${tableName})`)
+    .all();
+  return rows.some((row) => row.name === columnName);
+}
+
+function migrateLegacyMemoriesTable(): void {
+  if (!db || db.type === "postgres") return;
+
+  const hasRawContent = sqliteColumnExists("memories", "raw_content");
+  const hasKeywords = sqliteColumnExists("memories", "keywords");
+  const hasTimestamp = sqliteColumnExists("memories", "timestamp");
+  const hasLastRecalled = sqliteColumnExists("memories", "last_recalled");
+  const hasRecallCount = sqliteColumnExists("memories", "recall_count");
+  const hasCreatedAt = sqliteColumnExists("memories", "created_at");
+
+  if (!hasRawContent) {
+    db.exec(`ALTER TABLE memories ADD COLUMN raw_content TEXT`);
+  }
+
+  if (!hasKeywords) {
+    db.exec(
+      `ALTER TABLE memories ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]'`,
+    );
+  }
+
+  if (!hasTimestamp) {
+    db.exec(
+      `ALTER TABLE memories ADD COLUMN timestamp INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+
+  if (!hasLastRecalled) {
+    db.exec(`ALTER TABLE memories ADD COLUMN last_recalled INTEGER`);
+  }
+
+  if (!hasRecallCount) {
+    db.exec(
+      `ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+
+  db.exec(
+    `UPDATE memories SET raw_content = COALESCE(raw_content, content) WHERE raw_content IS NULL`,
+  );
+  db.exec(
+    `UPDATE memories SET keywords = '[]' WHERE keywords IS NULL OR TRIM(keywords) = ''`,
+  );
+
+  if (hasCreatedAt) {
+    db.exec(
+      `UPDATE memories
+       SET timestamp = COALESCE(NULLIF(timestamp, 0), created_at * 1000)
+       WHERE timestamp IS NULL OR timestamp = 0`,
+    );
+  } else {
+    db.exec(
+      `UPDATE memories
+       SET timestamp = COALESCE(NULLIF(timestamp, 0), CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+       WHERE timestamp IS NULL OR timestamp = 0`,
+    );
+  }
+
+  db.exec(
+    `UPDATE memories SET timestamp = timestamp * 1000 WHERE timestamp > 0 AND timestamp < 1000000000000`,
+  );
 }
 
 async function initTablesAsync(): Promise<void> {
@@ -731,6 +805,9 @@ async function initTablesAsync(): Promise<void> {
     END $$
   `);
 
+  // migration: normalize legacy memories schema for seamless upgrades
+  await migrateLegacyMemoriesTableAsync();
+
   // heartbeat items table for user-customizable actionable items
   await pgAdapter.execAsync(`
     CREATE TABLE IF NOT EXISTS heartbeat_items (
@@ -759,24 +836,80 @@ async function initTablesAsync(): Promise<void> {
   debug("[db] postgres tables initialized");
 }
 
+async function postgresColumnExists(
+  tableName: string,
+  columnName: string,
+): Promise<boolean> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return false;
+
+  const row = await asyncDb.get<{ exists: boolean }>(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+    ) as exists`,
+    tableName,
+    columnName,
+  );
+
+  return !!row?.exists;
+}
+
+async function migrateLegacyMemoriesTableAsync(): Promise<void> {
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return;
+
+  await asyncDb.run(
+    `ALTER TABLE memories ADD COLUMN IF NOT EXISTS raw_content TEXT`,
+  );
+  await asyncDb.run(
+    `ALTER TABLE memories ADD COLUMN IF NOT EXISTS keywords TEXT DEFAULT '[]'`,
+  );
+  await asyncDb.run(
+    `ALTER TABLE memories ADD COLUMN IF NOT EXISTS timestamp BIGINT DEFAULT 0`,
+  );
+  await asyncDb.run(
+    `ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled BIGINT`,
+  );
+  await asyncDb.run(
+    `ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0`,
+  );
+
+  await asyncDb.run(
+    `UPDATE memories SET raw_content = COALESCE(raw_content, content) WHERE raw_content IS NULL`,
+  );
+  await asyncDb.run(
+    `UPDATE memories SET keywords = '[]' WHERE keywords IS NULL OR BTRIM(keywords) = ''`,
+  );
+
+  const hasCreatedAt = await postgresColumnExists("memories", "created_at");
+  if (hasCreatedAt) {
+    await asyncDb.run(`
+      UPDATE memories
+      SET timestamp = COALESCE(NULLIF(timestamp, 0), created_at * 1000)
+      WHERE timestamp IS NULL OR timestamp = 0
+    `);
+  } else {
+    await asyncDb.run(`
+      UPDATE memories
+      SET timestamp = COALESCE(NULLIF(timestamp, 0), EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
+      WHERE timestamp IS NULL OR timestamp = 0
+    `);
+  }
+
+  await asyncDb.run(`
+    UPDATE memories
+    SET timestamp = timestamp * 1000
+    WHERE timestamp > 0 AND timestamp < 1000000000000
+  `);
+}
+
 export function closeDatabase(): void {
   if (db) {
     db.close();
     db = null;
     pgAdapter = null;
-    debug("[db] closed");
-  }
-}
-
-export async function closeDatabaseAsync(): Promise<void> {
-  if (pgAdapter) {
-    await pgAdapter.closeAsync();
-    db = null;
-    pgAdapter = null;
-    debug("[db] closed");
-  } else if (db) {
-    db.close();
-    db = null;
     debug("[db] closed");
   }
 }

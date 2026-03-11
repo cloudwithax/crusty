@@ -2,7 +2,7 @@
 // inspired by agno-agi/dash, stores discovered patterns, gotchas, and fixes
 // separate from general memories to maintain a focused knowledge base
 
-import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
+import { getDatabase, getAsyncDatabase } from "../data/db";
 import { v4 as uuidv4 } from "uuid";
 import { debug } from "../utils/debug.ts";
 import {
@@ -645,11 +645,10 @@ export class LearningsService {
 
     const cutoff = Date.now() - maxAge;
     const asyncDb = getAsyncDatabase();
-    let result: any;
 
     // delete learnings that are old, low confidence, and never applied
     if (asyncDb) {
-      result = await asyncDb.run(
+      await asyncDb.run(
         `DELETE FROM learnings WHERE user_id = $1 AND timestamp < $2 AND confidence < 0.3 AND application_count = 0`,
         [userId, cutoff],
       );

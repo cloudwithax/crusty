@@ -12,7 +12,9 @@ let isRunning = false;
 type SendReminderCallback = (userId: number, message: string) => Promise<void>;
 
 // check for due reminders and trigger them
-async function checkReminders(sendReminder: SendReminderCallback): Promise<void> {
+async function checkReminders(
+  sendReminder: SendReminderCallback,
+): Promise<void> {
   try {
     const dueReminders = await getDueReminders();
 
@@ -45,7 +47,9 @@ async function checkReminders(sendReminder: SendReminderCallback): Promise<void>
 }
 
 // start the reminder scheduler
-export function startReminderScheduler(sendReminder: SendReminderCallback): void {
+export function startReminderScheduler(
+  sendReminder: SendReminderCallback,
+): void {
   if (isRunning) {
     debug("[reminders] scheduler already running");
     return;
@@ -69,18 +73,13 @@ export function startReminderScheduler(sendReminder: SendReminderCallback): void
 }
 
 // stop the reminder scheduler
-export function stopReminderScheduler(): void {
+function stopReminderScheduler(): void {
   if (reminderInterval) {
     clearInterval(reminderInterval);
     reminderInterval = null;
   }
   isRunning = false;
   debug("[reminders] scheduler stopped");
-}
-
-// check if scheduler is running
-export function isReminderSchedulerRunning(): boolean {
-  return isRunning;
 }
 
 // cleanup function for graceful shutdown

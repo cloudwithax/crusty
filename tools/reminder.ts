@@ -14,12 +14,14 @@ export function createReminderSchemaWithTime() {
   const now = new Date().toISOString();
   return z.object({
     message: z.string().describe("What to remind the user about"),
-    remind_at: z.string().describe(
-      `ISO 8601 timestamp for when to send the reminder. ` +
-      `The current time is ${now}. ` +
-      `Convert relative times like 'in 5 minutes', 'tomorrow at 3pm', 'next monday' to absolute timestamps in the future. ` +
-      `Always use UTC timezone.`
-    ),
+    remind_at: z
+      .string()
+      .describe(
+        `ISO 8601 timestamp for when to send the reminder. ` +
+          `The current time is ${now}. ` +
+          `Convert relative times like 'in 5 minutes', 'tomorrow at 3pm', 'next monday' to absolute timestamps in the future. ` +
+          `Always use UTC timezone.`,
+      ),
   });
 }
 
@@ -101,7 +103,7 @@ export async function getUserReminders(userId: number): Promise<Reminder[]> {
   if (asyncDb) {
     const rows = await asyncDb.all<ReminderRow>(
       "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE user_id = $1 AND status = 'pending' ORDER BY remind_at ASC",
-      userId
+      userId,
     );
     return rows.map(rowToReminder);
   }
@@ -109,7 +111,7 @@ export async function getUserReminders(userId: number): Promise<Reminder[]> {
   const db = getDatabase();
   const rows = db
     .query<ReminderRow>(
-      "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE user_id = ? AND status = 'pending' ORDER BY remind_at ASC"
+      "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE user_id = ? AND status = 'pending' ORDER BY remind_at ASC",
     )
     .all(userId);
 
@@ -124,7 +126,7 @@ export async function getDueReminders(): Promise<Reminder[]> {
   if (asyncDb) {
     const rows = await asyncDb.all<ReminderRow>(
       "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE status = 'pending' AND remind_at <= $1 ORDER BY remind_at ASC",
-      now
+      now,
     );
     return rows.map(rowToReminder);
   }
@@ -132,7 +134,7 @@ export async function getDueReminders(): Promise<Reminder[]> {
   const db = getDatabase();
   const rows = db
     .query<ReminderRow>(
-      "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE status = 'pending' AND remind_at <= ? ORDER BY remind_at ASC"
+      "SELECT id, user_id, message, remind_at, created_at, status FROM reminders WHERE status = 'pending' AND remind_at <= ? ORDER BY remind_at ASC",
     )
     .all(now);
 
@@ -144,7 +146,9 @@ export async function markReminderSent(reminderId: string): Promise<void> {
   const asyncDb = getAsyncDatabase();
 
   if (asyncDb) {
-    await asyncDb.run("UPDATE reminders SET status = 'sent' WHERE id = $1", [reminderId]);
+    await asyncDb.run("UPDATE reminders SET status = 'sent' WHERE id = $1", [
+      reminderId,
+    ]);
     return;
   }
 
@@ -153,32 +157,40 @@ export async function markReminderSent(reminderId: string): Promise<void> {
 }
 
 // cancel a reminder
-async function cancelReminder(reminderId: string, userId: number): Promise<boolean> {
+async function cancelReminder(
+  reminderId: string,
+  userId: number,
+): Promise<boolean> {
   const asyncDb = getAsyncDatabase();
 
   if (asyncDb) {
     const existing = await asyncDb.get<ReminderRow>(
       "SELECT id FROM reminders WHERE id = $1 AND user_id = $2 AND status = 'pending'",
       reminderId,
-      userId
+      userId,
     );
 
     if (!existing) return false;
 
-    await asyncDb.run("UPDATE reminders SET status = 'cancelled' WHERE id = $1", [reminderId]);
+    await asyncDb.run(
+      "UPDATE reminders SET status = 'cancelled' WHERE id = $1",
+      [reminderId],
+    );
     return true;
   }
 
   const db = getDatabase();
   const existing = db
     .query<ReminderRow>(
-      "SELECT id FROM reminders WHERE id = ? AND user_id = ? AND status = 'pending'"
+      "SELECT id FROM reminders WHERE id = ? AND user_id = ? AND status = 'pending'",
     )
     .get(reminderId, userId);
 
   if (!existing) return false;
 
-  db.run("UPDATE reminders SET status = 'cancelled' WHERE id = ?", [reminderId]);
+  db.run("UPDATE reminders SET status = 'cancelled' WHERE id = ?", [
+    reminderId,
+  ]);
   return true;
 }
 
@@ -189,7 +201,10 @@ export const reminderTools = {
       "'remind me in 5 minutes', 'remind me tomorrow at 3pm', 'remind me on March 15th', " +
       "'set a reminder for next monday', etc. Parse the natural language time and convert to an ISO timestamp.",
     schema: CreateReminderSchema,
-    handler: async (args: z.infer<typeof CreateReminderSchema>, userId: number) => {
+    handler: async (
+      args: z.infer<typeof CreateReminderSchema>,
+      userId: number,
+    ) => {
       const reminderId = generateReminderId();
 
       // parse the iso timestamp
@@ -216,13 +231,13 @@ export const reminderTools = {
       if (asyncDb) {
         await asyncDb.run(
           "INSERT INTO reminders (id, user_id, message, remind_at, created_at, status) VALUES ($1, $2, $3, $4, $5, 'pending')",
-          [reminderId, userId, args.message, remindAtUnix, createdAtUnix]
+          [reminderId, userId, args.message, remindAtUnix, createdAtUnix],
         );
       } else {
         const db = getDatabase();
         db.run(
           "INSERT INTO reminders (id, user_id, message, remind_at, created_at, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-          [reminderId, userId, args.message, remindAtUnix, createdAtUnix]
+          [reminderId, userId, args.message, remindAtUnix, createdAtUnix],
         );
       }
 
@@ -235,7 +250,9 @@ export const reminderTools = {
         status: "pending",
       };
 
-      debug(`[reminder] created: ${reminderId} for user ${userId} at ${remindAtDate.toISOString()}`);
+      debug(
+        `[reminder] created: ${reminderId} for user ${userId} at ${remindAtDate.toISOString()}`,
+      );
 
       return `reminder set!\n\n${formatReminder(reminder)}`;
     },
@@ -263,7 +280,10 @@ export const reminderTools = {
       "Cancel a pending reminder. Use this when the user wants to delete, remove, or cancel a reminder. " +
       "Requires the reminder ID which can be found using reminder_list.",
     schema: CancelReminderSchema,
-    handler: async (args: z.infer<typeof CancelReminderSchema>, userId: number) => {
+    handler: async (
+      args: z.infer<typeof CancelReminderSchema>,
+      userId: number,
+    ) => {
       const success = await cancelReminder(args.reminder_id, userId);
 
       if (!success) {
@@ -275,10 +295,5 @@ export const reminderTools = {
     },
   },
 };
-
-// cleanup function (no-op for now, db handles persistence)
-export async function cleanupReminders(): Promise<void> {
-  debug("[reminder] cleanup called (no-op for sqlite)");
-}
 
 export type ReminderTools = typeof reminderTools;

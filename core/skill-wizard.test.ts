@@ -8,12 +8,16 @@ import {
   processWizardInput,
   generateSkillContent,
   writeSkill,
-  listSkillNames,
   type SkillDraft,
 } from "./skill-wizard.ts";
 
 const TEST_USER_ID = 999999;
-const TEST_SKILL_DIR = join(process.cwd(), "cogs", "skills", "wizard-test-skill");
+const TEST_SKILL_DIR = join(
+  process.cwd(),
+  "cogs",
+  "skills",
+  "wizard-test-skill",
+);
 
 describe("skill wizard", () => {
   beforeEach(() => {
@@ -172,23 +176,6 @@ describe("skill wizard", () => {
       expect(result.success).toBe(true);
       expect(existsSync(TEST_SKILL_DIR)).toBe(true);
       expect(existsSync(join(TEST_SKILL_DIR, "SKILL.md"))).toBe(true);
-    });
-  });
-
-  describe("listSkillNames", () => {
-    test("should include created skills", async () => {
-      const draft: SkillDraft = {
-        name: "wizard-test-skill",
-        description: "test skill",
-        whenToUse: "",
-        workflow: "",
-        tips: "",
-      };
-
-      await writeSkill(draft);
-      const skills = listSkillNames();
-
-      expect(skills).toContain("wizard-test-skill");
     });
   });
 });

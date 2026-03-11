@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
 import { debug } from "../utils/debug.ts";
 
@@ -27,12 +27,12 @@ async function read(args: z.infer<typeof ReadSchema>): Promise<string> {
     const offset = args.offset ?? 0;
     const limit = args.limit ?? lines.length;
     const selected = lines.slice(offset, offset + limit);
-    
+
     // line-numbered output
     const numbered = selected
       .map((line, idx) => `${String(offset + idx + 1).padStart(4)}| ${line}`)
       .join("\n");
-    
+
     return truncate(numbered);
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -65,20 +65,20 @@ const EditSchema = z.object({
 async function edit(args: z.infer<typeof EditSchema>): Promise<string> {
   try {
     const text = readFileSync(args.path, "utf-8");
-    
+
     if (!text.includes(args.old)) {
       return "error: old_string not found";
     }
-    
+
     const count = text.split(args.old).length - 1;
     if (!args.all && count > 1) {
       return `error: old_string appears ${count} times, must be unique (use all=true)`;
     }
-    
+
     const replacement = args.all
       ? text.replaceAll(args.old, args.new)
       : text.replace(args.old, args.new);
-    
+
     writeFileSync(args.path, replacement);
     return "ok";
   } catch (err) {
@@ -92,7 +92,11 @@ const GlobSchema = z.object({
   path: z.string().optional().describe("base directory (default: cwd)"),
 });
 
-function walkDir(dir: string, pattern: RegExp, results: { path: string; mtime: number }[]): void {
+function walkDir(
+  dir: string,
+  pattern: RegExp,
+  results: { path: string; mtime: number }[],
+): void {
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -131,13 +135,15 @@ async function glob(args: z.infer<typeof GlobSchema>): Promise<string> {
     const basePath = args.path || process.cwd();
     const pattern = globPatternToRegex(args.pat.split("/").pop() || "*");
     const results: { path: string; mtime: number }[] = [];
-    
+
     walkDir(basePath, pattern, results);
-    
+
     // sort by mtime descending
     results.sort((a, b) => b.mtime - a.mtime);
-    
-    const paths = results.slice(0, 50).map((r) => relative(basePath, r.path) || r.path);
+
+    const paths = results
+      .slice(0, 50)
+      .map((r) => relative(basePath, r.path) || r.path);
     return paths.join("\n") || "none";
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -147,7 +153,10 @@ async function glob(args: z.infer<typeof GlobSchema>): Promise<string> {
 // grep - search files for regex pattern
 const GrepSchema = z.object({
   pat: z.string().describe("regex pattern to search"),
-  path: z.string().optional().describe("file or directory to search (default: cwd)"),
+  path: z
+    .string()
+    .optional()
+    .describe("file or directory to search (default: cwd)"),
 });
 
 function grepFile(filePath: string, pattern: RegExp): string[] {
@@ -155,7 +164,7 @@ function grepFile(filePath: string, pattern: RegExp): string[] {
     const content = readFileSync(filePath, "utf-8");
     const lines = content.split("\n");
     const hits: string[] = [];
-    
+
     for (let i = 0; i < lines.length; i++) {
       if (pattern.test(lines[i]!)) {
         hits.push(`${filePath}:${i + 1}: ${lines[i]!.slice(0, 200)}`);
@@ -173,7 +182,7 @@ function grepDir(dir: string, pattern: RegExp, results: string[]): void {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (results.length >= 100) break;
-      
+
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === "node_modules" || entry.name === ".git") continue;
@@ -181,7 +190,28 @@ function grepDir(dir: string, pattern: RegExp, results: string[]): void {
       } else {
         // only search text-ish files
         const ext = entry.name.split(".").pop()?.toLowerCase() || "";
-        const textExts = ["ts", "tsx", "js", "jsx", "json", "md", "txt", "yaml", "yml", "toml", "sh", "bash", "py", "go", "rs", "html", "css", "scss", "svelte", "vue"];
+        const textExts = [
+          "ts",
+          "tsx",
+          "js",
+          "jsx",
+          "json",
+          "md",
+          "txt",
+          "yaml",
+          "yml",
+          "toml",
+          "sh",
+          "bash",
+          "py",
+          "go",
+          "rs",
+          "html",
+          "css",
+          "scss",
+          "svelte",
+          "vue",
+        ];
         if (textExts.includes(ext) || !entry.name.includes(".")) {
           results.push(...grepFile(fullPath, pattern));
         }
@@ -197,14 +227,14 @@ async function grep(args: z.infer<typeof GrepSchema>): Promise<string> {
     const pattern = new RegExp(args.pat, "i");
     const target = args.path || process.cwd();
     const results: string[] = [];
-    
+
     const stat = statSync(target);
     if (stat.isFile()) {
       results.push(...grepFile(target, pattern));
     } else {
       grepDir(target, pattern, results);
     }
-    
+
     return truncate(results.join("\n") || "no matches");
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -214,7 +244,8 @@ async function grep(args: z.infer<typeof GrepSchema>): Promise<string> {
 // export as tool definitions
 export const filesystemTools = {
   read: {
-    description: "read file contents with optional line range. returns line-numbered output.",
+    description:
+      "read file contents with optional line range. returns line-numbered output.",
     schema: ReadSchema,
     handler: read,
   },
@@ -224,7 +255,8 @@ export const filesystemTools = {
     handler: write,
   },
   edit: {
-    description: "replace old text with new in file. old must be unique unless all=true.",
+    description:
+      "replace old text with new in file. old must be unique unless all=true.",
     schema: EditSchema,
     handler: edit,
   },
@@ -234,7 +266,8 @@ export const filesystemTools = {
     handler: glob,
   },
   grep: {
-    description: "search files for regex pattern. returns file:line: match format.",
+    description:
+      "search files for regex pattern. returns file:line: match format.",
     schema: GrepSchema,
     handler: grep,
   },

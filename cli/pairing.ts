@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
+import { getDatabase, getAsyncDatabase } from "../data/db";
 
 // generate a random pairing code
 export function generatePairingCode(): string {
@@ -7,7 +7,10 @@ export function generatePairingCode(): string {
 }
 
 // save pairing code with expiration
-export function savePairingCode(code: string, expiresInMinutes: number = 60): void {
+export function savePairingCode(
+  code: string,
+  expiresInMinutes: number = 60,
+): void {
   const db = getDatabase();
   const now = Date.now();
   const expiresAt = now + expiresInMinutes * 60 * 1000;
@@ -21,7 +24,7 @@ export function savePairingCode(code: string, expiresInMinutes: number = 60): vo
        expires_at = EXCLUDED.expires_at,
        used = EXCLUDED.used,
        paired_user_id = EXCLUDED.paired_user_id`,
-    [code, now, expiresAt]
+    [code, now, expiresAt],
   );
 }
 
@@ -36,9 +39,13 @@ interface PairingData {
 export function loadPairingData(): PairingData | null {
   const db = getDatabase();
   const row = db
-    .query<{ code: string; created_at: number; expires_at: number; used: number; paired_user_id: number | null }>(
-      "SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1"
-    )
+    .query<{
+      code: string;
+      created_at: number;
+      expires_at: number;
+      used: number;
+      paired_user_id: number | null;
+    }>("SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1")
     .get();
 
   if (!row) return null;
@@ -49,17 +56,18 @@ export function loadPairingData(): PairingData | null {
     expiresAt: row.expires_at,
     used: row.used === 1,
     // normalize to number to handle bigint from sqlite
-    pairedUserId: row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
+    pairedUserId:
+      row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
   };
 }
 
 // mark pairing as used by a specific user
 export function markPaired(userId: number): void {
   const db = getDatabase();
-  db.run("UPDATE pairing SET used = 1, paired_user_id = ? WHERE id = 1", [userId]);
+  db.run("UPDATE pairing SET used = 1, paired_user_id = ? WHERE id = 1", [
+    userId,
+  ]);
 }
-
-
 
 // check if a code is valid
 export function isValidPairingCode(code: string): boolean {
@@ -112,7 +120,9 @@ export async function loadPairingDataAsync(): Promise<PairingData | null> {
     expires_at: number;
     used: number;
     paired_user_id: number | null;
-  }>("SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1");
+  }>(
+    "SELECT code, created_at, expires_at, used, paired_user_id FROM pairing WHERE id = 1",
+  );
 
   if (!row) return null;
 
@@ -122,7 +132,8 @@ export async function loadPairingDataAsync(): Promise<PairingData | null> {
     expiresAt: row.expires_at,
     used: row.used === 1,
     // normalize to number to handle bigint from postgres
-    pairedUserId: row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
+    pairedUserId:
+      row.paired_user_id != null ? Number(row.paired_user_id) : undefined,
   };
 }
 
@@ -133,7 +144,10 @@ export async function markPairedAsync(userId: number): Promise<void> {
     return;
   }
 
-  await asyncDb.run("UPDATE pairing SET used = 1, paired_user_id = $1 WHERE id = 1", [userId]);
+  await asyncDb.run(
+    "UPDATE pairing SET used = 1, paired_user_id = $1 WHERE id = 1",
+    [userId],
+  );
 }
 
 // clear existing pairing when generating a new code
@@ -173,16 +187,19 @@ export async function isSystemPairedAsync(): Promise<boolean> {
   return data.used;
 }
 
-export async function savePairingCodeAsync(code: string, expiresInMinutes: number = 60): Promise<void> {
+export async function savePairingCodeAsync(
+  code: string,
+  expiresInMinutes: number = 60,
+): Promise<void> {
   const asyncDb = getAsyncDatabase();
   if (!asyncDb) {
     savePairingCode(code, expiresInMinutes);
     return;
   }
-  
+
   const now = Date.now();
   const expiresAt = now + expiresInMinutes * 60 * 1000;
-  
+
   await asyncDb.run(
     `INSERT INTO pairing (id, code, created_at, expires_at, used, paired_user_id) 
      VALUES (1, $1, $2, $3, 0, NULL)
@@ -192,6 +209,6 @@ export async function savePairingCodeAsync(code: string, expiresInMinutes: numbe
        expires_at = EXCLUDED.expires_at,
        used = EXCLUDED.used,
        paired_user_id = EXCLUDED.paired_user_id`,
-    [code, now, expiresAt]
+    [code, now, expiresAt],
   );
 }

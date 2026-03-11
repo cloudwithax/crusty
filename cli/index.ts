@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   switch (command) {
     case "setup":
       // dynamically import to avoid loading everything on --help
-      const setup = await import("./setup.ts");
+      await import("./setup.ts");
       break;
 
     case "start":

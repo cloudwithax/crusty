@@ -1,13 +1,11 @@
 import { z } from "zod";
-import { existsSync, unlinkSync, readdirSync, statSync } from "fs";
-import { join, basename } from "path";
+import { existsSync, unlinkSync } from "fs";
+import { join } from "path";
 import { homedir } from "os";
 import {
   discoverHooks,
   getRunningHooks,
   reloadHooks,
-  type Hook,
-  type HookSourceType,
 } from "../scheduler/hooks.ts";
 import {
   saveHook,
@@ -107,9 +105,7 @@ const readHookSchema = z.object({
 
 // schema for updating a hook
 const updateHookSchema = z.object({
-  name: z
-    .string()
-    .describe("the name/id of the existing hook to update"),
+  name: z.string().describe("the name/id of the existing hook to update"),
   description: z
     .string()
     .optional()
@@ -126,10 +122,7 @@ const updateHookSchema = z.object({
     .string()
     .optional()
     .describe("new timezone (omit to keep current)"),
-  days: z
-    .string()
-    .optional()
-    .describe("new days (omit to keep current)"),
+  days: z.string().optional().describe("new days (omit to keep current)"),
   start: z
     .string()
     .optional()
@@ -138,10 +131,7 @@ const updateHookSchema = z.object({
     .string()
     .optional()
     .describe("new end time in 24h format (omit to keep current)"),
-  timeout: z
-    .string()
-    .optional()
-    .describe("new timeout (omit to keep current)"),
+  timeout: z.string().optional().describe("new timeout (omit to keep current)"),
 });
 
 // schema for removing a hook
@@ -436,7 +426,10 @@ async function handleUpdateHook(
         );
       } else {
         // add after name line
-        updated = updated.replace(/^(name:\s*.+)$/m, `$1\ndescription: ${args.description}`);
+        updated = updated.replace(
+          /^(name:\s*.+)$/m,
+          `$1\ndescription: ${args.description}`,
+        );
       }
     }
 
@@ -446,17 +439,29 @@ async function handleUpdateHook(
 
     if (args.timeout !== undefined) {
       if (updated.match(/^timeout:\s*.+$/m)) {
-        updated = updated.replace(/^timeout:\s*.+$/m, `timeout: ${args.timeout}`);
+        updated = updated.replace(
+          /^timeout:\s*.+$/m,
+          `timeout: ${args.timeout}`,
+        );
       } else {
-        updated = updated.replace(/^(every:\s*.+)$/m, `$1\ntimeout: ${args.timeout}`);
+        updated = updated.replace(
+          /^(every:\s*.+)$/m,
+          `$1\ntimeout: ${args.timeout}`,
+        );
       }
     }
 
     if (args.timezone !== undefined) {
       if (updated.match(/^timezone:\s*.+$/m)) {
-        updated = updated.replace(/^timezone:\s*.+$/m, `timezone: ${args.timezone}`);
+        updated = updated.replace(
+          /^timezone:\s*.+$/m,
+          `timezone: ${args.timezone}`,
+        );
       } else {
-        updated = updated.replace(/^---\n/, `---\ntimezone: ${args.timezone}\n`);
+        updated = updated.replace(
+          /^---\n/,
+          `---\ntimezone: ${args.timezone}\n`,
+        );
       }
     }
 

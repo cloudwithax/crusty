@@ -283,10 +283,9 @@ async function searchSqliteVecMemories(
         content: string;
         raw_content: string | null;
         timestamp: number;
-        emotional_weight: number;
         recall_count: number;
       }>(
-        `SELECT id, user_id, content, raw_content, timestamp, emotional_weight, recall_count
+        `SELECT id, user_id, content, raw_content, timestamp, recall_count
          FROM memories WHERE id IN (${placeholders}) AND user_id = ?`,
       )
       .all(...vecRows.map((r) => r.memory_id), userId);
@@ -302,7 +301,6 @@ async function searchSqliteVecMemories(
         // embeddings are l2-normalized so cosine sim ≈ 1 - (l2_dist / 2)
         similarity: Math.max(0, 1 - (distMap.get(row.id) ?? 2) * 0.5),
         timestamp: row.timestamp,
-        emotionalWeight: row.emotional_weight,
         recallCount: row.recall_count,
       }))
       .sort((a, b) => b.similarity - a.similarity)
@@ -351,7 +349,9 @@ async function searchSqliteVecLearnings(
       .query<{
         learning_id: string;
         distance: number;
-      }>(`SELECT learning_id, distance FROM vec_learnings WHERE embedding MATCH ? AND k = ${limit * 4} ORDER BY distance`)
+      }>(
+        `SELECT learning_id, distance FROM vec_learnings WHERE embedding MATCH ? AND k = ${limit * 4} ORDER BY distance`,
+      )
       .all(embJson);
 
     if (vecRows.length === 0) return [];
@@ -534,7 +534,6 @@ export interface EmbeddingSearchResult {
   rawContent?: string;
   similarity: number;
   timestamp: number;
-  emotionalWeight: number;
   recallCount: number;
 }
 
@@ -559,11 +558,10 @@ export async function searchByEmbedding(
         raw_content: string | null;
         similarity: number;
         timestamp: number;
-        emotional_weight: number;
         recall_count: number;
       }>(
         `SELECT 
-          id, user_id, content, raw_content, timestamp, emotional_weight, recall_count,
+          id, user_id, content, raw_content, timestamp, recall_count,
           1 - (embedding <=> $1::vector) as similarity
         FROM memories
         WHERE user_id = $2 AND embedding IS NOT NULL
@@ -580,7 +578,6 @@ export async function searchByEmbedding(
         rawContent: row.raw_content || undefined,
         similarity: row.similarity,
         timestamp: row.timestamp,
-        emotionalWeight: row.emotional_weight,
         recallCount: row.recall_count,
       }));
     } catch (err) {

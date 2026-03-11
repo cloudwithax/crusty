@@ -5,7 +5,6 @@ import {
   discoverSkills,
   getSkillSummaries,
   buildSkillsPromptSection,
-  skillRegistry,
 } from "./skills.ts";
 
 const TEST_SKILLS_DIR = join(process.cwd(), "cogs", "skills");
@@ -117,8 +116,16 @@ describe("skills system", () => {
 
     test("should build xml-formatted skills list", () => {
       const summaries = [
-        { name: "skill-a", description: "does thing a", scope: "project" as const },
-        { name: "skill-b", description: "does thing b", scope: "global" as const },
+        {
+          name: "skill-a",
+          description: "does thing a",
+          scope: "project" as const,
+        },
+        {
+          name: "skill-b",
+          description: "does thing b",
+          scope: "global" as const,
+        },
       ];
 
       const section = buildSkillsPromptSection(summaries);

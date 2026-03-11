@@ -2,19 +2,10 @@
 // indexes conversation sessions for searchable long-term memory
 // enables recall of past conversations via hybrid search
 
-import { getDatabase, getAsyncDatabase, isUsingPostgres } from "../data/db";
+import { getDatabase, isUsingPostgres } from "../data/db";
 import { debug } from "../utils/debug";
 import { createHash } from "crypto";
-import {
-  chunkText,
-  indexChunk,
-  searchBm25,
-  getOrCreateEmbedding,
-  mergeHybridResults,
-  getHybridConfig,
-  type HybridCandidate,
-} from "./hybrid-search";
-import { generateEmbedding, isEmbeddingsAvailable } from "./embeddings";
+import { getHybridConfig } from "./hybrid-search";
 import { estimateTokens } from "../core/context-config";
 
 // session message format
@@ -48,14 +39,6 @@ export interface SessionSearchResult {
   timestamp: number;
   startLine: number;
   endLine: number;
-}
-
-// delta tracking for incremental indexing
-interface SessionDelta {
-  sessionId: string;
-  lastIndexedBytes: number;
-  lastIndexedMessages: number;
-  lastIndexedAt: number;
 }
 
 // delta thresholds before triggering background sync

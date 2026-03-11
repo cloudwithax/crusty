@@ -8,8 +8,6 @@ import { memoryService } from "./service";
 import { saveSession, type SessionMessage } from "./session-memory";
 import {
   getMaxContextTokens,
-  RESERVED_COMPLETION_TOKENS,
-  estimateTotalTokens,
   getSmartTokenCount,
 } from "../core/context-config";
 
@@ -94,7 +92,10 @@ export function shouldTriggerFlush(
 
   const state = getFlushState(userId);
   // prefer actual api usage data when available, fall back to tiktoken
-  const { tokens: currentTokens, source } = getSmartTokenCount(userId, messages);
+  const { tokens: currentTokens, source } = getSmartTokenCount(
+    userId,
+    messages,
+  );
   debug(`[memory-flush] token count: ${currentTokens} (${source})`);
   const contextWindow = getMaxContextTokens();
 

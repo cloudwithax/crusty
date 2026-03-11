@@ -7,7 +7,6 @@ import {
   AgentInterruptedError,
   type AgentCallbacks,
 } from "../core/agent.ts";
-import { cleanupTools } from "../tools/registry.ts";
 import { memoryService } from "../memory/service.ts";
 import { getUserReminders } from "../tools/reminder.ts";
 import { join } from "path";
@@ -204,8 +203,8 @@ const commands: Record<
   string,
   (userId: number, phone: string, args: string) => Promise<void>
 > = {
-  async start(userId, phone) {
-    if (!await isImessageSystemPairedAsync()) {
+  async start(_userId, phone) {
+    if (!(await isImessageSystemPairedAsync())) {
       await sendMessage(
         phone,
         "Pairing Required\n\n" +
@@ -216,7 +215,7 @@ const commands: Record<
       return;
     }
 
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "Already Paired\n\n" +
@@ -240,8 +239,8 @@ const commands: Record<
     );
   },
 
-  async help(userId, phone) {
-    if (!await isImessagePairedAsync(phone)) {
+  async help(_userId, phone) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -273,7 +272,7 @@ const commands: Record<
   },
 
   async clear(userId, phone) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -289,7 +288,7 @@ const commands: Record<
   },
 
   async memory(userId, phone, args) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -308,14 +307,12 @@ const commands: Record<
     const stats = await memoryService.getStats(userId);
     await sendMessage(
       phone,
-      `Memory Stats\n\n` +
-        `total memories: ${stats.total}\n` +
-        `avg emotional weight: ${stats.avgWeight.toFixed(1)}/10`,
+      `Memory Stats\n\n` + `total memories: ${stats.total}`,
     );
   },
 
   async context(userId, phone) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -327,11 +324,12 @@ const commands: Record<
     await agent.initialize();
     const stats = agent.getContextStats();
 
-    const tokenLine = stats.smartTokenCount.source === "tiktoken"
-      ? `tokens: ~${stats.smartTokenCount.tokens} (tiktoken)`
-      : stats.smartTokenCount.source === "actual"
-        ? `tokens: ${stats.smartTokenCount.tokens} (actual)`
-        : `tokens: ~${stats.smartTokenCount.tokens} (actual+delta)`;
+    const tokenLine =
+      stats.smartTokenCount.source === "tiktoken"
+        ? `tokens: ~${stats.smartTokenCount.tokens} (tiktoken)`
+        : stats.smartTokenCount.source === "actual"
+          ? `tokens: ${stats.smartTokenCount.tokens} (actual)`
+          : `tokens: ~${stats.smartTokenCount.tokens} (actual+delta)`;
 
     const usageLine = stats.actualUsage
       ? `\nlast api usage: ${stats.actualUsage.promptTokens} prompt / ${stats.actualUsage.completionTokens} completion`
@@ -348,7 +346,7 @@ const commands: Record<
   },
 
   async soul(userId, phone, args) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -391,7 +389,7 @@ const commands: Record<
   },
 
   async reminders(userId, phone) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -442,7 +440,7 @@ const commands: Record<
   },
 
   async skill(userId, phone, args) {
-    if (!await isImessagePairedAsync(phone)) {
+    if (!(await isImessagePairedAsync(phone))) {
       await sendMessage(
         phone,
         "This bot is not paired with you.\nPlease provide the pairing code first.",
@@ -674,7 +672,7 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   }
 
   // check if this phone is the paired one
-  if (!await isImessagePairedAsync(phone)) {
+  if (!(await isImessagePairedAsync(phone))) {
     await sendMessage(
       phone,
       "Access Denied\n\n" +
@@ -839,8 +837,12 @@ export async function startImessageBot(): Promise<void> {
   }
 
   if (!SENDBLUE_WEBHOOK_SECRET) {
-    console.error("[imessage] CRITICAL: SENDBLUE_WEBHOOK_SECRET is required to secure the webhook endpoint.");
-    console.error("[imessage] Without it, an attacker could spoof messages and gain remote code execution.");
+    console.error(
+      "[imessage] CRITICAL: SENDBLUE_WEBHOOK_SECRET is required to secure the webhook endpoint.",
+    );
+    console.error(
+      "[imessage] Without it, an attacker could spoof messages and gain remote code execution.",
+    );
     process.exit(1);
   }
 

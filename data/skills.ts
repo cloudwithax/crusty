@@ -1,4 +1,4 @@
-import { getDatabase, getAsyncDatabase, isUsingPostgres } from "./db.ts";
+import { getDatabase, getAsyncDatabase } from "./db.ts";
 import { debug } from "../utils/debug.ts";
 
 // database skill record
