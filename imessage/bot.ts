@@ -28,6 +28,14 @@ import { getDatabase } from "../data/db.ts";
 import { debug } from "../utils/debug.ts";
 import { SendBlueClient, type InboundMessage } from "./sendblue.ts";
 import {
+  DEFAULT_CONVERSATION_THREAD_ID,
+  buildImessageThreadId,
+  shouldReuseActiveThread,
+} from "../core/conversation-threading.ts";
+import { conversationStore } from "../core/conversation-store";
+import { conversationThreadStore } from "../core/thread-store.ts";
+import { chooseThreadWithModel } from "../core/thread-router.ts";
+import {
   isImessagePairedAsync,
   isImessageSystemPairedAsync,
   markImessagePairedAsync,
@@ -72,14 +80,17 @@ function truncateMessage(text: string): string {
   return text.slice(0, MAX_MESSAGE_LENGTH - 3) + "...";
 }
 
-// session management - one agent per phone number
-const userSessions = new Map<number, Agent>();
+// session management - one agent per user thread
+const userSessions = new Map<string, Agent>();
 
 // track which users are currently being processed with their abort controllers
 const processingUsers = new Map<number, AbortController>();
 
 // queue for interrupt messages
 const interruptQueue = new Map<number, InboundMessage>();
+
+// force the next non-command message to start a fresh thread
+const forceFreshThreadUsers = new Set<number>();
 
 // track users awaiting soul content input
 const awaitingSoulInput = new Set<number>();
@@ -98,19 +109,106 @@ function getClient(): SendBlueClient {
   return client;
 }
 
-function getOrCreateAgent(userId: number): Agent {
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, new Agent(userId));
-  }
-  return userSessions.get(userId)!;
+function getSessionKey(userId: number, threadId: string): string {
+  return `${userId}:${threadId}`;
 }
 
-async function clearUserSession(userId: number): Promise<void> {
-  const agent = userSessions.get(userId);
-  if (agent) {
-    await agent.clearMemoryAndPersist();
-    userSessions.delete(userId);
+function getOrCreateAgent(userId: number, threadId: string): Agent {
+  const sessionKey = getSessionKey(userId, threadId);
+  if (!userSessions.has(sessionKey)) {
+    userSessions.set(sessionKey, new Agent(userId, { threadId }));
   }
+
+  return userSessions.get(sessionKey)!;
+}
+
+async function clearUserSessions(userId: number): Promise<void> {
+  const prefix = `${userId}:`;
+  for (const [sessionKey, agent] of userSessions) {
+    if (!sessionKey.startsWith(prefix)) {
+      continue;
+    }
+
+    await agent.clearMemoryAndPersist();
+    userSessions.delete(sessionKey);
+  }
+}
+
+async function resetUserThreads(userId: number): Promise<void> {
+  await clearUserSessions(userId);
+  await conversationStore().clearAll(userId);
+  await conversationThreadStore().clearUserThreads("imessage", userId);
+}
+
+async function getActiveThreadId(userId: number): Promise<string> {
+  return (
+    (await conversationThreadStore().getLatestThreadId("imessage", userId)) ||
+    DEFAULT_CONVERSATION_THREAD_ID
+  );
+}
+
+async function getActiveAgent(userId: number): Promise<Agent> {
+  const threadId = await getActiveThreadId(userId);
+  return getOrCreateAgent(userId, threadId);
+}
+
+async function resolveImessageThreadId(
+  userId: number,
+  phone: string,
+  messageHandle: string,
+  messageText: string,
+): Promise<string> {
+  if (forceFreshThreadUsers.delete(userId)) {
+    const forcedThreadId = buildImessageThreadId(phone, messageHandle);
+    await conversationThreadStore().touchThread(
+      "imessage",
+      userId,
+      forcedThreadId,
+    );
+    return forcedThreadId;
+  }
+
+  const latestThread = await conversationThreadStore().getLatestThread(
+    "imessage",
+    userId,
+  );
+  if (messageText.trim()) {
+    const decision = await chooseThreadWithModel(
+      "imessage",
+      userId,
+      messageText,
+    );
+    if (decision.kind === "existing") {
+      await conversationThreadStore().touchThread(
+        "imessage",
+        userId,
+        decision.threadId,
+      );
+      return decision.threadId;
+    }
+    if (decision.kind === "new") {
+      const newThreadId = buildImessageThreadId(phone, messageHandle);
+      await conversationThreadStore().touchThread(
+        "imessage",
+        userId,
+        newThreadId,
+      );
+      return newThreadId;
+    }
+  }
+
+  if (latestThread && shouldReuseActiveThread(latestThread.updatedAt)) {
+    await conversationThreadStore().touchThread(
+      "imessage",
+      userId,
+      latestThread.threadId,
+    );
+    return latestThread.threadId;
+  }
+
+  const threadId = buildImessageThreadId(phone, messageHandle);
+  await conversationThreadStore().touchThread("imessage", userId, threadId);
+  return threadId;
 }
 
 // get the paired phone number for heartbeat/hook messages
@@ -232,8 +330,10 @@ const commands: Record<
         "- Scuttle across websites and dig up information\n" +
         "- Answer questions with fresh data from the web\n" +
         "- Help with research - I love a good treasure hunt\n\n" +
+        "top-level messages stay in the latest active thread while we're actively working. use /new before your next message if you want fresh context.\n\n" +
         "Just send me a message or ask me to visit a website!\n\n" +
         "Available commands:\n" +
+        "/new - Start a fresh thread on your next message\n" +
         "/clear - Clear our conversation history\n" +
         "/help - Show this help message",
     );
@@ -252,6 +352,7 @@ const commands: Record<
       phone,
       "Crusty's Commands\n\n" +
         "/start - Wake up the crab\n" +
+        "/new - Force the next message into a fresh thread\n" +
         "/clear - Clean the shell (clear conversation)\n" +
         "/memory - View memory stats\n" +
         "/memory clear - Wipe long-term memory\n" +
@@ -263,11 +364,28 @@ const commands: Record<
         "/skill <name> - View skill details\n" +
         "/skill <url> - Load skill from URL\n" +
         "/help - Show this message\n\n" +
+        "top-level messages keep using the latest active thread while you're still working. use /new before your next message to force a fresh thread.\n\n" +
         "You can also just chat with me naturally. I can:\n" +
         "- Scuttle across websites and summarize content\n" +
         '- Set reminders (try: "remind me in 10 minutes to...")\n' +
         "- Answer questions with my claws on the keyboard\n" +
         "- Help with research - digging is my specialty",
+    );
+  },
+
+  async new(userId, phone) {
+    if (!(await isImessagePairedAsync(phone))) {
+      await sendMessage(
+        phone,
+        "This bot is not paired with you.\nPlease provide the pairing code first.",
+      );
+      return;
+    }
+
+    forceFreshThreadUsers.add(userId);
+    await sendMessage(
+      phone,
+      "next non-command message will start a fresh thread. your other threads will still be preserved.",
     );
   },
 
@@ -280,7 +398,7 @@ const commands: Record<
       return;
     }
 
-    await clearUserSession(userId);
+    await resetUserThreads(userId);
     await sendMessage(
       phone,
       "Shell cleaned! Starting fresh with a blank tide pool.",
@@ -320,7 +438,7 @@ const commands: Record<
       return;
     }
 
-    const agent = getOrCreateAgent(userId);
+    const agent = await getActiveAgent(userId);
     await agent.initialize();
     const stats = agent.getContextStats();
 
@@ -512,7 +630,7 @@ const commands: Record<
       );
 
       if (added) {
-        await clearUserSession(userId);
+        await resetUserThreads(userId);
         await sendMessage(
           phone,
           `skill "${result.skill!.name}" loaded successfully.\n\n` +
@@ -561,7 +679,7 @@ async function handleSoulInput(
     debug(
       `[soul] updated by imessage user ${userId} (${content.length} chars)`,
     );
-    await clearUserSession(userId);
+    await resetUserThreads(userId);
     await sendMessage(
       phone,
       `done! new soul has been set (${content.length} chars). further messages will use the new persona.`,
@@ -606,7 +724,7 @@ async function handleSkillWizardInput(
 
       if (writeResult.success || dbSaved) {
         await skillRegistry.refresh();
-        await clearUserSession(userId);
+        await resetUserThreads(userId);
         await sendMessage(
           phone,
           `skill "${result.skill.name}" created!\n\nthe agent will now have access to this skill.`,
@@ -707,7 +825,13 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   }
 
   // regular message - process with agent
-  const agent = getOrCreateAgent(userId);
+  const threadId = await resolveImessageThreadId(
+    userId,
+    phone,
+    message.message_handle,
+    text,
+  );
+  const agent = getOrCreateAgent(userId, threadId);
 
   const abortController = new AbortController();
   processingUsers.set(userId, abortController);

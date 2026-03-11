@@ -28,6 +28,7 @@ a telegram ai agent with web browsing, long-term memory, and a modular personali
 
 - web browsing with stealth mode
 - multi-turn agentic conversations with tool execution
+- fresh top-level user messages start new conversation threads by default
 - long-term memory (sqlite or postgres + pgvector)
 - context management with automatic summarization
 - modular personality system via markdown files
@@ -167,6 +168,7 @@ see .env.example for all options.
 - `/start` - show help
 - `/clear` - clear memory and reset conversation
 - `/context` - show context stats
+- replies continue an existing telegram thread while new top-level messages start fresh context
 - `/memory` - show memory stats
 - `/reminders` - list pending reminders
 - `/skill` - manage skills

@@ -57,6 +57,8 @@ const INFERENCE_RPM_LIMIT = parseInt(
   10,
 );
 
+const DEFAULT_CONVERSATION_THREAD_ID = "default";
+
 if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY environment variable is required");
 }
@@ -825,6 +827,7 @@ export class AgentInterruptedError extends Error {
 export class Agent {
   private _messages: ChatCompletionMessageParam[];
   private userId: number;
+  private threadId: string;
   private initialized: boolean = false;
   private contextManager: ContextManager;
   private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -833,8 +836,9 @@ export class Agent {
     return this._messages;
   }
 
-  constructor(userId: number = 0) {
+  constructor(userId: number = 0, options?: { threadId?: string }) {
     this.userId = userId;
+    this.threadId = options?.threadId || DEFAULT_CONVERSATION_THREAD_ID;
     this._messages = [];
     this.contextManager = new ContextManager();
   }
@@ -843,7 +847,7 @@ export class Agent {
     if (this.initialized) return;
 
     const systemPrompt = await getSystemPrompt();
-    const stored = await conversationStore().load(this.userId);
+    const stored = await conversationStore().load(this.userId, this.threadId);
 
     if (stored && stored.messages.length > 0) {
       debug(`[agent] restored ${stored.messages.length} messages`);
@@ -881,6 +885,7 @@ export class Agent {
     }
     await conversationStore().save(
       this.userId,
+      this.threadId,
       this._messages,
       this.contextManager.summary,
     );
@@ -1539,7 +1544,7 @@ export class Agent {
 
   async clearMemoryAndPersist(): Promise<void> {
     this.clearMemory();
-    await conversationStore().clear(this.userId);
+    await conversationStore().clear(this.userId, this.threadId);
   }
 
   async cleanup(): Promise<void> {

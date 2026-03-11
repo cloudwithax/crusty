@@ -44,6 +44,15 @@ import {
   getRecentSessions,
   getSessionStats,
 } from "../memory/session-memory.ts";
+import {
+  DEFAULT_CONVERSATION_THREAD_ID,
+  buildTelegramMessageReference,
+  buildTelegramThreadId,
+  shouldReuseActiveThread,
+} from "../core/conversation-threading.ts";
+import { conversationStore } from "../core/conversation-store";
+import { conversationThreadStore } from "../core/thread-store.ts";
+import { chooseThreadWithModel } from "../core/thread-router.ts";
 
 // Environment configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -102,14 +111,17 @@ interface TelegramMessageEntity {
   length: number;
 }
 
-// Session management - one agent per user (only for paired users)
-const userSessions = new Map<number, Agent>();
+// session management - one agent per user thread
+const userSessions = new Map<string, Agent>();
 
 // track which users are currently being processed with their abort controllers
 const processingUsers = new Map<number, AbortController>();
 
 // queue for interrupt messages (new message while processing)
 const interruptQueue = new Map<number, TelegramMessage>();
+
+// force the next non-command message to start a fresh thread
+const forceFreshThreadUsers = new Set<number>();
 
 // track users awaiting soul content input
 const awaitingSoulInput = new Set<number>();
@@ -131,19 +143,149 @@ export async function getPairedUserIdAsync(): Promise<number | null> {
   return null;
 }
 
-function getOrCreateAgent(userId: number): Agent {
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, new Agent(userId));
-  }
-  return userSessions.get(userId)!;
+function getSessionKey(userId: number, threadId: string): string {
+  return `${userId}:${threadId}`;
 }
 
-async function clearUserSession(userId: number): Promise<void> {
-  const agent = userSessions.get(userId);
-  if (agent) {
-    await agent.clearMemoryAndPersist();
-    userSessions.delete(userId);
+function getOrCreateAgent(userId: number, threadId: string): Agent {
+  const sessionKey = getSessionKey(userId, threadId);
+  if (!userSessions.has(sessionKey)) {
+    userSessions.set(sessionKey, new Agent(userId, { threadId }));
   }
+
+  return userSessions.get(sessionKey)!;
+}
+
+async function clearUserSessions(userId: number): Promise<void> {
+  const prefix = `${userId}:`;
+  for (const [sessionKey, agent] of userSessions) {
+    if (!sessionKey.startsWith(prefix)) {
+      continue;
+    }
+
+    await agent.clearMemoryAndPersist();
+    userSessions.delete(sessionKey);
+  }
+}
+
+async function resetUserThreads(userId: number): Promise<void> {
+  await clearUserSessions(userId);
+  await conversationStore().clearAll(userId);
+  await conversationThreadStore().clearUserThreads("telegram", userId);
+}
+
+async function getActiveThreadId(userId: number): Promise<string> {
+  return (
+    (await conversationThreadStore().getLatestThreadId("telegram", userId)) ||
+    DEFAULT_CONVERSATION_THREAD_ID
+  );
+}
+
+async function getActiveAgent(userId: number): Promise<Agent> {
+  const threadId = await getActiveThreadId(userId);
+  return getOrCreateAgent(userId, threadId);
+}
+
+async function resolveTelegramThreadId(
+  userId: number,
+  message: TelegramMessage,
+): Promise<string> {
+  if (forceFreshThreadUsers.delete(userId)) {
+    const forcedThreadId = buildTelegramThreadId(
+      message.chat.id,
+      message.message_id,
+    );
+    await conversationThreadStore().touchThread(
+      "telegram",
+      userId,
+      forcedThreadId,
+    );
+    return forcedThreadId;
+  }
+
+  if (message.reply_to_message?.from?.is_bot) {
+    const replyReference = buildTelegramMessageReference(
+      message.reply_to_message.chat.id,
+      message.reply_to_message.message_id,
+    );
+    const existingThreadId =
+      await conversationThreadStore().resolveMessageReference(
+        "telegram",
+        userId,
+        replyReference,
+      );
+
+    if (existingThreadId) {
+      await conversationThreadStore().touchThread(
+        "telegram",
+        userId,
+        existingThreadId,
+      );
+      return existingThreadId;
+    }
+  }
+
+  if (message.text?.trim()) {
+    const decision = await chooseThreadWithModel(
+      "telegram",
+      userId,
+      message.text,
+    );
+    if (decision.kind === "existing") {
+      await conversationThreadStore().touchThread(
+        "telegram",
+        userId,
+        decision.threadId,
+      );
+      return decision.threadId;
+    }
+    if (decision.kind === "new") {
+      const newThreadId = buildTelegramThreadId(
+        message.chat.id,
+        message.message_id,
+      );
+      await conversationThreadStore().touchThread(
+        "telegram",
+        userId,
+        newThreadId,
+      );
+      return newThreadId;
+    }
+  }
+
+  const latestThread = await conversationThreadStore().getLatestThread(
+    "telegram",
+    userId,
+  );
+  if (latestThread && shouldReuseActiveThread(latestThread.updatedAt)) {
+    await conversationThreadStore().touchThread(
+      "telegram",
+      userId,
+      latestThread.threadId,
+    );
+    return latestThread.threadId;
+  }
+
+  const threadId = buildTelegramThreadId(message.chat.id, message.message_id);
+  await conversationThreadStore().touchThread("telegram", userId, threadId);
+  return threadId;
+}
+
+async function bindTelegramBotMessage(
+  userId: number,
+  threadId: string,
+  message: TelegramMessage | null,
+): Promise<void> {
+  if (!message) {
+    return;
+  }
+
+  await conversationThreadStore().bindMessageReference(
+    "telegram",
+    userId,
+    buildTelegramMessageReference(message.chat.id, message.message_id),
+    threadId,
+  );
 }
 
 // Telegram API helpers
@@ -293,6 +435,7 @@ const commands: Record<
         "• Scuttle across websites and dig up information\n" +
         "• Answer questions with fresh data from the web\n" +
         "• Help with research - I love a good treasure hunt\n\n" +
+        "top-level messages stay in the latest active thread while we're still working. reply to one of my messages to jump back to that exact thread, or use /new before your next message to start clean.\n\n" +
         "Just send me a message or ask me to visit a website!\n\n" +
         "Type /help for all available commands.",
       { message_thread_id: messageThreadId },
@@ -315,6 +458,7 @@ const commands: Record<
       "*Crusty's Commands*\n\n" +
         "*general:*\n" +
         "/start - Wake up the crab\n" +
+        "/new - Force the next message into a fresh thread\n" +
         "/clear - Clean the shell (clear conversation)\n" +
         "/model - View or change the AI model\n" +
         "/context - View context window stats\n" +
@@ -336,7 +480,27 @@ const commands: Record<
         "*system:*\n" +
         "/hooks - View running hooks\n" +
         "/heartbeat - View heartbeat config\n" +
-        "/export - Export memories, learnings, or conversation",
+        "/export - Export memories, learnings, or conversation\n\n" +
+        "top-level messages keep using the latest active thread while you're still working. reply to one of my messages to jump back to that exact thread. use /new to force a fresh thread.",
+      { message_thread_id: messageThreadId },
+    );
+  },
+
+  async new(userId, chatId, messageThreadId) {
+    if (!(await isUserPairedAsync(userId))) {
+      await sendMessage(
+        chatId,
+        "🔐 This bot is not paired with you.\n" +
+          "Please provide the pairing code first.",
+        { message_thread_id: messageThreadId },
+      );
+      return;
+    }
+
+    forceFreshThreadUsers.add(userId);
+    await sendMessage(
+      chatId,
+      "next non-command message will start a fresh thread. your existing threads are still preserved if you reply to them later.",
       { message_thread_id: messageThreadId },
     );
   },
@@ -352,7 +516,7 @@ const commands: Record<
       return;
     }
 
-    await clearUserSession(userId);
+    await resetUserThreads(userId);
     await sendMessage(
       chatId,
       "Shell cleaned! Starting fresh with a blank tide pool.",
@@ -401,7 +565,7 @@ const commands: Record<
       return;
     }
 
-    const agent = getOrCreateAgent(userId);
+    const agent = await getActiveAgent(userId);
     await agent.initialize();
     const stats = agent.getContextStats();
 
@@ -632,7 +796,7 @@ const commands: Record<
 
       if (added) {
         // clear session so agent picks up new skill on next message
-        await clearUserSession(userId);
+        await resetUserThreads(userId);
 
         await sendMessage(
           chatId,
@@ -1111,7 +1275,7 @@ const commands: Record<
     }
 
     if (arg === "conversation") {
-      const agent = getOrCreateAgent(userId);
+      const agent = await getActiveAgent(userId);
       await agent.initialize();
       const messages = agent.messages;
 
@@ -1249,7 +1413,7 @@ async function switchModel(
     await initializeContextLimits(modelId);
 
     // clear session so agent picks up new model context limits
-    await clearUserSession(userId);
+    await resetUserThreads(userId);
 
     await sendMessage(
       chatId,
@@ -1315,7 +1479,7 @@ async function handleSoulInput(
     debug(`[soul] updated by user ${userId} (${content.length} chars)`);
 
     // clear session so agent picks up new soul on next message
-    await clearUserSession(userId);
+    await resetUserThreads(userId);
 
     await sendMessage(
       chatId,
@@ -1375,7 +1539,7 @@ async function handleSkillWizardInput(
         await skillRegistry.refresh();
 
         // clear session so agent picks up new skill on next message
-        await clearUserSession(userId);
+        await resetUserThreads(userId);
 
         await sendMessage(
           chatId,
@@ -1485,7 +1649,8 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   }
 
   // Regular message - process with agent
-  const agent = getOrCreateAgent(userId);
+  const threadId = await resolveTelegramThreadId(userId, message);
+  const agent = getOrCreateAgent(userId, threadId);
 
   // check if this is a reply to an assistant message
   let replyContext: string | undefined;
@@ -1519,9 +1684,10 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   // callbacks for the agent
   const callbacks: AgentCallbacks = {
     onPlanReady: async (intent: string) => {
-      await sendMessage(chatId, intent, {
+      const sentMessage = await sendMessage(chatId, intent, {
         message_thread_id: messageThreadId,
       });
+      await bindTelegramBotMessage(userId, threadId, sentMessage);
       await sendChatAction(chatId, "typing", {
         message_thread_id: messageThreadId,
       });
@@ -1548,7 +1714,10 @@ async function processMessage(message: TelegramMessage): Promise<void> {
       return;
     }
 
-    await sendMessage(chatId, response, { message_thread_id: messageThreadId });
+    const sentMessage = await sendMessage(chatId, response, {
+      message_thread_id: messageThreadId,
+    });
+    await bindTelegramBotMessage(userId, threadId, sentMessage);
   } catch (error) {
     clearInterval(typingInterval);
     processingUsers.delete(userId);
@@ -1567,11 +1736,12 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     }
 
     console.error("Error processing message:", error);
-    await sendMessage(
+    const sentMessage = await sendMessage(
       chatId,
       "Sorry, I encountered an error processing your message. Please try again.",
       { message_thread_id: messageThreadId },
     );
+    await bindTelegramBotMessage(userId, threadId, sentMessage);
   }
 }
 
@@ -1634,6 +1804,7 @@ export async function startBot(): Promise<void> {
   await makeRequest("setMyCommands", {
     commands: [
       { command: "start", description: "Start the bot" },
+      { command: "new", description: "Start a fresh thread on next message" },
       { command: "clear", description: "Clear conversation history" },
       { command: "model", description: "View or change the AI model" },
       { command: "reminders", description: "View pending reminders" },
