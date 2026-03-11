@@ -115,7 +115,8 @@ export class ContextManager {
   // check if summarization is needed and perform it if so
   // returns true if summarization occurred
   async maybeSummarize(
-    messages: ChatCompletionMessageParam[]
+    messages: ChatCompletionMessageParam[],
+    force: boolean = false
   ): Promise<{ summarized: boolean; messagesToDrop: number }> {
     // skip if too few messages
     if (messages.length < MIN_RECENT_MESSAGES * 2) {
@@ -129,7 +130,7 @@ export class ContextManager {
     const totalTokens = estimateTotalTokens(messages);
 
     const triggerTokens = getSummarizeTriggerTokens();
-    if (totalTokens < triggerTokens) {
+    if (!force && totalTokens < triggerTokens) {
       return { summarized: false, messagesToDrop: 0 };
     }
 

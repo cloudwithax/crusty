@@ -1,4 +1,5 @@
 import { OpenAI } from "openai";
+import { nativeChatCompletion } from "./api.ts";
 import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
@@ -148,6 +149,31 @@ function stripEmojis(text: string): string {
 // combined cleanup for model responses
 function cleanModelResponse(text: string): string {
   return stripEmojis(stripReasoningTags(stripProviderArtifacts(text)));
+}
+
+// normalize message.content which may be a string, null, or an array of content parts
+// some providers (nvidia nim, etc) return structured content arrays instead of plain strings
+function normalizeContent(content: unknown): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (part: any) =>
+          part && typeof part === "object" && part.type === "text" && part.text,
+      )
+      .map((part: any) => part.text)
+      .join("");
+  }
+  // single content-part object
+  if (
+    typeof content === "object" &&
+    (content as any).type === "text" &&
+    (content as any).text
+  ) {
+    return (content as any).text;
+  }
+  return String(content);
 }
 
 // ─── Universal provider tool-call text format parser ──────────────────────
@@ -1005,6 +1031,71 @@ export class Agent {
       }
     }
 
+    // OUTER RUN LOOP
+    const maxRunAttempts = 3;
+    let runAttempt = 0;
+    
+    while (runAttempt < maxRunAttempts) {
+      try {
+        const combinedContext = [memoryContext, learningContext].filter(Boolean).join("\n\n") || undefined;
+        return await this.executeAttempt(combinedContext, taskPlan, userMessage, callbacks);
+      } catch (error: any) {
+        if (this.isContextOverflowError(error)) {
+          debug(`[agent] Caught context overflow, summarizing and retrying attempt (${runAttempt + 1}/${maxRunAttempts})`);
+          this.truncateOversizedToolResults();
+          const { summarized, messagesToDrop } = await this.contextManager.maybeSummarize(this._messages, true);
+          if (summarized && messagesToDrop > 0) {
+            this._messages = this.contextManager.pruneMessages(this._messages, messagesToDrop);
+          }
+          runAttempt++;
+          if (runAttempt >= maxRunAttempts) {
+             throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
+    }
+    
+    return "i couldn't complete that request. please try again.";
+  }
+
+  private isContextOverflowError(error: any): boolean {
+    if (!error) return false;
+    const msg = error.message?.toLowerCase() || String(error).toLowerCase();
+    return msg.includes("context_length_exceeded") ||
+           msg.includes("maximum context length") ||
+           msg.includes("too many tokens") ||
+           msg.includes("context window");
+  }
+
+  private truncateOversizedToolResults(): void {
+    let truncated = false;
+    for (const msg of this._messages) {
+      if (msg.role === "tool" && typeof msg.content === "string" && msg.content.length > 50000) {
+        msg.content = msg.content.substring(0, 50000) + "\n...[truncated due to length]...";
+        truncated = true;
+      }
+    }
+    if (truncated) {
+      debug("[agent] Truncated oversized tool results to help with context overflow");
+    }
+  }
+
+  private async executeAttempt(
+    combinedContext: string | undefined,
+    taskPlan: TaskPlan | null,
+    userMessage: string,
+    callbacks?: AgentCallbacks
+  ): Promise<string> {
+
+    // helper to check if we should abort
+    const checkAbort = () => {
+      if (callbacks?.abortSignal?.aborted) {
+        debug(`[agent] interrupted by user`);
+        throw new AgentInterruptedError();
+      }
+    };
     const tools = getOpenAITools();
     let lastTextResponse = "";
     let toolIterationCount = 0;
@@ -1037,9 +1128,6 @@ export class Agent {
 
       // build messages with context window management
       // combine memory and learning contexts
-      const combinedContext =
-        [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
-        undefined;
       const messagesForModel = this.contextManager.buildMessagesForModel(
         this._messages,
         combinedContext,
@@ -1088,13 +1176,13 @@ export class Agent {
         // api call with automatic retry for transient errors
         response = await withRetry(
           () =>
-            openai.chat.completions.create({
+            nativeChatCompletion({
               model: getCurrentModel(),
               messages: validMessages,
               tools: tools.length > 0 ? tools : undefined,
               tool_choice: tools.length > 0 ? "auto" : undefined,
-            }),
-          { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 },
+            }, callbacks?.abortSignal),
+          { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 }
         );
       } catch (apiError) {
         // extract detailed error info from openai sdk
@@ -1139,7 +1227,7 @@ export class Agent {
       }
 
       const message = choice.message;
-      let content = message.content || "";
+      let content = normalizeContent(message.content);
       let toolCalls = message.tool_calls || [];
 
       // some providers embed tool calls as plain text rather than the structured
