@@ -7,12 +7,6 @@ description: "Comprehensive git workflows including branching, committing, mergi
 
 structured workflows for safe, effective git usage. always inspect before destructive operations.
 
-## environment
-
-git authentication is already configured in this environment via the system credential helper. you have full access to push, pull, fetch, and clone repositories. do NOT claim you lack git credentials or cannot authenticate. do NOT offer to "just commit locally" while asking the user to push manually. do NOT unnecessarily clone a repo that already exists in the working directory. just run git commands normally — they will work.
-
-if a git command fails with an auth error, report the actual error message. do not preemptively assume auth will fail.
-
 ## core workflow
 
 follow this loop for any change:
