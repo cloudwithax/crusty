@@ -1,12 +1,21 @@
 import { describe, it, expect } from "bun:test";
-import { executeTool } from "./registry.ts";
+import { executeTool, ensureNonEmptyToolResult } from "./registry.ts";
 
 describe("executeTool - malformed args recovery", () => {
   it("recovers command from assistant text when args have garbage command", async () => {
     // garbage command with valid timeout/workdir
-    const args = JSON.stringify({ command: ",", timeout: "15000", workdir: "/app" });
+    const args = JSON.stringify({
+      command: ",",
+      timeout: "15000",
+      workdir: "/app",
+    });
 
-    const result = await executeTool("bash_execute", args, 0, "let me run: echo test123");
+    const result = await executeTool(
+      "bash_execute",
+      args,
+      0,
+      "let me run: echo test123",
+    );
 
     // should execute the recovered command successfully
     expect(result).toContain("test123");
@@ -50,7 +59,12 @@ describe("executeTool - malformed args recovery", () => {
   it("handles command with only punctuation", async () => {
     const args = JSON.stringify({ command: ":", timeout: "15000" });
 
-    const result = await executeTool("bash_execute", args, 0, "execute: echo hello");
+    const result = await executeTool(
+      "bash_execute",
+      args,
+      0,
+      "execute: echo hello",
+    );
 
     expect(result).toContain("hello");
     expect(result).toContain("exit code: 0");
@@ -71,7 +85,12 @@ describe("executeTool - malformed args recovery", () => {
   it("handles empty command string with assistant recovery", async () => {
     const args = JSON.stringify({ command: "" });
 
-    const result = await executeTool("bash_execute", args, 0, "let's see: whoami");
+    const result = await executeTool(
+      "bash_execute",
+      args,
+      0,
+      "let's see: whoami",
+    );
 
     // should execute whoami successfully
     expect(result).toContain("exit code: 0");
@@ -81,7 +100,12 @@ describe("executeTool - malformed args recovery", () => {
   it("validates that recovered command is actually valid", async () => {
     const args = JSON.stringify({ command: "!!" });
 
-    const result = await executeTool("bash_execute", args, 0, "no command here");
+    const result = await executeTool(
+      "bash_execute",
+      args,
+      0,
+      "no command here",
+    );
 
     // should fail gracefully with a clear message
     expect(result).toContain("error:");
@@ -108,5 +132,13 @@ describe("executeTool - malformed args recovery", () => {
     // sanitization should strip the https:// prefix
     expect(result).toContain("hello");
     expect(result).toContain("exit code: 0");
+  });
+
+  it("forces a non-empty result when a tool handler returns blank content", () => {
+    const result = ensureNonEmptyToolResult("heartbeat_read", "   ");
+
+    expect(result.trim().length).toBeGreaterThan(0);
+    expect(result).toContain("[No output]");
+    expect(result).toContain("heartbeat_read");
   });
 });

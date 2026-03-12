@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
+import { getDefaultWorkspace } from "../core/workspace.ts";
 import { debug } from "../utils/debug.ts";
 
 // minimal filesystem tools
@@ -89,7 +90,10 @@ async function edit(args: z.infer<typeof EditSchema>): Promise<string> {
 // glob - find files by pattern, sorted by mtime
 const GlobSchema = z.object({
   pat: z.string().describe("glob pattern like **/*.ts"),
-  path: z.string().optional().describe("base directory (default: cwd)"),
+  path: z
+    .string()
+    .optional()
+    .describe("base directory (default: agent workspace)"),
 });
 
 function walkDir(
@@ -132,7 +136,7 @@ function globPatternToRegex(pattern: string): RegExp {
 
 async function glob(args: z.infer<typeof GlobSchema>): Promise<string> {
   try {
-    const basePath = args.path || process.cwd();
+    const basePath = args.path || getDefaultWorkspace();
     const pattern = globPatternToRegex(args.pat.split("/").pop() || "*");
     const results: { path: string; mtime: number }[] = [];
 
@@ -156,7 +160,7 @@ const GrepSchema = z.object({
   path: z
     .string()
     .optional()
-    .describe("file or directory to search (default: cwd)"),
+    .describe("file or directory to search (default: agent workspace)"),
 });
 
 function grepFile(filePath: string, pattern: RegExp): string[] {
@@ -225,7 +229,7 @@ function grepDir(dir: string, pattern: RegExp, results: string[]): void {
 async function grep(args: z.infer<typeof GrepSchema>): Promise<string> {
   try {
     const pattern = new RegExp(args.pat, "i");
-    const target = args.path || process.cwd();
+    const target = args.path || getDefaultWorkspace();
     const results: string[] = [];
 
     const stat = statSync(target);

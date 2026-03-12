@@ -25,6 +25,30 @@ type ToolDefinition = {
   handler: (args: any, userId: number) => Promise<string>;
 };
 
+export function ensureNonEmptyToolResult(
+  name: string,
+  result: unknown,
+): string {
+  if (typeof result === "string") {
+    if (result.trim()) {
+      return result;
+    }
+
+    return `[No output] ${name} completed but returned no content. summarize the outcome from surrounding context or continue with the next step.`;
+  }
+
+  if (result === undefined || result === null) {
+    return `[No output] ${name} completed but returned no content. summarize the outcome from surrounding context or continue with the next step.`;
+  }
+
+  const serialized = String(result).trim();
+  if (serialized) {
+    return serialized;
+  }
+
+  return `[No output] ${name} completed but returned no content. summarize the outcome from surrounding context or continue with the next step.`;
+}
+
 // iteration extension tool - handled specially in agent.ts but needs to be in the schema
 const iterationTools: Record<string, ToolDefinition> = {
   request_more_iterations: {
@@ -626,7 +650,8 @@ received: ${args.slice(0, 150)}${args.length > 150 ? "..." : ""}`;
 
   try {
     const validated = tool.schema.parse(parsed);
-    return await tool.handler(validated, userId);
+    const result = await tool.handler(validated, userId);
+    return ensureNonEmptyToolResult(name, result);
   } catch (err) {
     // provide clearer errors for common tools
     const errMsg = err instanceof Error ? err.message : String(err);

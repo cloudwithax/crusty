@@ -30,11 +30,10 @@ import { SendBlueClient, type InboundMessage } from "./sendblue.ts";
 import {
   DEFAULT_CONVERSATION_THREAD_ID,
   buildImessageThreadId,
-  shouldReuseActiveThread,
 } from "../core/conversation-threading.ts";
 import { conversationStore } from "../core/conversation-store";
 import { conversationThreadStore } from "../core/thread-store.ts";
-import { chooseThreadWithModel } from "../core/thread-router.ts";
+import { chooseThread } from "../core/thread-router.ts";
 import {
   isImessagePairedAsync,
   isImessageSystemPairedAsync,
@@ -168,16 +167,8 @@ async function resolveImessageThreadId(
     return forcedThreadId;
   }
 
-  const latestThread = await conversationThreadStore().getLatestThread(
-    "imessage",
-    userId,
-  );
   if (messageText.trim()) {
-    const decision = await chooseThreadWithModel(
-      "imessage",
-      userId,
-      messageText,
-    );
+    const decision = await chooseThread("imessage", userId);
     if (decision.kind === "existing") {
       await conversationThreadStore().touchThread(
         "imessage",
@@ -186,24 +177,6 @@ async function resolveImessageThreadId(
       );
       return decision.threadId;
     }
-    if (decision.kind === "new") {
-      const newThreadId = buildImessageThreadId(phone, messageHandle);
-      await conversationThreadStore().touchThread(
-        "imessage",
-        userId,
-        newThreadId,
-      );
-      return newThreadId;
-    }
-  }
-
-  if (latestThread && shouldReuseActiveThread(latestThread.updatedAt)) {
-    await conversationThreadStore().touchThread(
-      "imessage",
-      userId,
-      latestThread.threadId,
-    );
-    return latestThread.threadId;
   }
 
   const threadId = buildImessageThreadId(phone, messageHandle);

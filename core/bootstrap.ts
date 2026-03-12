@@ -1,6 +1,7 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import { skillRegistry } from "./skills.ts";
+import { getDefaultWorkspace } from "./workspace.ts";
 
 // configuration interface
 export interface BootstrapConfig {
@@ -59,14 +60,12 @@ export function loadConfig(): BootstrapConfig {
     10,
   );
 
-  const soulEvilEnabled =
-    process.env.AGENTS_SOUL_EVIL_ENABLED === "true";
+  const soulEvilEnabled = process.env.AGENTS_SOUL_EVIL_ENABLED === "true";
   const soulEvilChance = parseFloat(
     process.env.AGENTS_SOUL_EVIL_CHANCE || String(DEFAULT_SOUL_EVIL_CHANCE),
   );
   const soulEvilWindowStart =
-    process.env.AGENTS_SOUL_EVIL_WINDOW_START ||
-    DEFAULT_SOUL_EVIL_WINDOW_START;
+    process.env.AGENTS_SOUL_EVIL_WINDOW_START || DEFAULT_SOUL_EVIL_WINDOW_START;
   const soulEvilWindowEnd =
     process.env.AGENTS_SOUL_EVIL_WINDOW_END || DEFAULT_SOUL_EVIL_WINDOW_END;
   const soulEvilTimezone =
@@ -77,7 +76,9 @@ export function loadConfig(): BootstrapConfig {
     hooks: {
       soulEvil: {
         enabled: soulEvilEnabled,
-        chance: isNaN(soulEvilChance) ? DEFAULT_SOUL_EVIL_CHANCE : soulEvilChance,
+        chance: isNaN(soulEvilChance)
+          ? DEFAULT_SOUL_EVIL_CHANCE
+          : soulEvilChance,
         window: {
           start: soulEvilWindowStart,
           end: soulEvilWindowEnd,
@@ -95,7 +96,8 @@ export function getBootstrapFiles(): BootstrapFile[] {
 
   return BOOTSTRAP_FILE_ORDER.map((name) => {
     // soul.md, heartbeat.md, and identity.md live in cogs directory
-    const isCogFile = name === "SOUL.md" || name === "HEARTBEAT.md" || name === "IDENTITY.md";
+    const isCogFile =
+      name === "SOUL.md" || name === "HEARTBEAT.md" || name === "IDENTITY.md";
     const filePath = isCogFile ? join(cogsDir, name) : join(baseDir, name);
 
     return {
@@ -145,12 +147,25 @@ function substituteTemplateVars(content: string): string {
   const timezone = process.env.HEARTBEAT_TIMEZONE || "America/New_York";
 
   const replacements: Record<string, string> = {
-    "{{CURRENT_TIME}}": now.toLocaleTimeString("en-US", { hour12: true, timeZone: timezone }),
-    "{{CURRENT_DATE}}": now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: timezone }),
-    "{{CURRENT_DATETIME}}": now.toLocaleString("en-US", { dateStyle: "full", timeStyle: "short", timeZone: timezone }),
+    "{{CURRENT_TIME}}": now.toLocaleTimeString("en-US", {
+      hour12: true,
+      timeZone: timezone,
+    }),
+    "{{CURRENT_DATE}}": now.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: timezone,
+    }),
+    "{{CURRENT_DATETIME}}": now.toLocaleString("en-US", {
+      dateStyle: "full",
+      timeStyle: "short",
+      timeZone: timezone,
+    }),
     "{{CURRENT_TIMESTAMP}}": now.toISOString(),
     "{{TIMEZONE}}": timezone,
-    "{{WORKING_DIR}}": process.cwd(),
+    "{{WORKING_DIR}}": getDefaultWorkspace(),
   };
 
   let result = content;
@@ -397,7 +412,11 @@ export async function loadBootstrapSystem(
   const skillsSection = skillRegistry.getPromptSection();
 
   // build final system prompt
-  const prompt = buildSystemPrompt(coreInstructions, processedFiles, skillsSection);
+  const prompt = buildSystemPrompt(
+    coreInstructions,
+    processedFiles,
+    skillsSection,
+  );
 
   return { prompt, results: processedFiles };
 }

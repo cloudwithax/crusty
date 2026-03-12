@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { spawn } from "child_process";
 import { accessSync, constants, existsSync } from "fs";
+import { getDefaultWorkspace } from "../core/workspace.ts";
 import { debug } from "../utils/debug.ts";
 
 // enable shell access in docker, or locally on linux if explicitly allowed
@@ -17,7 +18,7 @@ const BLOCKED_PATTERNS = [
   /\bsu\b/i,
   /\bdoas\b/i,
   /\bpkexec\b/i,
-  
+
   // destructive filesystem ops
   /\brm\s+(-[a-z]*)?.*(\s+\/|\s+~|\s+\.\.)/, // rm with root/home/parent paths
   /\brm\s+-[a-z]*r[a-z]*f/i, // rm -rf variants
@@ -26,7 +27,7 @@ const BLOCKED_PATTERNS = [
   /\bdd\s+.*of\s*=\s*\/dev/i, // dd to devices
   /\bshred\b/i,
   /\bwipe\b/i,
-  
+
   // system control
   /\breboot\b/i,
   /\bshutdown\b/i,
@@ -34,23 +35,23 @@ const BLOCKED_PATTERNS = [
   /\bhalt\b/i,
   /\binit\s+[0-6]/i,
   /\bsystemctl\s+(reboot|poweroff|halt)/i,
-  
+
   // dangerous system modifications
   /\bchmod\s+.*777/i,
   /\bchown\s+.*\//i, // chown on root paths
   /\b>\s*\/dev\/sd[a-z]/i, // writing to block devices
   /\b>\s*\/etc\//i, // overwriting etc files
   /\b>\s*\/boot\//i, // overwriting boot files
-  
+
   // network/firewall manipulation
   /\biptables\s+-F/i, // flush iptables
   /\bufw\s+disable/i,
-  
+
   // package manager with remove
   /\bapt\s+.*remove/i,
   /\bapt-get\s+.*remove/i,
   /\bdpkg\s+--purge/i,
-  
+
   // fork bombs and resource exhaustion
   /:\(\)\s*{\s*:\|:\s*&\s*}\s*;?\s*:/,
   /\bfork\s*\(\)/i,
@@ -67,14 +68,16 @@ function isCommandBlocked(command: string): string | null {
 
 const BashExecuteSchema = z.object({
   command: z.string().describe("The bash command to execute"),
-  timeout: z
-    .coerce.number()
+  timeout: z.coerce
+    .number()
     .optional()
     .describe("Timeout in milliseconds (default: 30000, max: 120000)"),
   workdir: z
     .string()
     .optional()
-    .describe("Working directory for command execution (default: /app)"),
+    .describe(
+      "Working directory for command execution (default: agent workspace)",
+    ),
 });
 
 interface CommandResult {
@@ -113,12 +116,12 @@ function isExecutableFile(path: string): boolean {
 export async function executeCommand(
   command: string,
   timeout: number = 30000,
-  workdir: string = "/app"
+  workdir: string = getDefaultWorkspace(),
 ): Promise<CommandResult> {
   const maxTimeout = 120000;
   const actualTimeout = Math.min(timeout, maxTimeout);
 
-  const actualWorkdir = existsSync(workdir) ? workdir : process.cwd();
+  const actualWorkdir = existsSync(workdir) ? workdir : getDefaultWorkspace();
 
   const candidates = getShellCandidates().filter((candidate) => {
     if (candidate.startsWith("/")) return isExecutableFile(candidate);
@@ -126,7 +129,7 @@ export async function executeCommand(
   });
 
   const executeWithShell = async (
-    shell: string
+    shell: string,
   ): Promise<{ result: CommandResult; missingShell: boolean }> => {
     return await new Promise((resolve) => {
       const proc = spawn(shell, ["-c", command], {
@@ -233,11 +236,14 @@ WRONG (do not do this):
 PARAMETERS:
 - command (required): The full bash command as a string
 - timeout (optional): Max ms, default 30000
-- workdir (optional): Directory, default /app
+- workdir (optional): Directory, default agent workspace
 
 BLOCKED: sudo, rm -rf, reboot, shutdown`,
     schema: BashExecuteSchema,
-    handler: async (args: z.infer<typeof BashExecuteSchema>, _userId: number) => {
+    handler: async (
+      args: z.infer<typeof BashExecuteSchema>,
+      _userId: number,
+    ) => {
       if (!DOCKER_ENV) {
         return "[Error] bash_execute is only available when shell access is enabled.";
       }
@@ -250,7 +256,7 @@ BLOCKED: sudo, rm -rf, reboot, shutdown`,
       const result = await executeCommand(
         args.command,
         args.timeout ?? 30000,
-        args.workdir ?? "/app"
+        args.workdir ?? getDefaultWorkspace(),
       );
 
       if (result.timedOut) {
@@ -296,21 +302,26 @@ EXAMPLES:
       path: z
         .string()
         .describe(
-          "Absolute path to the file to read, e.g. /app/package.json or /app/src/index.ts"
+          "Absolute path to the file to read, e.g. /app/package.json or /app/src/index.ts",
         ),
-      lines: z
-        .coerce.number()
+      lines: z.coerce
+        .number()
         .optional()
         .describe(
-          "Only read the first N lines from the file. Omit to read the entire file. Useful for large files."
+          "Only read the first N lines from the file. Omit to read the entire file. Useful for large files.",
         ),
     }),
-    handler: async (args: { path: string; lines?: number }, _userId: number) => {
+    handler: async (
+      args: { path: string; lines?: number },
+      _userId: number,
+    ) => {
       if (!DOCKER_ENV) {
         return "[Error] bash_read_file is only available when shell access is enabled.";
       }
 
-      const cmd = args.lines ? `head -n ${args.lines} "${args.path}"` : `cat "${args.path}"`;
+      const cmd = args.lines
+        ? `head -n ${args.lines} "${args.path}"`
+        : `cat "${args.path}"`;
 
       const result = await executeCommand(cmd);
 
@@ -348,23 +359,23 @@ EXAMPLES:
       path: z
         .string()
         .describe(
-          "Absolute path where the file should be written, e.g. /app/output.txt or /app/src/newfile.ts"
+          "Absolute path where the file should be written, e.g. /app/output.txt or /app/src/newfile.ts",
         ),
       content: z
         .string()
         .describe(
-          "The full text content to write to the file. Written exactly as provided including all whitespace and newlines."
+          "The full text content to write to the file. Written exactly as provided including all whitespace and newlines.",
         ),
-      append: z
-        .coerce.boolean()
+      append: z.coerce
+        .boolean()
         .optional()
         .describe(
-          "Set to true to ADD content to the END of an existing file. Default false means the file is completely replaced/overwritten."
+          "Set to true to ADD content to the END of an existing file. Default false means the file is completely replaced/overwritten.",
         ),
     }),
     handler: async (
       args: { path: string; content: string; append?: boolean },
-      _userId: number
+      _userId: number,
     ) => {
       if (!DOCKER_ENV) {
         return "[Error] bash_write_file is only available when shell access is enabled.";
@@ -412,13 +423,13 @@ EXAMPLES:
       path: z
         .string()
         .describe(
-          "The directory path to list, e.g. /app or /app/src. Must be a directory, not a file."
+          "The directory path to list, e.g. /app or /app/src. Must be a directory, not a file.",
         ),
-      all: z
-        .coerce.boolean()
+      all: z.coerce
+        .boolean()
         .optional()
         .describe(
-          "Set to true to include hidden files (dotfiles like .env, .gitignore). Default is false, which hides dotfiles."
+          "Set to true to include hidden files (dotfiles like .env, .gitignore). Default is false, which hides dotfiles.",
         ),
     }),
     handler: async (args: { path: string; all?: boolean }, _userId: number) => {

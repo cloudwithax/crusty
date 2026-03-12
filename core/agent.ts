@@ -28,6 +28,7 @@ import {
 } from "../memory/gating.ts";
 import { createPlan, classifyIntent, type TaskPlan } from "./planner.ts";
 import { skillRegistry } from "./skills.ts";
+import { getDefaultWorkspace } from "./workspace.ts";
 import { learningsService } from "../memory/learnings.ts";
 import {
   formatLearningsForContext,
@@ -116,7 +117,7 @@ async function getSystemPrompt(): Promise<string> {
     timeZoneName: "short",
   });
 
-  const coreInstructions = `Current time: ${timeString}\nWorking directory: ${process.cwd()}`;
+  const coreInstructions = `Current time: ${timeString}\nWorking directory: ${getDefaultWorkspace()}`;
   const { prompt } = await loadBootstrapSystem(coreInstructions);
   return prompt;
 }
@@ -723,6 +724,25 @@ class StepTracker {
   }
 }
 
+function buildToolOnlyFallback(
+  stepTracker: StepTracker,
+  toolResults: string[],
+): string {
+  const recentSteps = stepTracker.generateStatus();
+  const firstMeaningfulResult = toolResults
+    .map((result) => result.trim())
+    .find((result) => result.length > 0);
+
+  if (firstMeaningfulResult) {
+    return `i completed the tool work but the model did not produce a final write-up. recent action: ${recentSteps}
+
+best available result:
+${firstMeaningfulResult}`;
+  }
+
+  return `i completed the tool work but the model did not produce a final write-up. recent action: ${recentSteps}`;
+}
+
 const MAX_TOOL_ITERATIONS = 50;
 const ITERATION_WARNING_THRESHOLD = 40; // warn when this many iterations used
 const ITERATION_EXTENSION_AMOUNT = 25; // how many extra iterations to grant
@@ -1085,6 +1105,101 @@ export class Agent {
     }
   }
 
+  private buildValidMessages(
+    messagesForModel: ChatCompletionMessageParam[],
+  ): ChatCompletionMessageParam[] {
+    return messagesForModel
+      .map((msg) => {
+        if (msg.role === "assistant") {
+          const hasToolCalls =
+            (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
+          const hasContent =
+            msg.content &&
+            (typeof msg.content === "string" ? msg.content.trim() : true);
+
+          if (!hasContent && !hasToolCalls) {
+            return null;
+          }
+
+          if (hasToolCalls && !msg.content) {
+            return { ...msg, content: "" };
+          }
+        }
+
+        if (msg.role === "tool" && msg.content === undefined) {
+          return null;
+        }
+
+        return msg;
+      })
+      .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
+  }
+
+  private async generateFinalToolResponse(
+    combinedContext: string | undefined,
+    callbacks?: AgentCallbacks,
+  ): Promise<string> {
+    const finalPrompt: ChatCompletionMessageParam = {
+      role: "user",
+      content:
+        "you have already finished using tools. now answer the user directly in plain text using the tool results already in context. do not call tools. if the results are incomplete, say what you were able to find.",
+    };
+
+    const messagesForModel = this.contextManager.buildMessagesForModel(
+      [...this._messages, finalPrompt],
+      combinedContext,
+    );
+    const validMessages = this.buildValidMessages(messagesForModel);
+
+    if (validMessages.length === 0) {
+      debug("[agent] finalization skipped - no valid messages");
+      return "";
+    }
+
+    await rateLimiter.acquire();
+
+    try {
+      const response = await withRetry(
+        () =>
+          nativeChatCompletion(
+            {
+              model: getCurrentModel(),
+              messages: validMessages,
+            },
+            callbacks?.abortSignal,
+          ),
+        { maxRetries: 10, baseDelayMs: 1000, maxDelayMs: 60000 },
+      );
+
+      const finalMessage = response.choices[0]?.message;
+      const finalContent = cleanModelResponse(
+        normalizeContent(finalMessage?.content),
+      );
+
+      if (!finalContent) {
+        debug("[agent] finalization returned empty content");
+        return "";
+      }
+
+      this._messages.push({
+        role: "user",
+        content: finalPrompt.content,
+      });
+      this._messages.push({
+        role: "assistant",
+        content: stripReasoningTags(normalizeContent(finalMessage?.content)),
+      });
+
+      debug("[agent] finalized response after tool execution");
+      return finalContent;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      debug(`[agent] finalization failed: ${errorMessage}`);
+      return "";
+    }
+  }
+
   private async executeAttempt(
     combinedContext: string | undefined,
     taskPlan: TaskPlan | null,
@@ -1138,35 +1253,7 @@ export class Agent {
       await rateLimiter.acquire();
 
       // validate and fix messages before sending to api
-      const validMessages = messagesForModel
-        .map((msg) => {
-          // fix assistant messages with missing content
-          if (msg.role === "assistant") {
-            const hasToolCalls =
-              (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
-            const hasContent =
-              msg.content &&
-              (typeof msg.content === "string" ? msg.content.trim() : true);
-
-            // assistant must have content or tool_calls
-            if (!hasContent && !hasToolCalls) {
-              return null; // drop invalid message
-            }
-
-            // if has tool_calls but no content, set empty string
-            if (hasToolCalls && !msg.content) {
-              return { ...msg, content: "" };
-            }
-          }
-
-          // ensure tool messages have content
-          if (msg.role === "tool" && msg.content === undefined) {
-            return null;
-          }
-
-          return msg;
-        })
-        .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
+      const validMessages = this.buildValidMessages(messagesForModel);
 
       if (validMessages.length === 0) {
         debug("[api] no valid messages to send");
@@ -1494,6 +1581,22 @@ export class Agent {
 
     if (loopGuardMessage) {
       this._messages.push({ role: "assistant", content: loopGuardMessage });
+    }
+
+    if (!lastTextResponse && toolResults.length > 0 && !loopGuardMessage) {
+      lastTextResponse = await this.generateFinalToolResponse(
+        combinedContext,
+        callbacks,
+      );
+
+      if (!lastTextResponse) {
+        lastTextResponse = buildToolOnlyFallback(stepTracker, toolResults);
+        this._messages.push({
+          role: "assistant",
+          content: lastTextResponse,
+        });
+        debug("[agent] used synthesized fallback after empty finalization");
+      }
     }
 
     // log plan outcome for future reference

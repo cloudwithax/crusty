@@ -499,7 +499,8 @@ export async function getOrCreateEmbedding(
   const model =
     process.env.EMBEDDING_PROVIDER === "openai"
       ? process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small"
-      : process.env.LOCAL_EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
+      : process.env.LOCAL_EMBEDDING_MODEL ||
+        "mixedbread-ai/mxbai-embed-xsmall-v1";
 
   await cacheEmbedding(contentHash, embedding, model);
 

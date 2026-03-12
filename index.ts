@@ -11,7 +11,11 @@ import {
   getPairedPhoneNumberAsync,
   isImessageConfigured,
 } from "./imessage/index.ts";
-import { startHeartbeat, cleanupHeartbeat, restartHeartbeat } from "./scheduler/heartbeat.ts";
+import {
+  startHeartbeat,
+  cleanupHeartbeat,
+  restartHeartbeat,
+} from "./scheduler/heartbeat.ts";
 import { startHooks, cleanupHooks } from "./scheduler/hooks.ts";
 import {
   startReminderScheduler,

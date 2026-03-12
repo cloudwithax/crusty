@@ -256,6 +256,13 @@ class PostgresAdapter implements DatabaseAdapter {
     return rows as unknown as T[];
   }
 
+  // query without waiting for init - only for use inside initTablesAsync helpers
+  // to avoid the circular await deadlock
+  async queryDirect<T>(sql: string, params?: unknown[]): Promise<T[]> {
+    const rows = await this.sql.unsafe(sql, (params || []) as any);
+    return rows as unknown as T[];
+  }
+
   private convertPlaceholders(sql: string): string {
     let index = 0;
     return sql.replace(/\?/g, () => `$${++index}`);
@@ -840,65 +847,66 @@ async function postgresColumnExists(
   tableName: string,
   columnName: string,
 ): Promise<boolean> {
-  const asyncDb = getAsyncDatabase();
-  if (!asyncDb) return false;
+  // use queryDirect to avoid going through waitForInit() - this is only called
+  // from within initTablesAsync and its helpers, so we must bypass the guard
+  if (!pgAdapter) return false;
 
-  const row = await asyncDb.get<{ exists: boolean }>(
+  const rows = await pgAdapter.queryDirect<{ exists: boolean }>(
     `SELECT EXISTS (
       SELECT 1
       FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
     ) as exists`,
-    tableName,
-    columnName,
+    [tableName, columnName],
   );
 
-  return !!row?.exists;
+  return !!(rows[0] as any)?.exists;
 }
 
 async function migrateLegacyMemoriesTableAsync(): Promise<void> {
-  const asyncDb = getAsyncDatabase();
-  if (!asyncDb) return;
+  // use pgAdapter directly to avoid going through waitForInit() - this is
+  // called from within initTablesAsync so we must bypass the guard
+  if (!pgAdapter) return;
 
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `ALTER TABLE memories ADD COLUMN IF NOT EXISTS raw_content TEXT`,
   );
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `ALTER TABLE memories ADD COLUMN IF NOT EXISTS keywords TEXT DEFAULT '[]'`,
   );
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `ALTER TABLE memories ADD COLUMN IF NOT EXISTS timestamp BIGINT DEFAULT 0`,
   );
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled BIGINT`,
   );
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0`,
   );
 
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `UPDATE memories SET raw_content = COALESCE(raw_content, content) WHERE raw_content IS NULL`,
   );
-  await asyncDb.run(
+  await pgAdapter.execAsync(
     `UPDATE memories SET keywords = '[]' WHERE keywords IS NULL OR BTRIM(keywords) = ''`,
   );
 
   const hasCreatedAt = await postgresColumnExists("memories", "created_at");
   if (hasCreatedAt) {
-    await asyncDb.run(`
+    await pgAdapter.execAsync(`
       UPDATE memories
       SET timestamp = COALESCE(NULLIF(timestamp, 0), created_at * 1000)
       WHERE timestamp IS NULL OR timestamp = 0
     `);
   } else {
-    await asyncDb.run(`
+    await pgAdapter.execAsync(`
       UPDATE memories
       SET timestamp = COALESCE(NULLIF(timestamp, 0), EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
       WHERE timestamp IS NULL OR timestamp = 0
     `);
   }
 
-  await asyncDb.run(`
+  await pgAdapter.execAsync(`
     UPDATE memories
     SET timestamp = timestamp * 1000
     WHERE timestamp > 0 AND timestamp < 1000000000000

@@ -48,11 +48,10 @@ import {
   DEFAULT_CONVERSATION_THREAD_ID,
   buildTelegramMessageReference,
   buildTelegramThreadId,
-  shouldReuseActiveThread,
 } from "../core/conversation-threading.ts";
 import { conversationStore } from "../core/conversation-store";
 import { conversationThreadStore } from "../core/thread-store.ts";
-import { chooseThreadWithModel } from "../core/thread-router.ts";
+import { chooseThread } from "../core/thread-router.ts";
 
 // Environment configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -226,11 +225,7 @@ async function resolveTelegramThreadId(
   }
 
   if (message.text?.trim()) {
-    const decision = await chooseThreadWithModel(
-      "telegram",
-      userId,
-      message.text,
-    );
+    const decision = await chooseThread("telegram", userId);
     if (decision.kind === "existing") {
       await conversationThreadStore().touchThread(
         "telegram",
@@ -239,31 +234,6 @@ async function resolveTelegramThreadId(
       );
       return decision.threadId;
     }
-    if (decision.kind === "new") {
-      const newThreadId = buildTelegramThreadId(
-        message.chat.id,
-        message.message_id,
-      );
-      await conversationThreadStore().touchThread(
-        "telegram",
-        userId,
-        newThreadId,
-      );
-      return newThreadId;
-    }
-  }
-
-  const latestThread = await conversationThreadStore().getLatestThread(
-    "telegram",
-    userId,
-  );
-  if (latestThread && shouldReuseActiveThread(latestThread.updatedAt)) {
-    await conversationThreadStore().touchThread(
-      "telegram",
-      userId,
-      latestThread.threadId,
-    );
-    return latestThread.threadId;
   }
 
   const threadId = buildTelegramThreadId(message.chat.id, message.message_id);

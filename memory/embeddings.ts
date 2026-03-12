@@ -1,5 +1,5 @@
 // embedding-based memory search
-// uses local transformers.js model by default (all-MiniLM-L6-v2, 384 dims, runs on cpu)
+// uses local transformers.js model by default (mxbai-embed-xsmall-v1, 384 dims, runs on cpu)
 // openai embeddings fallback available via native fetch if EMBEDDING_PROVIDER=openai
 // works with both memories and learnings tables
 
@@ -18,7 +18,7 @@ const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER ||
 
 // local model config
 const LOCAL_EMBEDDING_MODEL =
-  process.env.LOCAL_EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
+  process.env.LOCAL_EMBEDDING_MODEL || "mixedbread-ai/mxbai-embed-xsmall-v1";
 const LOCAL_EMBEDDING_DIMENSION = parseInt(
   process.env.LOCAL_EMBEDDING_DIMENSION || "384",
   10,

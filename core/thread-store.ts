@@ -30,11 +30,6 @@ export interface ConversationThreadStore {
     platform: ConversationPlatform,
     userId: number,
   ): Promise<ConversationThreadRecord | null>;
-  listRecentThreads(
-    platform: ConversationPlatform,
-    userId: number,
-    limit: number,
-  ): Promise<ConversationThreadRecord[]>;
   clearUserThreads(
     platform: ConversationPlatform,
     userId: number,
@@ -52,7 +47,7 @@ async function ensureTables(): Promise<void> {
   if (asyncDb) {
     await asyncDb.run(`SET client_min_messages TO WARNING`);
     await asyncDb.run(`
-      CREATE TABLE IF NOT EXISTS conversation_threads (
+      CREATE TABLE IF NOT EXISTS thread_sessions (
         platform TEXT NOT NULL,
         user_id BIGINT NOT NULL,
         thread_id TEXT NOT NULL,
@@ -62,7 +57,7 @@ async function ensureTables(): Promise<void> {
       )
     `);
     await asyncDb.run(`
-      CREATE TABLE IF NOT EXISTS conversation_thread_refs (
+      CREATE TABLE IF NOT EXISTS thread_message_refs (
         platform TEXT NOT NULL,
         user_id BIGINT NOT NULL,
         message_reference TEXT NOT NULL,
@@ -73,18 +68,18 @@ async function ensureTables(): Promise<void> {
       )
     `);
     await asyncDb.run(`
-      CREATE INDEX IF NOT EXISTS idx_conversation_threads_latest
-      ON conversation_threads (platform, user_id, updated_at DESC)
+      CREATE INDEX IF NOT EXISTS idx_thread_sessions_latest
+      ON thread_sessions (platform, user_id, updated_at DESC)
     `);
     await asyncDb.run(`
-      CREATE INDEX IF NOT EXISTS idx_conversation_thread_refs_thread
-      ON conversation_thread_refs (platform, user_id, thread_id)
+      CREATE INDEX IF NOT EXISTS idx_thread_message_refs_thread
+      ON thread_message_refs (platform, user_id, thread_id)
     `);
     await asyncDb.run(`SET client_min_messages TO NOTICE`);
   } else {
     const db = getDatabase();
     db.exec(`
-      CREATE TABLE IF NOT EXISTS conversation_threads (
+      CREATE TABLE IF NOT EXISTS thread_sessions (
         platform TEXT NOT NULL,
         user_id INTEGER NOT NULL,
         thread_id TEXT NOT NULL,
@@ -94,7 +89,7 @@ async function ensureTables(): Promise<void> {
       )
     `);
     db.exec(`
-      CREATE TABLE IF NOT EXISTS conversation_thread_refs (
+      CREATE TABLE IF NOT EXISTS thread_message_refs (
         platform TEXT NOT NULL,
         user_id INTEGER NOT NULL,
         message_reference TEXT NOT NULL,
@@ -105,12 +100,12 @@ async function ensureTables(): Promise<void> {
       )
     `);
     db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_conversation_threads_latest
-      ON conversation_threads (platform, user_id, updated_at DESC)
+      CREATE INDEX IF NOT EXISTS idx_thread_sessions_latest
+      ON thread_sessions (platform, user_id, updated_at DESC)
     `);
     db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_conversation_thread_refs_thread
-      ON conversation_thread_refs (platform, user_id, thread_id)
+      CREATE INDEX IF NOT EXISTS idx_thread_message_refs_thread
+      ON thread_message_refs (platform, user_id, thread_id)
     `);
   }
 
@@ -129,7 +124,7 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     const now = Date.now();
 
     db.run(
-      `INSERT INTO conversation_threads (platform, user_id, thread_id, created_at, updated_at)
+      `INSERT INTO thread_sessions (platform, user_id, thread_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(platform, user_id, thread_id) DO UPDATE SET
          updated_at = excluded.updated_at`,
@@ -148,7 +143,7 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     const now = Date.now();
 
     db.run(
-      `INSERT INTO conversation_thread_refs (platform, user_id, message_reference, thread_id, created_at, updated_at)
+      `INSERT INTO thread_message_refs (platform, user_id, message_reference, thread_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(platform, user_id, message_reference) DO UPDATE SET
          thread_id = excluded.thread_id,
@@ -168,7 +163,7 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     const db = getDatabase();
     const row = db
       .query<{ thread_id: string }>(
-        `SELECT thread_id FROM conversation_thread_refs
+        `SELECT thread_id FROM thread_message_refs
          WHERE platform = ? AND user_id = ? AND message_reference = ?`,
       )
       .get(platform, userId, messageReference);
@@ -192,7 +187,7 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     const db = getDatabase();
     const row = db
       .query<{ thread_id: string; updated_at: number }>(
-        `SELECT thread_id, updated_at FROM conversation_threads
+        `SELECT thread_id, updated_at FROM thread_sessions
          WHERE platform = ? AND user_id = ?
          ORDER BY updated_at DESC
          LIMIT 1`,
@@ -209,28 +204,6 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     };
   }
 
-  async listRecentThreads(
-    platform: ConversationPlatform,
-    userId: number,
-    limit: number,
-  ): Promise<ConversationThreadRecord[]> {
-    await ensureTables();
-    const db = getDatabase();
-    const rows = db
-      .query<{ thread_id: string; updated_at: number }>(
-        `SELECT thread_id, updated_at FROM conversation_threads
-         WHERE platform = ? AND user_id = ?
-         ORDER BY updated_at DESC
-         LIMIT ?`,
-      )
-      .all(platform, userId, limit);
-
-    return rows.map((row) => ({
-      threadId: row.thread_id,
-      updatedAt: row.updated_at,
-    }));
-  }
-
   async clearUserThreads(
     platform: ConversationPlatform,
     userId: number,
@@ -239,13 +212,13 @@ class SqliteConversationThreadStore implements ConversationThreadStore {
     const db = getDatabase();
 
     db.run(
-      `DELETE FROM conversation_thread_refs WHERE platform = ? AND user_id = ?`,
+      `DELETE FROM thread_message_refs WHERE platform = ? AND user_id = ?`,
       [platform, userId],
     );
-    db.run(
-      `DELETE FROM conversation_threads WHERE platform = ? AND user_id = ?`,
-      [platform, userId],
-    );
+    db.run(`DELETE FROM thread_sessions WHERE platform = ? AND user_id = ?`, [
+      platform,
+      userId,
+    ]);
   }
 }
 
@@ -263,7 +236,7 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
 
     const now = Date.now();
     await asyncDb.run(
-      `INSERT INTO conversation_threads (platform, user_id, thread_id, created_at, updated_at)
+      `INSERT INTO thread_sessions (platform, user_id, thread_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT(platform, user_id, thread_id) DO UPDATE SET
          updated_at = EXCLUDED.updated_at`,
@@ -285,7 +258,7 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
 
     const now = Date.now();
     await asyncDb.run(
-      `INSERT INTO conversation_thread_refs (platform, user_id, message_reference, thread_id, created_at, updated_at)
+      `INSERT INTO thread_message_refs (platform, user_id, message_reference, thread_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT(platform, user_id, message_reference) DO UPDATE SET
          thread_id = EXCLUDED.thread_id,
@@ -308,7 +281,7 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
     }
 
     const row = await asyncDb.get<{ thread_id: string }>(
-      `SELECT thread_id FROM conversation_thread_refs
+      `SELECT thread_id FROM thread_message_refs
        WHERE platform = $1 AND user_id = $2 AND message_reference = $3`,
       platform,
       userId,
@@ -337,7 +310,7 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
     }
 
     const row = await asyncDb.get<{ thread_id: string; updated_at: number }>(
-      `SELECT thread_id, updated_at FROM conversation_threads
+      `SELECT thread_id, updated_at FROM thread_sessions
        WHERE platform = $1 AND user_id = $2
        ORDER BY updated_at DESC
        LIMIT 1`,
@@ -355,33 +328,6 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
     };
   }
 
-  async listRecentThreads(
-    platform: ConversationPlatform,
-    userId: number,
-    limit: number,
-  ): Promise<ConversationThreadRecord[]> {
-    await ensureTables();
-    const asyncDb = getAsyncDatabase();
-    if (!asyncDb) {
-      return [];
-    }
-
-    const rows = await asyncDb.all<{ thread_id: string; updated_at: number }>(
-      `SELECT thread_id, updated_at FROM conversation_threads
-       WHERE platform = $1 AND user_id = $2
-       ORDER BY updated_at DESC
-       LIMIT $3`,
-      platform,
-      userId,
-      limit,
-    );
-
-    return rows.map((row) => ({
-      threadId: row.thread_id,
-      updatedAt: row.updated_at,
-    }));
-  }
-
   async clearUserThreads(
     platform: ConversationPlatform,
     userId: number,
@@ -393,11 +339,11 @@ class PostgresConversationThreadStore implements ConversationThreadStore {
     }
 
     await asyncDb.run(
-      `DELETE FROM conversation_thread_refs WHERE platform = $1 AND user_id = $2`,
+      `DELETE FROM thread_message_refs WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
     await asyncDb.run(
-      `DELETE FROM conversation_threads WHERE platform = $1 AND user_id = $2`,
+      `DELETE FROM thread_sessions WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
   }

@@ -28,7 +28,7 @@ a telegram ai agent with web browsing, long-term memory, and a modular personali
 
 - web browsing with stealth mode
 - multi-turn agentic conversations with tool execution
-- fresh top-level user messages start new conversation threads by default
+- deterministic conversation threading with active-thread reuse
 - long-term memory (sqlite or postgres + pgvector)
 - context management with automatic summarization
 - modular personality system via markdown files
@@ -44,6 +44,12 @@ a telegram ai agent with web browsing, long-term memory, and a modular personali
 
 docker is the preferred way to run crusty. it provides a sandboxed environment with all dependencies pre-installed, including chromium for web browsing and bash tools enabled by default.
 
+tool operations now use an explicit default workspace:
+
+- local runs default to the directory you started crusty from
+- docker prefers `/workspace` when that mount exists and has content, otherwise it falls back to `/app`
+- `CRUSTY_WORKSPACE` overrides the default in either mode
+
 You can run crusty in one command with the built image:
 
 ```bash
@@ -52,7 +58,9 @@ docker run -d \
   --name crusty \
   -e OPENAI_API_KEY=your-api-key \
   -e TELEGRAM_BOT_TOKEN=your-telegram-bot-token \
+  -e CRUSTY_WORKSPACE=/workspace \
   -v crusty-data:/app/data \
+  -v $(pwd):/workspace \
   ghcr.io/cloudwithax/crusty:latest
 ```
 
@@ -64,7 +72,9 @@ docker run -d \
   --name crusty \
   -e OPENAI_API_KEY=your-api-key \
   -e TELEGRAM_BOT_TOKEN=your-telegram-bot-token \
+  -e CRUSTY_WORKSPACE=/workspace \
   -v crusty-data:/app/data \
+  -v $(pwd):/workspace \
   crusty
 ```
 
@@ -81,10 +91,12 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - CRUSTY_WORKSPACE=/workspace
       - OPENAI_MODEL=gpt-4o
       - HEARTBEAT_EVERY=30m
     volumes:
       - crusty-data:/app/data
+      - ./:/workspace
       - ./cogs:/app/cogs:ro # mount custom personality files
 
 volumes:
@@ -157,7 +169,9 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 # optional
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o
+CRUSTY_WORKSPACE=/absolute/path/to/your/project
 HEARTBEAT_EVERY=30m
+CONVERSATION_THREAD_ACTIVE_WINDOW_MINUTES=30
 MAX_CONTEXT_TOKENS=24000
 ```
 
@@ -168,7 +182,7 @@ see .env.example for all options.
 - `/start` - show help
 - `/clear` - clear memory and reset conversation
 - `/context` - show context stats
-- replies continue an existing telegram thread while new top-level messages start fresh context
+- replies continue the exact thread they reference, while top-level messages reuse the latest active thread until the active window expires
 - `/memory` - show memory stats
 - `/reminders` - list pending reminders
 - `/skill` - manage skills

@@ -43,3 +43,7 @@ crusty.db-shm
 CLAUDE.md
 AGENTS.md
 
+
+# agent workspace
+workspace/
+
