@@ -1356,16 +1356,18 @@ export class Agent {
         }
       }
 
-      // collect text response - only update if cleaned result is non-empty
-      // models that respond with only reasoning tags (e.g. <think>...</think>) will
-      // produce an empty string after stripping, so we avoid overwriting a valid
-      // previous response with nothing
-      if (content.trim()) {
+      // collect text response - only from final (non-tool) iterations.
+      // text produced alongside tool calls is intermediate reasoning (e.g. "let me
+      // think about how to do this...") and should NOT be shown to the user.
+      // only the model's final text (when it stops calling tools) is the real answer.
+      if (content.trim() && toolCalls.length === 0) {
         const cleaned = cleanModelResponse(content);
         if (cleaned) {
           lastTextResponse = cleaned;
         }
         debug(`[text]: ${(cleaned || lastTextResponse).slice(0, 100)}...`);
+      } else if (content.trim() && toolCalls.length > 0) {
+        debug(`[intermediate text suppressed]: ${cleanModelResponse(content).slice(0, 100)}...`);
       }
 
       // add assistant message to history (strip reasoning tags to reduce context bloat)

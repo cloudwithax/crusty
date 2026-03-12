@@ -432,8 +432,8 @@ async function processDebouncedInboundMessages(
   await sendTypingIndicator(phone);
 
   const callbacks: AgentCallbacks = {
-    onPlanReady: async (intent: string) => {
-      await sendMessage(phone, intent);
+    onPlanReady: async (_intent: string) => {
+      // plan intent is internal reasoning - don't send it to the user.
       await sendTypingIndicator(phone);
     },
     onTyping: async () => {

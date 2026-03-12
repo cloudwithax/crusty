@@ -362,11 +362,9 @@ async function processDebouncedTelegramMessages(
   });
 
   const callbacks: AgentCallbacks = {
-    onPlanReady: async (intent: string) => {
-      const sentMessage = await sendMessage(chatId, intent, {
-        message_thread_id: messageThreadId,
-      });
-      await bindTelegramBotMessage(userId, threadId, sentMessage);
+    onPlanReady: async (_intent: string) => {
+      // plan intent is internal reasoning - don't send it to the user.
+      // just keep the typing indicator going so the user knows we're working.
       await sendChatAction(chatId, "typing", {
         message_thread_id: messageThreadId,
       });
