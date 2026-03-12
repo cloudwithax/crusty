@@ -3,10 +3,9 @@ import {
   AgentInterruptedError,
   type AgentCallbacks,
   getCurrentModel,
-  setCurrentModel,
 } from "../core/agent.ts";
 import { nativeChatCompletion } from "../core/api.ts";
-import { persistModelToEnv } from "../core/model-state.ts";
+import { applyRuntimeModelChange } from "../core/model-state.ts";
 import { initializeContextLimits } from "../core/context-config.ts";
 import { cleanupTools } from "../tools/registry.ts";
 import {
@@ -49,6 +48,10 @@ import {
   buildTelegramMessageReference,
   buildTelegramThreadId,
 } from "../core/conversation-threading.ts";
+import {
+  MessageDebouncer,
+  joinBufferedText,
+} from "../core/inbound-debounce.ts";
 import { conversationStore } from "../core/conversation-store";
 import { conversationThreadStore } from "../core/thread-store.ts";
 import { chooseThread } from "../core/thread-router.ts";
@@ -117,13 +120,19 @@ const userSessions = new Map<string, Agent>();
 const processingUsers = new Map<number, AbortController>();
 
 // queue for interrupt messages (new message while processing)
-const interruptQueue = new Map<number, TelegramMessage>();
+const interruptQueue = new Map<number, TelegramMessage[]>();
 
 // force the next non-command message to start a fresh thread
 const forceFreshThreadUsers = new Set<number>();
 
 // track users awaiting soul content input
 const awaitingSoulInput = new Set<number>();
+
+const telegramMessageDebouncer = new MessageDebouncer<TelegramMessage>({
+  onFlush: async ({ items }) => {
+    await processDebouncedTelegramMessages(items);
+  },
+});
 
 // Get the paired user ID for heartbeat messages
 export function getPairedUserId(): number | null {
@@ -256,6 +265,158 @@ async function bindTelegramBotMessage(
     buildTelegramMessageReference(message.chat.id, message.message_id),
     threadId,
   );
+}
+
+function queueInterruptedTelegramMessages(
+  userId: number,
+  messages: TelegramMessage[],
+): void {
+  const queued = interruptQueue.get(userId) || [];
+  queued.push(...messages);
+  interruptQueue.set(userId, queued);
+}
+
+function takeInterruptedTelegramMessages(
+  userId: number,
+): TelegramMessage[] | undefined {
+  const queued = interruptQueue.get(userId);
+  if (!queued || queued.length === 0) {
+    return undefined;
+  }
+
+  interruptQueue.delete(userId);
+  return queued;
+}
+
+function buildTelegramBurstText(messages: TelegramMessage[]): string {
+  return joinBufferedText(messages.map((message) => message.text || ""));
+}
+
+function findTelegramReplyContext(
+  messages: TelegramMessage[],
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const reply = messages[index]?.reply_to_message;
+    if (reply?.text && reply.from?.is_bot) {
+      return reply.text.slice(0, 500);
+    }
+  }
+
+  return undefined;
+}
+
+async function processDebouncedTelegramMessages(
+  messages: TelegramMessage[],
+): Promise<void> {
+  const anchorMessage = messages[0];
+  if (!anchorMessage) {
+    return;
+  }
+
+  const combinedText = buildTelegramBurstText(messages);
+  if (!combinedText) {
+    return;
+  }
+
+  const chatId = anchorMessage.chat.id;
+  const userId = anchorMessage.from?.id || chatId;
+  const messageThreadId = anchorMessage.message_thread_id;
+  const routingMessage: TelegramMessage = {
+    ...anchorMessage,
+    text: combinedText,
+  };
+
+  const existingController = processingUsers.get(userId);
+  if (existingController) {
+    debug(
+      `[User ${userId} has a settled follow-up burst, interrupting current run]`,
+    );
+    queueInterruptedTelegramMessages(userId, messages);
+    existingController.abort();
+    return;
+  }
+
+  const threadId = await resolveTelegramThreadId(userId, routingMessage);
+  const agent = getOrCreateAgent(userId, threadId);
+  const replyContext = findTelegramReplyContext(messages);
+
+  if (replyContext) {
+    debug(`[bot] reply context: ${replyContext.slice(0, 100)}...`);
+  }
+
+  const abortController = new AbortController();
+  processingUsers.set(userId, abortController);
+
+  const typingInterval = setInterval(async () => {
+    try {
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
+    } catch {
+      // ignore errors from typing indicator
+    }
+  }, 4000);
+
+  await sendChatAction(chatId, "typing", {
+    message_thread_id: messageThreadId,
+  });
+
+  const callbacks: AgentCallbacks = {
+    onPlanReady: async (intent: string) => {
+      const sentMessage = await sendMessage(chatId, intent, {
+        message_thread_id: messageThreadId,
+      });
+      await bindTelegramBotMessage(userId, threadId, sentMessage);
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
+    },
+    onTyping: async () => {
+      await sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      });
+    },
+    abortSignal: abortController.signal,
+  };
+
+  try {
+    const response = await agent.chat(combinedText, callbacks, replyContext);
+    clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    const queuedMessages = takeInterruptedTelegramMessages(userId);
+    if (queuedMessages) {
+      await processDebouncedTelegramMessages(queuedMessages);
+      return;
+    }
+
+    const sentMessage = await sendMessage(chatId, response, {
+      message_thread_id: messageThreadId,
+    });
+    await bindTelegramBotMessage(userId, threadId, sentMessage);
+  } catch (error) {
+    clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    if (error instanceof AgentInterruptedError) {
+      debug(
+        `[bot] agent interrupted for user ${userId}, handing off to queued burst`,
+      );
+      const queuedMessages = takeInterruptedTelegramMessages(userId);
+      if (queuedMessages) {
+        await processDebouncedTelegramMessages(queuedMessages);
+      }
+      return;
+    }
+
+    console.error("Error processing message:", error);
+    const sentMessage = await sendMessage(
+      chatId,
+      "Sorry, I encountered an error processing your message. Please try again.",
+      { message_thread_id: messageThreadId },
+    );
+    await bindTelegramBotMessage(userId, threadId, sentMessage);
+  }
 }
 
 // Telegram API helpers
@@ -1376,8 +1537,7 @@ async function switchModel(
   const works = await verifyModel(modelId);
 
   if (works) {
-    setCurrentModel(modelId);
-    persistModelToEnv(modelId);
+    await applyRuntimeModelChange(modelId);
 
     // reinitialize context limits for the new model
     await initializeContextLimits(modelId);
@@ -1601,6 +1761,10 @@ async function processMessage(message: TelegramMessage): Promise<void> {
 
   // User is paired - process commands and messages
   if (text.startsWith("/")) {
+    telegramMessageDebouncer.clear(String(userId));
+    interruptQueue.delete(userId);
+    processingUsers.get(userId)?.abort();
+
     const parts = text.slice(1).split(" ");
     const commandName = parts[0] || "";
     const args = parts.slice(1).join(" ");
@@ -1618,101 +1782,7 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  // Regular message - process with agent
-  const threadId = await resolveTelegramThreadId(userId, message);
-  const agent = getOrCreateAgent(userId, threadId);
-
-  // check if this is a reply to an assistant message
-  let replyContext: string | undefined;
-  if (message.reply_to_message?.text && message.reply_to_message.from?.is_bot) {
-    // user is replying to a bot message, use it as context
-    replyContext = message.reply_to_message.text.slice(0, 500);
-    debug(`[bot] reply context: ${replyContext.slice(0, 100)}...`);
-  }
-
-  // create abort controller for this request
-  const abortController = new AbortController();
-  processingUsers.set(userId, abortController);
-
-  // set up continuous typing indicator polling
-  // telegram typing indicator lasts ~5 seconds, so we refresh every 4 seconds
-  const typingInterval = setInterval(async () => {
-    try {
-      await sendChatAction(chatId, "typing", {
-        message_thread_id: messageThreadId,
-      });
-    } catch {
-      // ignore errors from typing indicator
-    }
-  }, 4000);
-
-  // send initial typing indicator
-  await sendChatAction(chatId, "typing", {
-    message_thread_id: messageThreadId,
-  });
-
-  // callbacks for the agent
-  const callbacks: AgentCallbacks = {
-    onPlanReady: async (intent: string) => {
-      const sentMessage = await sendMessage(chatId, intent, {
-        message_thread_id: messageThreadId,
-      });
-      await bindTelegramBotMessage(userId, threadId, sentMessage);
-      await sendChatAction(chatId, "typing", {
-        message_thread_id: messageThreadId,
-      });
-    },
-    onTyping: async () => {
-      await sendChatAction(chatId, "typing", {
-        message_thread_id: messageThreadId,
-      });
-    },
-    abortSignal: abortController.signal,
-  };
-
-  try {
-    const response = await agent.chat(text, callbacks, replyContext);
-    clearInterval(typingInterval);
-    processingUsers.delete(userId);
-
-    // check if there was an interrupt queued while we finished
-    const queuedMessage = interruptQueue.get(userId);
-    if (queuedMessage) {
-      interruptQueue.delete(userId);
-      // process the queued message now
-      await processMessage(queuedMessage);
-      return;
-    }
-
-    const sentMessage = await sendMessage(chatId, response, {
-      message_thread_id: messageThreadId,
-    });
-    await bindTelegramBotMessage(userId, threadId, sentMessage);
-  } catch (error) {
-    clearInterval(typingInterval);
-    processingUsers.delete(userId);
-
-    // if interrupted, the new message handler will take over
-    if (error instanceof AgentInterruptedError) {
-      debug(
-        `[bot] agent interrupted for user ${userId}, handing off to new message`,
-      );
-      const queuedMessage = interruptQueue.get(userId);
-      if (queuedMessage) {
-        interruptQueue.delete(userId);
-        await processMessage(queuedMessage);
-      }
-      return;
-    }
-
-    console.error("Error processing message:", error);
-    const sentMessage = await sendMessage(
-      chatId,
-      "Sorry, I encountered an error processing your message. Please try again.",
-      { message_thread_id: messageThreadId },
-    );
-    await bindTelegramBotMessage(userId, threadId, sentMessage);
-  }
+  telegramMessageDebouncer.enqueue(String(userId), message);
 }
 
 // Long polling for updates
@@ -1813,18 +1883,6 @@ export async function startBot(): Promise<void> {
             `[Message from ${userId}]: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`,
           );
 
-          // check if user is already being processed
-          const existingController = processingUsers.get(userId);
-          if (existingController) {
-            // interrupt the current processing and queue new message
-            debug(
-              `[User ${userId} is busy, interrupting and queuing new message]`,
-            );
-            interruptQueue.set(userId, update.message);
-            existingController.abort();
-            continue;
-          }
-
           // process message without blocking the polling loop
           processMessage(update.message).catch((error) =>
             console.error(`[Error processing message from ${userId}]:`, error),
@@ -1842,6 +1900,8 @@ export async function startBot(): Promise<void> {
 // Cleanup function
 export async function cleanupBot(): Promise<void> {
   console.log("\ncrusty is retreating to the shell...");
+
+  telegramMessageDebouncer.clearAll();
 
   // Cleanup all user sessions
   for (const [, agent] of userSessions) {

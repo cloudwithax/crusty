@@ -9,7 +9,10 @@ import {
   executeTool,
   cleanupTools,
 } from "../tools/registry.ts";
-import { getCurrentModel } from "./model-state.ts";
+import {
+  consumePendingModelChangeNotice,
+  getCurrentModel,
+} from "./model-state.ts";
 import { loadBootstrapSystem } from "./bootstrap.ts";
 import { addRecentContext } from "../scheduler/context-buffer.ts";
 import { memoryService } from "../memory/service.ts";
@@ -981,6 +984,11 @@ export class Agent {
       );
     }
 
+    const modelChangeNotice = await consumePendingModelChangeNotice();
+    if (modelChangeNotice) {
+      debug("[agent] injected one-time model change notice into context");
+    }
+
     // build the user message with optional reply context
     let messageContent = userMessage;
     if (replyContext) {
@@ -1039,8 +1047,9 @@ export class Agent {
     while (runAttempt < maxRunAttempts) {
       try {
         const combinedContext =
-          [memoryContext, learningContext].filter(Boolean).join("\n\n") ||
-          undefined;
+          [memoryContext, learningContext, modelChangeNotice]
+            .filter(Boolean)
+            .join("\n\n") || undefined;
         return await this.executeAttempt(
           combinedContext,
           taskPlan,
@@ -1108,31 +1117,43 @@ export class Agent {
   private buildValidMessages(
     messagesForModel: ChatCompletionMessageParam[],
   ): ChatCompletionMessageParam[] {
-    return messagesForModel
-      .map((msg) => {
-        if (msg.role === "assistant") {
-          const hasToolCalls =
-            (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
-          const hasContent =
-            msg.content &&
-            (typeof msg.content === "string" ? msg.content.trim() : true);
+    const systemMessages: ChatCompletionMessageParam[] = [];
+    const otherMessages: ChatCompletionMessageParam[] = [];
 
-          if (!hasContent && !hasToolCalls) {
-            return null;
-          }
+    for (const msg of messagesForModel) {
+      let processedMsg: ChatCompletionMessageParam | null = msg;
 
-          if (hasToolCalls && !msg.content) {
-            return { ...msg, content: "" };
-          }
+      // validate and normalize
+      if (msg.role === "assistant") {
+        const hasToolCalls =
+          (msg as any).tool_calls && (msg as any).tool_calls.length > 0;
+        const hasContent =
+          msg.content &&
+          (typeof msg.content === "string" ? msg.content.trim() : true);
+
+        if (!hasContent && !hasToolCalls) {
+          continue; // skip invalid assistant message
         }
 
-        if (msg.role === "tool" && msg.content === undefined) {
-          return null;
+        if (hasToolCalls && !msg.content) {
+          processedMsg = { ...msg, content: "" };
         }
+      }
 
-        return msg;
-      })
-      .filter((msg): msg is ChatCompletionMessageParam => msg !== null);
+      if (processedMsg.role === "tool" && processedMsg.content === undefined) {
+        continue;
+      }
+
+      // separate system messages to ensure they all appear first
+      if (processedMsg.role === "system") {
+        systemMessages.push(processedMsg);
+      } else {
+        otherMessages.push(processedMsg);
+      }
+    }
+
+    // combine: all system messages first, then everything else in original order
+    return [...systemMessages, ...otherMessages];
   }
 
   private async generateFinalToolResponse(

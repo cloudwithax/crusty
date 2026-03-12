@@ -37,6 +37,7 @@ a telegram ai agent with web browsing, long-term memory, and a modular personali
 - reminder system with natural language time parsing
 - openai-compatible api support
 - secure pairing system
+- first-boot ACP discovery for local agents and services exposed over HTTP
 
 ## quickstart
 
@@ -173,9 +174,35 @@ CRUSTY_WORKSPACE=/absolute/path/to/your/project
 HEARTBEAT_EVERY=30m
 CONVERSATION_THREAD_ACTIVE_WINDOW_MINUTES=30
 MAX_CONTEXT_TOKENS=24000
+ACP_DISCOVERY_ENABLED=true
+ACP_DISCOVERY_TIMEOUT_MS=750
+ACP_DISCOVERY_PATHS=/acp,/api/acp,/rpc/acp,/agent/acp
+ACP_DISCOVERY_HOSTS=127.0.0.1,localhost
+ACP_DISCOVERY_PORTS=3000,8000,8080
+ACP_STDIO_AGENTS_JSON=[{"name":"goose","command":"goose","args":["acp","serve"]}]
+ACP_STDIO_AGENTS_FILE=/absolute/path/to/acp-stdio-agents.json
+ACP_BUN_STDIO_PROXY=true
+ACP_STDIO_NODE_PATH=node
 ```
 
 see .env.example for all options.
+
+## ACP discovery
+
+on first boot, crusty performs an aggressive scan of listening local tcp ports and probes common ACP HTTP endpoints such as `/acp`.
+
+it can also launch known local ACP binaries over stdio when you provide a registry through `ACP_STDIO_AGENTS_JSON` or `ACP_STDIO_AGENTS_FILE`.
+
+when crusty runs on Bun, stdio ACP agents are proxied through a tiny Node wrapper by default because direct Bun stdio interop is not reliable for every ACP server. set `ACP_BUN_STDIO_PROXY=false` to force direct Bun subprocess mode, or set `ACP_STDIO_NODE_PATH` if `node` is not on your `PATH`.
+
+when it finds a compatible ACP agent, it persists the endpoint metadata and automatically registers a dedicated runtime tool like `acp_goose_desktop` so the main agent can delegate work to it.
+
+subsequent boots restore the cached ACP-backed tools immediately from the database. if no cached endpoints exist, crusty re-runs discovery.
+
+the agent also gets two ACP management tools:
+
+- `list_acp_agents` to inspect active ACP integrations
+- `rediscover_acp_agents` to refresh HTTP and/or stdio ACP discovery without restarting crusty
 
 ## telegram commands
 

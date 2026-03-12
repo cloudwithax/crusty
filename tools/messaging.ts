@@ -1,9 +1,8 @@
 import { z } from "zod";
 import { debug } from "../utils/debug.ts";
 import {
+  applyRuntimeModelChange,
   getCurrentModel,
-  setCurrentModel,
-  persistModelToEnv,
 } from "../core/model-state.ts";
 
 // bridge for delivering messages to paired users across all channels
@@ -63,11 +62,15 @@ async function handleSetModel(
     return "[Error] Model name cannot be empty.";
   }
 
-  const previous = getCurrentModel();
-  setCurrentModel(model);
-  persistModelToEnv(model);
-  debug(`[messaging] model switched from ${previous} to ${model}`);
-  return `Model switched from "${previous}" to "${model}". This will take effect on the next agent call.`;
+  const result = await applyRuntimeModelChange(model);
+  if (!result.changed) {
+    return `Model is already set to "${result.currentModel}".`;
+  }
+
+  debug(
+    `[messaging] model switched from ${result.previousModel} to ${result.currentModel}`,
+  );
+  return `Model switched from "${result.previousModel}" to "${result.currentModel}". This will take effect on the next agent call.`;
 }
 
 async function handleGetModel(): Promise<string> {

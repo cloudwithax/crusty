@@ -31,6 +31,10 @@ import {
   DEFAULT_CONVERSATION_THREAD_ID,
   buildImessageThreadId,
 } from "../core/conversation-threading.ts";
+import {
+  MessageDebouncer,
+  joinBufferedText,
+} from "../core/inbound-debounce.ts";
 import { conversationStore } from "../core/conversation-store";
 import { conversationThreadStore } from "../core/thread-store.ts";
 import { chooseThread } from "../core/thread-router.ts";
@@ -86,7 +90,7 @@ const userSessions = new Map<string, Agent>();
 const processingUsers = new Map<number, AbortController>();
 
 // queue for interrupt messages
-const interruptQueue = new Map<number, InboundMessage>();
+const interruptQueue = new Map<number, InboundMessage[]>();
 
 // force the next non-command message to start a fresh thread
 const forceFreshThreadUsers = new Set<number>();
@@ -98,8 +102,26 @@ const awaitingSoulInput = new Set<number>();
 const processedMessages = new Set<string>();
 const DEDUP_TTL = 60_000; // 1 minute
 
+const imessageMessageDebouncer = new MessageDebouncer<InboundMessage>({
+  onFlush: async ({ items }) => {
+    await processDebouncedInboundMessages(items);
+  },
+});
+
 let client: SendBlueClient | null = null;
 let server: ReturnType<typeof Bun.serve> | null = null;
+
+interface TypingIndicatorEvent {
+  event_type?: string;
+  from_number?: string;
+  number?: string;
+  to_number?: string;
+  status?: string;
+  typing?: boolean;
+  is_typing?: boolean;
+  started?: boolean;
+  action?: string;
+}
 
 function getClient(): SendBlueClient {
   if (!client) {
@@ -266,6 +288,192 @@ async function sendTypingIndicator(phoneNumber: string): Promise<void> {
     await getClient().sendTypingIndicator(phoneNumber);
   } catch {
     // non-critical, swallow errors
+  }
+}
+
+function queueInterruptedInboundMessages(
+  userId: number,
+  messages: InboundMessage[],
+): void {
+  const queued = interruptQueue.get(userId) || [];
+  queued.push(...messages);
+  interruptQueue.set(userId, queued);
+}
+
+function takeInterruptedInboundMessages(
+  userId: number,
+): InboundMessage[] | undefined {
+  const queued = interruptQueue.get(userId);
+  if (!queued || queued.length === 0) {
+    return undefined;
+  }
+
+  interruptQueue.delete(userId);
+  return queued;
+}
+
+function buildInboundBurstText(messages: InboundMessage[]): string {
+  return joinBufferedText(messages.map((message) => message.content || ""));
+}
+
+function isTypingIndicatorEvent(body: unknown): body is TypingIndicatorEvent {
+  if (!body || typeof body !== "object") {
+    return false;
+  }
+
+  const candidate = body as Record<string, unknown>;
+  if (typeof candidate.content === "string") {
+    return false;
+  }
+
+  if (candidate.event_type === "typing_indicator") {
+    return true;
+  }
+
+  const hasTypingFlag =
+    typeof candidate.typing === "boolean" ||
+    typeof candidate.is_typing === "boolean" ||
+    typeof candidate.started === "boolean";
+  const hasTypingDescriptor =
+    typeof candidate.status === "string" ||
+    typeof candidate.action === "string";
+  const hasPhone =
+    typeof candidate.from_number === "string" ||
+    typeof candidate.number === "string" ||
+    typeof candidate.to_number === "string";
+
+  return hasPhone && (hasTypingFlag || hasTypingDescriptor);
+}
+
+function indicatesTyping(event: TypingIndicatorEvent): boolean {
+  if (typeof event.typing === "boolean") {
+    return event.typing;
+  }
+
+  if (typeof event.is_typing === "boolean") {
+    return event.is_typing;
+  }
+
+  if (typeof event.started === "boolean") {
+    return event.started;
+  }
+
+  const signal = `${event.status || ""} ${event.action || ""}`.toLowerCase();
+  if (!signal.trim()) {
+    return true;
+  }
+
+  if (
+    signal.includes("stop") ||
+    signal.includes("ended") ||
+    signal.includes("idle") ||
+    signal.includes("false")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function resolveTypingUserKey(event: TypingIndicatorEvent): string | undefined {
+  const phone = event.from_number || event.number || event.to_number;
+  if (!phone) {
+    return undefined;
+  }
+
+  return String(phoneToUserId(phone));
+}
+
+async function processDebouncedInboundMessages(
+  messages: InboundMessage[],
+): Promise<void> {
+  const anchorMessage = messages[0];
+  if (!anchorMessage) {
+    return;
+  }
+
+  const combinedText = buildInboundBurstText(messages);
+  if (!combinedText) {
+    return;
+  }
+
+  const phone = anchorMessage.from_number;
+  const userId = phoneToUserId(phone);
+
+  const existingController = processingUsers.get(userId);
+  if (existingController) {
+    debug(
+      `[imessage] settled follow-up burst detected for ${phone}, interrupting`,
+    );
+    queueInterruptedInboundMessages(userId, messages);
+    existingController.abort();
+    return;
+  }
+
+  const threadId = await resolveImessageThreadId(
+    userId,
+    phone,
+    anchorMessage.message_handle,
+    combinedText,
+  );
+  const agent = getOrCreateAgent(userId, threadId);
+
+  const abortController = new AbortController();
+  processingUsers.set(userId, abortController);
+
+  const typingInterval = setInterval(async () => {
+    try {
+      await sendTypingIndicator(phone);
+    } catch {
+      // ignore typing indicator errors
+    }
+  }, 4000);
+
+  await sendTypingIndicator(phone);
+
+  const callbacks: AgentCallbacks = {
+    onPlanReady: async (intent: string) => {
+      await sendMessage(phone, intent);
+      await sendTypingIndicator(phone);
+    },
+    onTyping: async () => {
+      await sendTypingIndicator(phone);
+    },
+    abortSignal: abortController.signal,
+  };
+
+  try {
+    const response = await agent.chat(combinedText, callbacks);
+    clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    const queuedMessages = takeInterruptedInboundMessages(userId);
+    if (queuedMessages) {
+      await processDebouncedInboundMessages(queuedMessages);
+      return;
+    }
+
+    await sendMessage(phone, response);
+  } catch (error) {
+    clearInterval(typingInterval);
+    processingUsers.delete(userId);
+
+    if (error instanceof AgentInterruptedError) {
+      debug(
+        `[imessage] agent interrupted for ${phone}, handing off to queued burst`,
+      );
+      const queuedMessages = takeInterruptedInboundMessages(userId);
+      if (queuedMessages) {
+        await processDebouncedInboundMessages(queuedMessages);
+      }
+      return;
+    }
+
+    console.error("[imessage] error processing message:", error);
+    await sendMessage(
+      phone,
+      "Sorry, I encountered an error processing your message. Please try again.",
+    );
   }
 }
 
@@ -781,6 +989,10 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
 
   // command handling
   if (text.startsWith("/")) {
+    imessageMessageDebouncer.clear(String(userId));
+    interruptQueue.delete(userId);
+    processingUsers.get(userId)?.abort();
+
     const parts = text.slice(1).split(" ");
     const commandName = parts[0] || "";
     const args = parts.slice(1).join(" ");
@@ -797,75 +1009,7 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
     return;
   }
 
-  // regular message - process with agent
-  const threadId = await resolveImessageThreadId(
-    userId,
-    phone,
-    message.message_handle,
-    text,
-  );
-  const agent = getOrCreateAgent(userId, threadId);
-
-  const abortController = new AbortController();
-  processingUsers.set(userId, abortController);
-
-  // typing indicator polling - sendblue typing lasts a few seconds
-  const typingInterval = setInterval(async () => {
-    try {
-      await sendTypingIndicator(phone);
-    } catch {
-      // ignore typing indicator errors
-    }
-  }, 4000);
-
-  // send initial typing indicator
-  await sendTypingIndicator(phone);
-
-  const callbacks: AgentCallbacks = {
-    onPlanReady: async (intent: string) => {
-      await sendMessage(phone, intent);
-      await sendTypingIndicator(phone);
-    },
-    onTyping: async () => {
-      await sendTypingIndicator(phone);
-    },
-    abortSignal: abortController.signal,
-  };
-
-  try {
-    const response = await agent.chat(text, callbacks);
-    clearInterval(typingInterval);
-    processingUsers.delete(userId);
-
-    // check for queued interrupt message
-    const queuedMessage = interruptQueue.get(userId);
-    if (queuedMessage) {
-      interruptQueue.delete(userId);
-      await processInboundMessage(queuedMessage);
-      return;
-    }
-
-    await sendMessage(phone, response);
-  } catch (error) {
-    clearInterval(typingInterval);
-    processingUsers.delete(userId);
-
-    if (error instanceof AgentInterruptedError) {
-      debug(`[imessage] agent interrupted for ${phone}, handing off`);
-      const queuedMessage = interruptQueue.get(userId);
-      if (queuedMessage) {
-        interruptQueue.delete(userId);
-        await processInboundMessage(queuedMessage);
-      }
-      return;
-    }
-
-    console.error("[imessage] error processing message:", error);
-    await sendMessage(
-      phone,
-      "Sorry, I encountered an error processing your message. Please try again.",
-    );
-  }
+  imessageMessageDebouncer.enqueue(String(userId), message);
 }
 
 // webhook request handler for bun.serve
@@ -892,18 +1036,18 @@ function handleWebhookRequest(req: Request): Response {
     req
       .json()
       .then((body: unknown) => {
-        const message = body as InboundMessage;
-        const userId = phoneToUserId(message.from_number);
-
-        // check if user is already being processed (interrupt handling)
-        const existingController = processingUsers.get(userId);
-        if (existingController) {
-          debug(`[imessage] user busy, interrupting and queuing`);
-          interruptQueue.set(userId, message);
-          existingController.abort();
+        if (isTypingIndicatorEvent(body)) {
+          if (indicatesTyping(body)) {
+            const userKey = resolveTypingUserKey(body);
+            if (userKey) {
+              debug(`[imessage] typing indicator received for ${userKey}`);
+              imessageMessageDebouncer.markTyping(userKey);
+            }
+          }
           return;
         }
 
+        const message = body as InboundMessage;
         processInboundMessage(message).catch((error) =>
           console.error("[imessage] webhook handler error:", error),
         );
@@ -1002,6 +1146,8 @@ export async function startImessageBot(): Promise<void> {
 // cleanup function
 export async function cleanupImessageBot(): Promise<void> {
   console.log("[imessage] shutting down...");
+
+  imessageMessageDebouncer.clearAll();
 
   if (server) {
     server.stop();

@@ -24,6 +24,7 @@ import {
 import { setHookMessageSender } from "./tools/hooks.ts";
 import { setHeartbeatRestartFn } from "./tools/heartbeat.ts";
 import { setMessagingSender } from "./tools/messaging.ts";
+import { initializeAcpDiscovery } from "./tools/acp.ts";
 import { closeDatabase } from "./data/db.ts";
 import { preloadEmbeddingModel } from "./memory/embeddings.ts";
 import { debug } from "./utils/debug.ts";
@@ -105,6 +106,9 @@ async function main(): Promise<void> {
   preloadEmbeddingModel().then((loaded) => {
     if (loaded) debug("[startup] embedding model preloaded");
   });
+
+  // discover ACP endpoints before the first user message so dynamic tools are ready
+  await initializeAcpDiscovery();
 
   // start heartbeat scheduler
   await startHeartbeat(sendHeartbeatMessage);

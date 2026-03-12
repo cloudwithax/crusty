@@ -13,17 +13,15 @@ import { heartbeatTools } from "./heartbeat.ts";
 import { learningTools } from "./learnings.ts";
 import { deepResearchTools } from "./deep-research.ts";
 import { messagingTools } from "./messaging.ts";
+import { acpTools } from "./acp.ts";
+import {
+  getDynamicTools,
+  getDynamicToolsVersion,
+  type ToolDefinition,
+} from "./runtime-tools.ts";
 
 // minimal tool registry
 // filesystem + browser + web + bash (in docker) + learning machine
-
-type ToolDefinition = {
-  description: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  schema: z.ZodType<any>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (args: any, userId: number) => Promise<string>;
-};
 
 export function ensureNonEmptyToolResult(
   name: string,
@@ -68,7 +66,7 @@ const iterationTools: Record<string, ToolDefinition> = {
   },
 };
 
-const toolRegistry: Record<string, ToolDefinition> = {
+const staticToolRegistry: Record<string, ToolDefinition> = {
   ...filesystemTools,
   ...browserTools,
   ...webTools,
@@ -81,9 +79,17 @@ const toolRegistry: Record<string, ToolDefinition> = {
   ...learningTools,
   ...deepResearchTools,
   ...messagingTools,
+  ...acpTools,
   ...iterationTools,
   ...(DOCKER_ENV ? bashTools : {}),
 };
+
+function getToolRegistry(): Record<string, ToolDefinition> {
+  return {
+    ...staticToolRegistry,
+    ...getDynamicTools(),
+  };
+}
 
 // convert zod schema to openai parameters with full type support
 function zodToOpenAI(schema: z.ZodType): Record<string, unknown> {
@@ -193,7 +199,7 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
 }
 
 export function generateOpenAITools(): ChatCompletionTool[] {
-  return Object.entries(toolRegistry).map(([name, tool]) => ({
+  return Object.entries(getToolRegistry()).map(([name, tool]) => ({
     type: "function" as const,
     function: {
       name,
@@ -205,10 +211,13 @@ export function generateOpenAITools(): ChatCompletionTool[] {
 
 // cache tool schema at module init - regenerating per request is wasteful
 let _cachedTools: ChatCompletionTool[] | null = null;
+let _cachedToolsVersion = -1;
 
 export function getOpenAITools(): ChatCompletionTool[] {
-  if (!_cachedTools) {
+  const currentVersion = getDynamicToolsVersion();
+  if (!_cachedTools || _cachedToolsVersion !== currentVersion) {
     _cachedTools = generateOpenAITools();
+    _cachedToolsVersion = currentVersion;
   }
   return _cachedTools;
 }
@@ -606,6 +615,7 @@ export async function executeTool(
   userId: number = 0,
   assistantText?: string,
 ): Promise<string> {
+  const toolRegistry = getToolRegistry();
   const tool = toolRegistry[name];
   if (!tool) {
     return `error: unknown tool "${name}". available: ${Object.keys(toolRegistry).join(", ")}`;
@@ -680,7 +690,7 @@ received: ${args.slice(0, 150)}${args.length > 150 ? "..." : ""}`;
 }
 
 export function getAvailableTools(): string[] {
-  return Object.keys(toolRegistry);
+  return Object.keys(getToolRegistry());
 }
 
 export async function cleanupTools(): Promise<void> {

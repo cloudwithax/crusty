@@ -514,6 +514,52 @@ function initTables(): void {
 
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS acp_discovery_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      bootstrapped INTEGER NOT NULL DEFAULT 0,
+      last_scan_at INTEGER,
+      last_scan_mode TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS acp_servers (
+      transport TEXT NOT NULL DEFAULT 'http',
+      endpoint TEXT PRIMARY KEY,
+      tool_name TEXT NOT NULL UNIQUE,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      protocol_version INTEGER,
+      agent_name TEXT NOT NULL,
+      agent_title TEXT,
+      agent_version TEXT,
+      capabilities_json TEXT NOT NULL DEFAULT '{}',
+      auth_methods_json TEXT NOT NULL DEFAULT '[]',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_acp_servers_tool_name ON acp_servers(tool_name)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_acp_servers_active ON acp_servers(active, last_seen_at)`,
+  );
+
+  try {
+    db.exec(
+      `ALTER TABLE acp_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'http'`,
+    );
+  } catch {
+    // column already exists, ignore
+  }
+
   // migration: add timeout column to existing hooks tables
   try {
     db.exec(`ALTER TABLE hooks ADD COLUMN timeout TEXT`);
@@ -801,6 +847,53 @@ async function initTablesAsync(): Promise<void> {
   await pgAdapter.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_hooks_name ON hooks(name)`,
   );
+
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS acp_discovery_state (
+      id INTEGER PRIMARY KEY,
+      bootstrapped INTEGER NOT NULL DEFAULT 0,
+      last_scan_at BIGINT,
+      last_scan_mode TEXT,
+      created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())
+    )
+  `);
+
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS acp_servers (
+      transport TEXT NOT NULL DEFAULT 'http',
+      endpoint TEXT PRIMARY KEY,
+      tool_name TEXT NOT NULL UNIQUE,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      protocol_version INTEGER,
+      agent_name TEXT NOT NULL,
+      agent_title TEXT,
+      agent_version TEXT,
+      capabilities_json TEXT NOT NULL DEFAULT '{}',
+      auth_methods_json TEXT NOT NULL DEFAULT '[]',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      first_seen_at BIGINT NOT NULL,
+      last_seen_at BIGINT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+
+  await pgAdapter.execAsync(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_acp_servers_tool_name ON acp_servers(tool_name)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_acp_servers_active ON acp_servers(active, last_seen_at)`,
+  );
+
+  await pgAdapter.execAsync(`
+    DO $$
+    BEGIN
+      ALTER TABLE acp_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'http';
+    EXCEPTION WHEN duplicate_column THEN
+      NULL;
+    END $$
+  `);
 
   // migration: add timeout column to existing hooks tables
   await pgAdapter.execAsync(`
