@@ -1013,7 +1013,7 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
 }
 
 // webhook request handler for bun.serve
-function handleWebhookRequest(req: Request): Response {
+async function handleWebhookRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
   // health check endpoint
@@ -1032,31 +1032,30 @@ function handleWebhookRequest(req: Request): Response {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    // parse body and process asynchronously, respond 200 immediately
-    req
-      .json()
-      .then((body: unknown) => {
-        if (isTypingIndicatorEvent(body)) {
-          if (indicatesTyping(body)) {
-            const userKey = resolveTypingUserKey(body);
-            if (userKey) {
-              debug(`[imessage] typing indicator received for ${userKey}`);
-              imessageMessageDebouncer.markTyping(userKey);
-            }
-          }
-          return;
-        }
+    // consume body before returning to avoid abort errors from closed connections
+    // processing still runs async so webhook acknowledgment stays fast
+    try {
+      const body = await req.json();
 
+      if (isTypingIndicatorEvent(body)) {
+        if (indicatesTyping(body)) {
+          const userKey = resolveTypingUserKey(body);
+          if (userKey) {
+            debug(`[imessage] typing indicator received for ${userKey}`);
+            imessageMessageDebouncer.markTyping(userKey);
+          }
+        }
+      } else {
         const message = body as InboundMessage;
         processInboundMessage(message).catch((error) =>
           console.error("[imessage] webhook handler error:", error),
         );
-      })
-      .catch((error) => {
-        console.error("[imessage] webhook parse error:", error);
-      });
+      }
+    } catch (error) {
+      console.error("[imessage] webhook parse error:", error);
+    }
 
-    // always respond 200 immediately to prevent sendblue retries
+    // always respond 200 to prevent sendblue retries
     return new Response("OK", { status: 200 });
   }
 
