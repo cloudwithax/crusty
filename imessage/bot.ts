@@ -1025,10 +1025,10 @@ function handleWebhookRequest(req: Request): Response {
 
   // webhook endpoint for inbound messages
   if (url.pathname === "/webhook/receive" && req.method === "POST") {
-    // verify webhook secret (mandatory for security)
+    // verify webhook secret when configured
     const reqSecret = req.headers.get("x-webhook-secret");
-    if (!SENDBLUE_WEBHOOK_SECRET || reqSecret !== SENDBLUE_WEBHOOK_SECRET) {
-      debug("[imessage] webhook secret mismatch or not configured, rejecting");
+    if (SENDBLUE_WEBHOOK_SECRET && reqSecret !== SENDBLUE_WEBHOOK_SECRET) {
+      debug("[imessage] webhook secret mismatch, rejecting");
       return new Response("Unauthorized", { status: 401 });
     }
 
@@ -1078,13 +1078,9 @@ export async function startImessageBot(): Promise<void> {
   }
 
   if (!SENDBLUE_WEBHOOK_SECRET) {
-    console.error(
-      "[imessage] CRITICAL: SENDBLUE_WEBHOOK_SECRET is required to secure the webhook endpoint.",
+    console.warn(
+      "[imessage] SENDBLUE_WEBHOOK_SECRET is not set. webhook requests will be accepted without signature validation.",
     );
-    console.error(
-      "[imessage] Without it, an attacker could spoof messages and gain remote code execution.",
-    );
-    process.exit(1);
   }
 
   console.log("[imessage] starting imessage integration...");
