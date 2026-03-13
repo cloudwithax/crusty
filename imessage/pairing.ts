@@ -25,9 +25,21 @@ function ensureTable(): void {
 
 // for postgres, call this during async init
 export async function ensureImessagePairingTableAsync(): Promise<void> {
-  // sqlite is handled synchronously in ensureTable
-  // postgres support can be added here if needed
   ensureTable();
+
+  const asyncDb = getAsyncDatabase();
+  if (!asyncDb) return;
+
+  await asyncDb.run(`
+    CREATE TABLE IF NOT EXISTS imessage_pairing (
+      id INTEGER PRIMARY KEY,
+      code TEXT,
+      created_at BIGINT,
+      expires_at BIGINT,
+      used INTEGER DEFAULT 0,
+      paired_phone TEXT
+    )
+  `);
 }
 
 interface ImessagePairingData {
@@ -146,14 +158,16 @@ export async function loadImessagePairingDataAsync(): Promise<ImessagePairingDat
   if (!asyncDb) {
     return loadImessagePairingData();
   }
-  
+
   const row = await asyncDb.get<{
     code: string;
     created_at: number;
     expires_at: number;
     used: number;
     paired_phone: string | null;
-  }>("SELECT code, created_at, expires_at, used, paired_phone FROM imessage_pairing WHERE id = 1");
+  }>(
+    "SELECT code, created_at, expires_at, used, paired_phone FROM imessage_pairing WHERE id = 1",
+  );
 
   if (!row) return null;
 
@@ -187,14 +201,14 @@ export async function markImessagePairedAsync(phone: string): Promise<void> {
   }
   await asyncDb.run(
     "UPDATE imessage_pairing SET used = 1, paired_phone = $1 WHERE id = 1",
-    [phone]
+    [phone],
   );
   debug(`[imessage] paired with ${phone}`);
 }
 
 export async function saveImessagePairingCodeAsync(
   code: string,
-  expiresInMinutes: number = 60
+  expiresInMinutes: number = 60,
 ): Promise<void> {
   await ensureImessagePairingTableAsync();
   const asyncDb = getAsyncDatabase();
@@ -202,10 +216,10 @@ export async function saveImessagePairingCodeAsync(
     saveImessagePairingCode(code, expiresInMinutes);
     return;
   }
-  
+
   const now = Date.now();
   const expiresAt = now + expiresInMinutes * 60 * 1000;
-  
+
   await asyncDb.run(
     `INSERT INTO imessage_pairing (id, code, created_at, expires_at, used, paired_phone)
      VALUES (1, $1, $2, $3, 0, NULL)
@@ -215,7 +229,7 @@ export async function saveImessagePairingCodeAsync(
        expires_at = EXCLUDED.expires_at,
        used = EXCLUDED.used,
        paired_phone = EXCLUDED.paired_phone`,
-    [code, now, expiresAt]
+    [code, now, expiresAt],
   );
 }
 

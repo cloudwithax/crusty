@@ -358,6 +358,17 @@ function initTables(): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS imessage_pairing (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      code TEXT,
+      created_at INTEGER,
+      expires_at INTEGER,
+      used INTEGER DEFAULT 0,
+      paired_phone TEXT
+    )
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS self_review (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       date TEXT NOT NULL,
@@ -680,6 +691,17 @@ async function initTablesAsync(): Promise<void> {
       expires_at BIGINT,
       used INTEGER DEFAULT 0,
       paired_user_id BIGINT
+    )
+  `);
+
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS imessage_pairing (
+      id INTEGER PRIMARY KEY,
+      code TEXT,
+      created_at BIGINT,
+      expires_at BIGINT,
+      used INTEGER DEFAULT 0,
+      paired_phone TEXT
     )
   `);
 
