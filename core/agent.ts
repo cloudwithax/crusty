@@ -750,8 +750,8 @@ const MAX_TOOL_ITERATIONS = 50;
 const ITERATION_WARNING_THRESHOLD = 40; // warn when this many iterations used
 const ITERATION_EXTENSION_AMOUNT = 25; // how many extra iterations to grant
 const MAX_EXTENSIONS = 3; // max times agent can extend
-const MAX_REPEAT_ASSISTANT_MESSAGES = 2;
-const MAX_REPEAT_TOOL_SIGNATURES = 2;
+const MAX_REPEAT_ASSISTANT_MESSAGES = 10;
+const MAX_REPEAT_TOOL_SIGNATURES = 10;
 
 // scary system message to inject when nearing iteration limit
 const ITERATION_WARNING_MESSAGE = `
@@ -1282,6 +1282,7 @@ export class Agent {
     let currentMaxIterations = MAX_TOOL_ITERATIONS;
     let extensionCount = 0;
     let warningInjected = false;
+    let loopRecoveryAttempts = 0;
 
     // send plan intent once if planner produced one
     if (callbacks?.onPlanReady && taskPlan?.intent) {
@@ -1471,7 +1472,6 @@ export class Agent {
           // respond to the tool call
           this._messages.push({
             role: "tool",
-            name: "request_more_iterations",
             content: `granted ${ITERATION_EXTENSION_AMOUNT} additional iterations. new limit: ${currentMaxIterations}. extensions remaining: ${MAX_EXTENSIONS - extensionCount}`,
             tool_call_id: extensionRequest.id,
           });
@@ -1481,7 +1481,6 @@ export class Agent {
           debug(`[agent] iteration extension denied - max extensions reached`);
           this._messages.push({
             role: "tool",
-            name: "request_more_iterations",
             content: `denied. you have already used all ${MAX_EXTENSIONS} extensions. wrap up your work now.`,
             tool_call_id: extensionRequest.id,
           });
@@ -1523,15 +1522,42 @@ export class Agent {
       }
 
       if (loopReason) {
+        if (
+          loopRecoveryAttempts < 3 &&
+          loopReason !== "too many tool iterations"
+        ) {
+          loopRecoveryAttempts += 1;
+          repeatAssistantCount = 0;
+          repeatToolCount = 0;
+
+          debug(
+            `[tool loop guard] caught loop (${loopReason}), forcing recovery attempt ${loopRecoveryAttempts}/3`,
+          );
+
+          this._messages.push({
+            role: "user",
+            content: `CRITICAL SYSTEM INTERVENTION: You are stuck in a loop (${loopReason}). You are repeating the exact same failed tool calls or responses. STOP doing this. Read any tool error messages carefully. Fix your syntax, change your arguments, use a completely different tool, or ask the user for help. DO NOT repeat your previous action.`,
+          });
+
+          for (const toolCall of toolCalls) {
+            this._messages.push({
+              role: "tool",
+              content: `SYSTEM ERROR: Blocked repeating tool call (${loopReason}). Fix your arguments or try a different approach.`,
+              tool_call_id: toolCall.id,
+            });
+          }
+
+          continue;
+        }
+
         loopGuardMessage =
           "i got stuck in a tool loop and stopped to avoid repeating myself. please try again.";
         lastTextResponse = loopGuardMessage;
-        debug(`[tool loop guard] ${loopReason}`);
+        debug(`[tool loop guard] ${loopReason} (final)`);
 
         for (const toolCall of toolCalls) {
           this._messages.push({
             role: "tool",
-            name: toolCall.function.name,
             content: `error: tool call stopped to avoid loop (${loopReason})`,
             tool_call_id: toolCall.id,
           });
@@ -1626,7 +1652,6 @@ export class Agent {
         const compressedResult = compressToolOutput(result, name);
         this._messages.push({
           role: "tool",
-          name: name,
           content: compressedResult,
           tool_call_id: toolCall.id,
         });
