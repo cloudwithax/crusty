@@ -839,6 +839,27 @@ export interface AgentCallbacks {
   abortSignal?: AbortSignal;
 }
 
+type UserImageContentPart = {
+  type: "image_url";
+  image_url: {
+    url: string;
+    detail?: "auto" | "low" | "high";
+  };
+};
+
+type UserTextContentPart = {
+  type: "text";
+  text: string;
+};
+
+type UserMessageContent =
+  | string
+  | Array<UserTextContentPart | UserImageContentPart>;
+
+interface ChatInputOptions {
+  userContent?: UserMessageContent;
+}
+
 // error thrown when agent loop is interrupted by a new user message
 export class AgentInterruptedError extends Error {
   constructor() {
@@ -919,6 +940,7 @@ export class Agent {
     userMessage: string,
     callbacks?: AgentCallbacks,
     replyContext?: string,
+    inputOptions?: ChatInputOptions,
   ): Promise<string> {
     await this.initialize();
 
@@ -989,14 +1011,23 @@ export class Agent {
       debug("[agent] injected one-time model change notice into context");
     }
 
-    // build the user message with optional reply context
-    let messageContent = userMessage;
+    // build the user message with optional multimodal content and reply context
+    let messageContent: UserMessageContent =
+      inputOptions?.userContent ?? userMessage;
     if (replyContext) {
-      messageContent = `[replying to your previous message: "${replyContext}"]\n\n${userMessage}`;
+      const replyPrefix = `[replying to your previous message: "${replyContext}"]\n\n`;
+      if (typeof messageContent === "string") {
+        messageContent = `${replyPrefix}${messageContent}`;
+      } else {
+        messageContent = [
+          { type: "text", text: replyPrefix },
+          ...messageContent,
+        ];
+      }
       debug(`[agent] reply context attached`);
     }
 
-    this._messages.push({ role: "user", content: messageContent });
+    this._messages.push({ role: "user", content: messageContent as any });
     this.scheduleSave();
 
     // optional planning for complex tasks
@@ -1008,7 +1039,7 @@ export class Agent {
       const recentContext = this._messages
         .slice(-6)
         .filter((m) => m.role !== "system")
-        .map((m) => `${m.role}: ${String(m.content).slice(0, 200)}`)
+        .map((m) => `${m.role}: ${normalizeContent(m.content).slice(0, 200)}`)
         .join("\n");
 
       taskPlan = await createPlan(
@@ -1367,7 +1398,9 @@ export class Agent {
         }
         debug(`[text]: ${(cleaned || lastTextResponse).slice(0, 100)}...`);
       } else if (content.trim() && toolCalls.length > 0) {
-        debug(`[intermediate text suppressed]: ${cleanModelResponse(content).slice(0, 100)}...`);
+        debug(
+          `[intermediate text suppressed]: ${cleanModelResponse(content).slice(0, 100)}...`,
+        );
       }
 
       // add assistant message to history (strip reasoning tags to reduce context bloat)

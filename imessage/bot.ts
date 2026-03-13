@@ -316,6 +316,79 @@ function buildInboundBurstText(messages: InboundMessage[]): string {
   return joinBufferedText(messages.map((message) => message.content || ""));
 }
 
+function extractInboundMediaUrls(message: InboundMessage): string[] {
+  const raw = (message.media_url || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  const candidates: string[] = [];
+
+  // sendblue may serialize media urls as either JSON array or delimited text
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      for (const value of parsed) {
+        if (typeof value === "string") {
+          candidates.push(value.trim());
+        }
+      }
+    }
+  } catch {
+    // ignore parse errors and fall back to delimiter parsing
+  }
+
+  if (candidates.length === 0) {
+    for (const value of raw.split(/[\s,]+/)) {
+      const trimmed = value.trim();
+      if (trimmed) {
+        candidates.push(trimmed);
+      }
+    }
+  }
+
+  const deduped = new Set<string>();
+  for (const value of candidates) {
+    try {
+      const parsedUrl = new URL(value);
+      if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
+        deduped.add(parsedUrl.toString());
+      }
+    } catch {
+      // ignore invalid urls
+    }
+  }
+
+  return Array.from(deduped);
+}
+
+function collectInboundMediaUrls(messages: InboundMessage[]): string[] {
+  const deduped = new Set<string>();
+  for (const message of messages) {
+    for (const url of extractInboundMediaUrls(message)) {
+      deduped.add(url);
+    }
+  }
+  return Array.from(deduped);
+}
+
+function buildMultimodalUserContent(
+  text: string,
+  mediaUrls: string[],
+): Array<
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+> {
+  const messageText = text.trim() || "please analyze the attached image";
+  return [
+    { type: "text", text: messageText },
+    ...mediaUrls.map((url) => ({
+      type: "image_url" as const,
+      image_url: { url },
+    })),
+  ];
+}
+
 function isTypingIndicatorEvent(body: unknown): body is TypingIndicatorEvent {
   if (!body || typeof body !== "object") {
     return false;
@@ -392,8 +465,12 @@ async function processDebouncedInboundMessages(
     return;
   }
 
+  const mediaUrls = collectInboundMediaUrls(messages);
   const combinedText = buildInboundBurstText(messages);
-  if (!combinedText) {
+  const modelText =
+    combinedText ||
+    (mediaUrls.length > 0 ? "please analyze the attached image" : "");
+  if (!modelText) {
     return;
   }
 
@@ -414,7 +491,7 @@ async function processDebouncedInboundMessages(
     userId,
     phone,
     anchorMessage.message_handle,
-    combinedText,
+    modelText,
   );
   const agent = getOrCreateAgent(userId, threadId);
 
@@ -443,7 +520,16 @@ async function processDebouncedInboundMessages(
   };
 
   try {
-    const response = await agent.chat(combinedText, callbacks);
+    const response = await agent.chat(
+      modelText,
+      callbacks,
+      undefined,
+      mediaUrls.length > 0
+        ? {
+            userContent: buildMultimodalUserContent(modelText, mediaUrls),
+          }
+        : undefined,
+    );
     clearInterval(typingInterval);
     processingUsers.delete(userId);
 
@@ -928,11 +1014,18 @@ async function handleSkillWizardInput(
 
 // process an inbound imessage
 async function processInboundMessage(message: InboundMessage): Promise<void> {
-  // skip outbound messages and empty content
-  if (message.is_outbound || !message.content) return;
+  // skip outbound messages and empty payloads
+  if (message.is_outbound) return;
+
+  const mediaUrls = extractInboundMediaUrls(message);
+  const hasMedia = mediaUrls.length > 0;
+  const text = message.content || "";
+  const hasText = text.trim().length > 0;
+  if (!hasText && !hasMedia) {
+    return;
+  }
 
   const phone = message.from_number;
-  const text = message.content;
   const userId = phoneToUserId(phone);
 
   // deduplicate webhook retries
@@ -944,7 +1037,11 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   setTimeout(() => processedMessages.delete(message.message_handle), DEDUP_TTL);
 
   debug(
-    `[imessage] from ${phone}: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`,
+    `[imessage] from ${phone}: ${
+      hasText
+        ? `${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`
+        : `[media:${mediaUrls.length}]`
+    }`,
   );
 
   // pairing flow
@@ -982,13 +1079,13 @@ async function processInboundMessage(message: InboundMessage): Promise<void> {
   }
 
   // soul input handler
-  if (await handleSoulInput(userId, phone, text)) return;
+  if (hasText && (await handleSoulInput(userId, phone, text))) return;
 
   // skill wizard handler
-  if (await handleSkillWizardInput(userId, phone, text)) return;
+  if (hasText && (await handleSkillWizardInput(userId, phone, text))) return;
 
   // command handling
-  if (text.startsWith("/")) {
+  if (hasText && text.startsWith("/")) {
     imessageMessageDebouncer.clear(String(userId));
     interruptQueue.delete(userId);
     processingUsers.get(userId)?.abort();
