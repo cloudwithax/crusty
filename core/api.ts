@@ -145,6 +145,11 @@ export async function nativeChatCompletion(
             });
           } else {
             const existing = toolCallsMap.get(index);
+            if (tc.id) existing.id = tc.id;
+            if (tc.type) existing.type = tc.type;
+            if (tc.function?.name) {
+              existing.function.name += tc.function.name;
+            }
             if (tc.function?.arguments) {
               existing.function.arguments += tc.function.arguments;
             }
