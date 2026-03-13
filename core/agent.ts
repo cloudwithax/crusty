@@ -1471,6 +1471,7 @@ export class Agent {
           // respond to the tool call
           this._messages.push({
             role: "tool",
+            name: "request_more_iterations",
             content: `granted ${ITERATION_EXTENSION_AMOUNT} additional iterations. new limit: ${currentMaxIterations}. extensions remaining: ${MAX_EXTENSIONS - extensionCount}`,
             tool_call_id: extensionRequest.id,
           });
@@ -1480,6 +1481,7 @@ export class Agent {
           debug(`[agent] iteration extension denied - max extensions reached`);
           this._messages.push({
             role: "tool",
+            name: "request_more_iterations",
             content: `denied. you have already used all ${MAX_EXTENSIONS} extensions. wrap up your work now.`,
             tool_call_id: extensionRequest.id,
           });
@@ -1529,6 +1531,7 @@ export class Agent {
         for (const toolCall of toolCalls) {
           this._messages.push({
             role: "tool",
+            name: toolCall.function.name,
             content: `error: tool call stopped to avoid loop (${loopReason})`,
             tool_call_id: toolCall.id,
           });
@@ -1623,6 +1626,7 @@ export class Agent {
         const compressedResult = compressToolOutput(result, name);
         this._messages.push({
           role: "tool",
+          name: name,
           content: compressedResult,
           tool_call_id: toolCall.id,
         });

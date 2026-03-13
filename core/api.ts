@@ -33,10 +33,12 @@ export async function nativeChatCompletion(
   options: NativeChatOptions,
   signal?: AbortSignal,
 ): Promise<NativeChatResponse> {
-  const baseUrl = (
-    process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
-  ).replace(/\/$/, "");
-  const url = `${baseUrl}/chat/completions`;
+  let url = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+  url = url.replace(/\/$/, "");
+  // if user provided full endpoint url directly, don't append chat/completions
+  if (!url.endsWith("/chat/completions")) {
+    url = `${url}/chat/completions`;
+  }
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
@@ -55,9 +57,17 @@ export async function nativeChatCompletion(
 
   const payload = {
     ...options,
+    model: options.model?.startsWith("opencode-go/")
+      ? options.model.replace("opencode-go/", "")
+      : options.model,
     stream: true,
-    stream_options: { include_usage: true },
   };
+
+  // only apply stream_options for providers known to support it safely,
+  // to avoid 400 Bad Request on strict compatible gateways like opencode
+  if (url.includes("api.openai.com") || url.includes("openrouter.ai")) {
+    (payload as any).stream_options = { include_usage: true };
+  }
 
   const response = await fetch(url, {
     method: "POST",
