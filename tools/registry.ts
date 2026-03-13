@@ -627,9 +627,24 @@ export async function executeTool(
 
   try {
     parsed = JSON.parse(args);
-    // check if parsed successfully but values are garbage
-    if (parsed && typeof parsed === "object") {
+    // handle double-encoded tool arguments (some models send a JSON string inside a JSON string)
+    if (typeof parsed === "string") {
+      try {
+        const doubleParsed = JSON.parse(parsed);
+        if (doubleParsed && typeof doubleParsed === "object") {
+          parsed = doubleParsed;
+        } else {
+          needsRecovery = true;
+        }
+      } catch {
+        needsRecovery = true;
+      }
+    } else if (parsed && typeof parsed === "object") {
+      // check if parsed successfully but values are garbage
       needsRecovery = isGarbageArgs(parsed as Record<string, unknown>, name);
+    } else if (typeof parsed !== "object") {
+      // e.g. evaluated to a number or unhandled type
+      needsRecovery = true;
     }
   } catch {
     needsRecovery = true;

@@ -1570,10 +1570,15 @@ export class Agent {
             | undefined;
 
           name = fn?.name ?? custom?.name ?? String(anyCall.name ?? "unknown");
-          args =
+
+          const rawArgs =
             fn?.arguments ??
             custom?.input ??
-            String(anyCall.arguments ?? anyCall.input ?? "{}");
+            anyCall.arguments ??
+            anyCall.input ??
+            "{}";
+          args =
+            typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs);
         }
 
         debug(`[tool: ${name}]`);
