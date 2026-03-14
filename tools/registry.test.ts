@@ -190,6 +190,34 @@ describe("executeTool - malformed args recovery", () => {
     expect(result).toContain("exit code: 0");
   });
 
+  it("accepts raw string command payloads for bash_execute", async () => {
+    const testKeyPath = `/tmp/registry-test-rsa-${Date.now()}`;
+    const malformedKeyPath = `/tmp/registry-test-rsa2-${Date.now()}`;
+
+    const validRaw = JSON.stringify(
+      `ssh-keygen -t rsa -b 4096 -f ${testKeyPath} -N ""`,
+    );
+
+    const result = await executeTool("bash_execute", validRaw, 0);
+
+    expect(result).toContain("exit code: 0");
+    expect(result).not.toContain("could not parse a valid command");
+
+    const malformedRaw = `"ssh-keygen -t rsa -b 4096 -f ${malformedKeyPath} -N """`;
+
+    const malformedResult = await executeTool("bash_execute", malformedRaw, 0);
+
+    expect(malformedResult).not.toContain("could not parse a valid command");
+
+    await executeTool(
+      "bash_execute",
+      JSON.stringify({
+        command: `rm -f ${testKeyPath} ${testKeyPath}.pub ${malformedKeyPath} ${malformedKeyPath}.pub`,
+      }),
+      0,
+    );
+  });
+
   it("forces a non-empty result when a tool handler returns blank content", () => {
     const result = ensureNonEmptyToolResult("heartbeat_read", "   ");
 
@@ -270,7 +298,9 @@ describe("executeTool - credentials store", () => {
       const row = getDatabase()
         .query<{
           encrypted_value: string;
-        }>(`SELECT encrypted_value FROM credentials WHERE user_id = ? AND scope = ? AND owner = ? AND name = ?`)
+        }>(
+          `SELECT encrypted_value FROM credentials WHERE user_id = ? AND scope = ? AND owner = ? AND name = ?`,
+        )
         .get(userId, "skill", owner, name);
       expect(row?.encrypted_value).toBeDefined();
       expect(row?.encrypted_value).not.toContain(secret);

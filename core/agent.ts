@@ -393,6 +393,28 @@ function buildToolSignature(
     .join("|");
 }
 
+export function ensureToolCallIds(toolCalls: ChatCompletionMessageToolCall[]): {
+  toolCalls: ChatCompletionMessageToolCall[];
+  repairedCount: number;
+} {
+  const now = Date.now();
+  let repairedCount = 0;
+  const normalized = toolCalls.map((toolCall, idx) => {
+    const id = (toolCall as { id?: string }).id;
+    if (typeof id === "string" && id.trim()) {
+      return toolCall;
+    }
+
+    repairedCount += 1;
+    return {
+      ...toolCall,
+      id: `tc_${now}_${idx}`,
+    };
+  });
+
+  return { toolCalls: normalized, repairedCount };
+}
+
 export interface AgentCallbacks {
   onPlanReady?: (intent: string) => Promise<void>;
   onTyping?: () => Promise<void>;
@@ -948,6 +970,14 @@ export class Agent {
           );
         }
       }
+
+      const normalizedToolCalls = ensureToolCallIds(toolCalls);
+      if (normalizedToolCalls.repairedCount > 0) {
+        debug(
+          `[agent] repaired ${normalizedToolCalls.repairedCount} tool call id(s)`,
+        );
+      }
+      toolCalls = normalizedToolCalls.toolCalls;
 
       // collect text response - only from final (non-tool) iterations.
       // text produced alongside tool calls is intermediate reasoning (e.g. "let me

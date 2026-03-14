@@ -747,6 +747,12 @@ function recoverMalformedArgs(
       }
     }
 
+    const stripped = brokenArgs.trim().replace(/^['"`]+|['"`]+$/g, "");
+    const normalized = stripped.replace(/\\\"/g, '"').trim();
+    if (looksLikeShellCommand(normalized)) {
+      return { ...originalArgs, command: normalized };
+    }
+
     // no valid command found - preserve other valid args but let validation fail on missing command
     return originalArgs;
   }
@@ -814,6 +820,20 @@ function isGarbageArgs(
   return false;
 }
 
+function looksLikeShellCommand(input: string): boolean {
+  const trimmed = input.trim().replace(/^['"`]+|['"`]+$/g, "");
+  if (trimmed.length < 2) return false;
+  if (!/[a-zA-Z]/.test(trimmed)) return false;
+  if (/^[,.:;!?]+$/.test(trimmed)) return false;
+
+  const firstToken = trimmed.split(/\s+/)[0]?.trim() ?? "";
+  if (!firstToken) return false;
+  if (!/^[a-zA-Z][a-zA-Z0-9._+-]*$/.test(firstToken)) return false;
+  if (firstToken.toLowerCase() === "command") return false;
+
+  return true;
+}
+
 export async function executeTool(
   name: string,
   args: string,
@@ -838,11 +858,27 @@ export async function executeTool(
         const doubleParsed = JSON.parse(parsed);
         if (doubleParsed && typeof doubleParsed === "object") {
           parsed = doubleParsed;
+        } else if (
+          name === "bash_execute" &&
+          typeof parsed === "string" &&
+          looksLikeShellCommand(parsed)
+        ) {
+          parsed = { command: parsed };
+          needsRecovery = false;
         } else {
           needsRecovery = true;
         }
       } catch {
-        needsRecovery = true;
+        if (
+          name === "bash_execute" &&
+          typeof parsed === "string" &&
+          looksLikeShellCommand(parsed)
+        ) {
+          parsed = { command: parsed };
+          needsRecovery = false;
+        } else {
+          needsRecovery = true;
+        }
       }
     } else if (parsed && typeof parsed === "object") {
       // check if parsed successfully but values are garbage
