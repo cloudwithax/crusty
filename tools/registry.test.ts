@@ -2,6 +2,53 @@ import { describe, it, expect } from "bun:test";
 import { executeTool, ensureNonEmptyToolResult } from "./registry.ts";
 
 describe("executeTool - malformed args recovery", () => {
+  it("recovers web_search from quoted key-value string", async () => {
+    const result = await executeTool(
+      "web_search",
+      '"query: bun typescript"',
+      0,
+    );
+
+    expect(result).not.toContain("error: invalid arguments for web_search");
+  });
+
+  it("recovers search_sessions from key-value string", async () => {
+    const result = await executeTool("search_sessions", '"query: 4claw"', 0);
+
+    expect(result).not.toContain(
+      "error: invalid arguments for search_sessions",
+    );
+    expect(result).toContain("[Session Search]");
+  });
+
+  it("recovers web_fetch from wrapped xml-ish arg string", async () => {
+    const result = await executeTool(
+      "web_fetch",
+      '"url\\\": \\\"https://www.4claw.org/skill.md</parameter>\\n</invoke>"',
+      0,
+    );
+
+    expect(result).not.toContain("expected object, received string");
+  });
+
+  it("recovers recall_memory from string-style query args", async () => {
+    const result = await executeTool(
+      "recall_memory",
+      '"query: 4claw tripcode rsa key"',
+      0,
+    );
+
+    expect(result).not.toContain("error: invalid arguments for recall_memory");
+    expect(result).toContain("[Memory]");
+  });
+
+  it("recovers search_memory from string-style query args", async () => {
+    const result = await executeTool("search_memory", '"query: 4claw"', 0);
+
+    expect(result).not.toContain("error: invalid arguments for search_memory");
+    expect(result).toContain("[Memory Search]");
+  });
+
   it('normalizes web_fetch string args like "url" into object-shaped args', async () => {
     const result = await executeTool("web_fetch", '"url"', 0);
 

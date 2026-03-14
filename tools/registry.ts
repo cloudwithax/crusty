@@ -344,12 +344,144 @@ function sanitizeArgs(
   return result;
 }
 
+function unwrapZodType(schema: z.ZodType): z.ZodType {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let current: any = schema;
+
+  while (current?._def) {
+    const typeName = current._def.typeName as string;
+    if (
+      typeName === "ZodOptional" ||
+      typeName === "ZodNullable" ||
+      typeName === "ZodDefault"
+    ) {
+      current = current._def.innerType;
+      continue;
+    }
+    break;
+  }
+
+  return current as z.ZodType;
+}
+
+function getObjectShape(schema: z.ZodType): Record<string, z.ZodType> | null {
+  const unwrapped = unwrapZodType(schema);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (unwrapped as any)?._def;
+  if (!def || def.typeName !== "ZodObject") {
+    return null;
+  }
+
+  const shape = def.shape?.() || def.shape || {};
+  return shape as Record<string, z.ZodType>;
+}
+
+function coerceStringForSchema(rawValue: string, schema: z.ZodType): unknown {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const unwrapped = unwrapZodType(schema);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const typeName = (unwrapped as any)?._def?.typeName as string | undefined;
+
+  if (typeName === "ZodNumber") {
+    const numMatch = trimmed.match(/-?\d+(?:\.\d+)?/);
+    if (numMatch) {
+      const parsed = Number(numMatch[0]);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return trimmed;
+  }
+
+  if (typeName === "ZodBoolean") {
+    const normalized = trimmed.toLowerCase();
+    if (normalized === "true" || normalized === "yes" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "no" || normalized === "0") {
+      return false;
+    }
+    return trimmed;
+  }
+
+  if (typeName === "ZodArray") {
+    return trimmed
+      .split(/[\n,]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  return trimmed;
+}
+
+function recoverArgsFromSchema(
+  schema: z.ZodType,
+  brokenArgs: string,
+): Record<string, unknown> {
+  const shape = getObjectShape(schema);
+  if (!shape) {
+    return {};
+  }
+
+  const knownKeys = new Set(Object.keys(shape));
+  const recovered: Record<string, unknown> = {};
+  const normalized = brokenArgs
+    .replace(/\\"/g, '"')
+    .replace(/<\/?parameter>/gi, " ")
+    .replace(/<\/?invoke>/gi, " ")
+    .replace(/[{}]/g, " ");
+
+  const keyValueRegex =
+    /([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]\s*("[^"]*"|'[^']*'|[^,;\n]+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = keyValueRegex.exec(normalized)) !== null) {
+    const rawKey = match[1]?.trim();
+    const rawValue = match[2]?.trim();
+    if (!rawKey || !rawValue || !knownKeys.has(rawKey)) {
+      continue;
+    }
+
+    const unquoted = rawValue.replace(/^['\"]+|['\"]+$/g, "").trim();
+    recovered[rawKey] = coerceStringForSchema(unquoted, shape[rawKey]!);
+  }
+
+  if (Object.keys(recovered).length > 0) {
+    return recovered;
+  }
+
+  const stripped = normalized.trim().replace(/^['\"]+|['\"]+$/g, "");
+  const cleaned = stripped
+    .replace(/^[a-zA-Z_][a-zA-Z0-9_]*\s*[:=]\s*/i, "")
+    .trim();
+
+  if (!cleaned || /^query$/i.test(cleaned)) {
+    return {};
+  }
+
+  for (const [key, fieldSchema] of Object.entries(shape)) {
+    const unwrapped = unwrapZodType(fieldSchema);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const typeName = (unwrapped as any)?._def?.typeName as string | undefined;
+    if (typeName === "ZodString") {
+      return { [key]: cleaned };
+    }
+  }
+
+  return {};
+}
+
 // attempt to recover valid json from malformed tool arguments
 // assistantText can be used to extract intent when args are completely garbage
 function recoverMalformedArgs(
   toolName: string,
   brokenArgs: string,
   assistantText?: string,
+  schema?: z.ZodType,
 ): Record<string, unknown> {
   const directionMatch = brokenArgs.match(
     /"?direction"?\s*[:=]\s*"?(up|down)/i,
@@ -469,6 +601,41 @@ function recoverMalformedArgs(
     const cleaned = brokenArgs.replace(/[{}":]/g, "").trim();
     if (cleaned.length >= 2 && !cleaned.includes("=")) {
       return { ...originalArgs, query: cleaned };
+    }
+  }
+
+  // query-driven memory and learning tools
+  if (
+    toolName === "recall_memory" ||
+    toolName === "search_memory" ||
+    toolName === "search_sessions" ||
+    toolName === "search_learnings"
+  ) {
+    const query = queryMatch?.[1]?.trim();
+    if (query && query.length >= 2) {
+      return { ...originalArgs, query };
+    }
+
+    const stripped = brokenArgs.trim().replace(/^['\"]+|['\"]+$/g, "");
+    const cleaned = stripped
+      .replace(/[{}\[\]\"]/g, "")
+      .replace(/^query\s*[:=]?\s*/i, "")
+      .trim();
+
+    if (cleaned.length >= 2 && !/^query$/i.test(cleaned)) {
+      return { ...originalArgs, query: cleaned };
+    }
+
+    if (assistantText) {
+      const assistantQueryMatch = assistantText.match(
+        /(?:for|about|on|query\s*[:=])\s+([^\n]{2,200})/i,
+      );
+      const assistantQuery = assistantQueryMatch?.[1]
+        ?.replace(/["'`<>]/g, "")
+        .trim();
+      if (assistantQuery && assistantQuery.length >= 2) {
+        return { ...originalArgs, query: assistantQuery };
+      }
     }
   }
 
@@ -616,6 +783,13 @@ function recoverMalformedArgs(
       return { ...originalArgs, pat: patMatch[1], path: pathMatch?.[1] };
   }
 
+  if (schema) {
+    const genericRecovered = recoverArgsFromSchema(schema, brokenArgs);
+    if (Object.keys(genericRecovered).length > 0) {
+      return { ...originalArgs, ...genericRecovered };
+    }
+  }
+
   // no recovery possible - preserve whatever we could parse
   return originalArgs;
 }
@@ -681,7 +855,7 @@ export async function executeTool(
 
   if (needsRecovery) {
     // attempt recovery from malformed/garbage args
-    parsed = recoverMalformedArgs(name, args, assistantText);
+    parsed = recoverMalformedArgs(name, args, assistantText, tool.schema);
   }
 
   // sanitize and coerce types before validation
