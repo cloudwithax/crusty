@@ -311,7 +311,7 @@ const ITERATION_WARNING_THRESHOLD = 40; // warn when this many iterations used
 const ITERATION_EXTENSION_AMOUNT = 25; // how many extra iterations to grant
 const MAX_EXTENSIONS = 3; // max times agent can extend
 const MAX_REPEAT_ASSISTANT_MESSAGES = 10;
-const MAX_REPEAT_TOOL_SIGNATURES = 10;
+const MAX_REPEAT_TOOL_SIGNATURES = 4;
 
 // scary system message to inject when nearing iteration limit
 const ITERATION_WARNING_MESSAGE = `

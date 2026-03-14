@@ -371,7 +371,10 @@ function recoverMalformedArgs(
   // try to parse the original args to preserve any valid fields
   let originalArgs: Record<string, unknown> = {};
   try {
-    originalArgs = JSON.parse(brokenArgs) as Record<string, unknown>;
+    const parsed = JSON.parse(brokenArgs);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      originalArgs = parsed as Record<string, unknown>;
+    }
   } catch {
     // if completely unparseable, start with empty object
     originalArgs = {};
@@ -427,6 +430,32 @@ function recoverMalformedArgs(
       if (url.startsWith("//")) url = `https:${url}`;
       if (!url.startsWith("http") && url.includes(".")) url = `https://${url}`;
       return { ...originalArgs, url };
+    }
+
+    const rawValue = brokenArgs.trim().replace(/^['\"]+|['\"]+$/g, "");
+    const rawLooksLikeUrl =
+      /^(?:https?:\/\/|\/\/)/i.test(rawValue) ||
+      /^[a-z0-9][-a-z0-9]*\.[a-z]{2,}(?:\/[^\s]*)?$/i.test(rawValue);
+
+    if (rawLooksLikeUrl) {
+      let url = rawValue;
+      if (url.startsWith("//")) url = `https:${url}`;
+      if (!url.startsWith("http") && url.includes(".")) url = `https://${url}`;
+      return { ...originalArgs, url };
+    }
+
+    if (assistantText) {
+      const assistantUrlMatch = assistantText.match(
+        /((?:https?:)?\/\/[^\s\"'<>]+|[a-z0-9][-a-z0-9]*\.[a-z]{2,}[^\s\"'<>]*)/i,
+      );
+      if (assistantUrlMatch?.[1]) {
+        let url = assistantUrlMatch[1].trim();
+        if (url.startsWith("//")) url = `https:${url}`;
+        if (!url.startsWith("http") && url.includes(".")) {
+          url = `https://${url}`;
+        }
+        return { ...originalArgs, url };
+      }
     }
   }
 

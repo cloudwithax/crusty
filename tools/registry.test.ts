@@ -2,6 +2,14 @@ import { describe, it, expect } from "bun:test";
 import { executeTool, ensureNonEmptyToolResult } from "./registry.ts";
 
 describe("executeTool - malformed args recovery", () => {
+  it('normalizes web_fetch string args like "url" into object-shaped args', async () => {
+    const result = await executeTool("web_fetch", '"url"', 0);
+
+    expect(result).toContain("error: invalid arguments for web_fetch");
+    expect(result).toContain("url");
+    expect(result).not.toContain("expected object, received string");
+  });
+
   it("recovers command from assistant text when args have garbage command", async () => {
     // garbage command with valid timeout/workdir
     const args = JSON.stringify({
