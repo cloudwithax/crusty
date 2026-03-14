@@ -910,7 +910,7 @@ export class Agent {
           }
         }
 
-        debug(`[api error after 10 retries: ${errorDetails}]`);
+        debug(`[api error after retries: ${errorDetails}]`);
         return (
           lastTextResponse ||
           "the inference endpoint is not responding after multiple retries. this could be a provider outage or network issue - give it a few minutes and try again."

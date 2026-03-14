@@ -48,6 +48,7 @@ import {
   generateImessagePairingCode,
   saveImessagePairingCodeAsync,
 } from "./pairing";
+import sharp from "sharp";
 
 // environment configuration
 const SENDBLUE_API_KEY = process.env.SENDBLUE_API_KEY;
@@ -101,6 +102,24 @@ const awaitingSoulInput = new Set<number>();
 // deduplication set for message handles (sendblue may retry)
 const processedMessages = new Set<string>();
 const DEDUP_TTL = 60_000; // 1 minute
+
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+]);
+
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+const MAX_IMAGE_CONVERSION_SOURCE_BYTES = 15 * 1024 * 1024;
+const MAX_IMAGE_CONVERSION_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 const imessageMessageDebouncer = new MessageDebouncer<InboundMessage>({
   onFlush: async ({ items }) => {
@@ -372,6 +391,118 @@ function collectInboundMediaUrls(messages: InboundMessage[]): string[] {
   return Array.from(deduped);
 }
 
+function getUrlExtension(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase();
+    const match = pathname.match(/\.([a-z0-9]+)$/);
+    return match?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMimeType(contentTypeHeader: string | null): string | undefined {
+  if (!contentTypeHeader) {
+    return undefined;
+  }
+
+  const contentType = contentTypeHeader.split(";")[0]?.trim().toLowerCase();
+  return contentType || undefined;
+}
+
+async function getMediaMimeType(url: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(url, { method: "HEAD" });
+    if (!response.ok) {
+      return undefined;
+    }
+
+    return parseMimeType(response.headers.get("content-type"));
+  } catch {
+    return undefined;
+  }
+}
+
+async function convertMediaUrlToJpegDataUrl(
+  url: string,
+): Promise<string | undefined> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      return undefined;
+    }
+
+    const contentLengthHeader = response.headers.get("content-length");
+    if (contentLengthHeader) {
+      const contentLength = Number.parseInt(contentLengthHeader, 10);
+      if (
+        Number.isFinite(contentLength) &&
+        contentLength > MAX_IMAGE_CONVERSION_SOURCE_BYTES
+      ) {
+        return undefined;
+      }
+    }
+
+    const sourceBytes = Buffer.from(await response.arrayBuffer());
+    if (
+      sourceBytes.length === 0 ||
+      sourceBytes.length > MAX_IMAGE_CONVERSION_SOURCE_BYTES
+    ) {
+      return undefined;
+    }
+
+    const jpegBytes = await sharp(sourceBytes).jpeg({ quality: 85 }).toBuffer();
+    if (
+      jpegBytes.length === 0 ||
+      jpegBytes.length > MAX_IMAGE_CONVERSION_OUTPUT_BYTES
+    ) {
+      return undefined;
+    }
+
+    return `data:image/jpeg;base64,${jpegBytes.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function prepareInboundMediaUrls(mediaUrls: string[]): Promise<{
+  modelUrls: string[];
+  unsupportedUrls: string[];
+  convertedCount: number;
+}> {
+  const modelUrls: string[] = [];
+  const unsupportedUrls: string[] = [];
+  let convertedCount = 0;
+
+  for (const url of mediaUrls) {
+    const extension = getUrlExtension(url);
+    if (extension && SUPPORTED_IMAGE_EXTENSIONS.has(extension)) {
+      modelUrls.push(url);
+      continue;
+    }
+
+    const mimeType = await getMediaMimeType(url);
+    if (mimeType && SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+      modelUrls.push(url);
+      continue;
+    }
+
+    if (!mimeType || mimeType.startsWith("image/")) {
+      const converted = await convertMediaUrlToJpegDataUrl(url);
+      if (converted) {
+        modelUrls.push(converted);
+        convertedCount++;
+        continue;
+      }
+    }
+
+    unsupportedUrls.push(url);
+  }
+
+  return { modelUrls, unsupportedUrls, convertedCount };
+}
+
 function buildMultimodalUserContent(
   text: string,
   mediaUrls: string[],
@@ -465,17 +596,37 @@ async function processDebouncedInboundMessages(
     return;
   }
 
-  const mediaUrls = collectInboundMediaUrls(messages);
+  const rawMediaUrls = collectInboundMediaUrls(messages);
+  const { modelUrls: mediaUrls, unsupportedUrls, convertedCount } =
+    await prepareInboundMediaUrls(rawMediaUrls);
   const combinedText = buildInboundBurstText(messages);
   const modelText =
     combinedText ||
-    (mediaUrls.length > 0 ? "please analyze the attached image" : "");
+    (rawMediaUrls.length > 0 ? "please analyze the attached image" : "");
   if (!modelText) {
     return;
   }
 
   const phone = anchorMessage.from_number;
   const userId = phoneToUserId(phone);
+
+  if (rawMediaUrls.length > 0 && mediaUrls.length === 0 && !combinedText) {
+    await sendMessage(
+      phone,
+      "I can only analyze image attachments in PNG, JPEG, WebP, or GIF format. Please resend your image in one of those formats.",
+    );
+    return;
+  }
+
+  if (unsupportedUrls.length > 0) {
+    debug(
+      `[imessage] skipped ${unsupportedUrls.length} unsupported media attachment(s)`,
+    );
+  }
+
+  if (convertedCount > 0) {
+    debug(`[imessage] converted ${convertedCount} attachment(s) to jpeg`);
+  }
 
   const existingController = processingUsers.get(userId);
   if (existingController) {
