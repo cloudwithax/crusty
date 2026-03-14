@@ -20,6 +20,7 @@ export interface NativeChatResponse {
       role: "assistant";
       content: string;
       tool_calls?: ChatCompletionMessageToolCall[];
+      reasoning_content?: string;
     };
   }>;
   usage?: {
@@ -104,6 +105,7 @@ export async function nativeChatCompletion(
   const decoder = new TextDecoder("utf-8");
 
   let content = "";
+  let reasoningContent = "";
   const toolCallsMap = new Map<number, any>();
   let finalUsage: any = null;
   let buffer = "";
@@ -129,6 +131,28 @@ export async function nativeChatCompletion(
 
       if (delta.content) {
         content += delta.content;
+      }
+
+      if (typeof delta.reasoning_content === "string") {
+        reasoningContent += delta.reasoning_content;
+      }
+
+      // handle provider-specific reasoning payload variants
+      if (delta.reasoning && typeof delta.reasoning === "string") {
+        reasoningContent += delta.reasoning;
+      } else if (delta.reasoning && typeof delta.reasoning === "object") {
+        const reasoning = delta.reasoning as any;
+        if (typeof reasoning.content === "string") {
+          reasoningContent += reasoning.content;
+        } else if (Array.isArray(reasoning.content)) {
+          for (const part of reasoning.content) {
+            if (typeof part === "string") {
+              reasoningContent += part;
+            } else if (part && typeof part.text === "string") {
+              reasoningContent += part.text;
+            }
+          }
+        }
       }
 
       if (delta.tool_calls) {
@@ -189,6 +213,7 @@ export async function nativeChatCompletion(
           role: "assistant",
           content: content,
           ...(tool_calls.length > 0 ? { tool_calls } : {}),
+          ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
         },
       },
     ],

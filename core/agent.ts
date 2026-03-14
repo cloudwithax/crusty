@@ -966,10 +966,27 @@ export class Agent {
 
       // add assistant message to history (strip reasoning tags to reduce context bloat)
       const cleanedContent = stripReasoningTags(content);
-      this._messages.push({
+      const rawReasoningContent = (message as any).reasoning_content;
+      const assistantMessage: any = {
         role: "assistant",
         content: cleanedContent,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      };
+
+      // some providers require reasoning_content on assistant tool-call turns when
+      // thinking/reasoning mode is enabled so preserve it when available and backfill
+      // with visible content as a compatibility fallback when absent
+      if (
+        typeof rawReasoningContent === "string" &&
+        rawReasoningContent.trim()
+      ) {
+        assistantMessage.reasoning_content = rawReasoningContent;
+      } else if (toolCalls.length > 0) {
+        assistantMessage.reasoning_content = cleanedContent || content || " ";
+      }
+
+      this._messages.push({
+        ...assistantMessage,
       });
 
       // no tools = done, but nudge the model once if it talked instead of acting on a task
