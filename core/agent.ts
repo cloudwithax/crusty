@@ -842,6 +842,7 @@ export class Agent {
     let currentMaxIterations = MAX_TOOL_ITERATIONS;
     let extensionCount = 0;
     let warningInjected = false;
+    let pendingIterationWarning: string | null = null;
     let loopRecoveryAttempts = 0;
 
     // send plan intent once if planner produced one
@@ -1073,17 +1074,13 @@ export class Agent {
 
       if (shouldWarn) {
         warningInjected = true;
-        const warningContent = ITERATION_WARNING_MESSAGE.replace(
+        pendingIterationWarning = ITERATION_WARNING_MESSAGE.replace(
           "{{USED}}",
           String(toolIterationCount),
         )
           .replace("{{MAX}}", String(currentMaxIterations))
           .replace("{{REMAINING}}", String(iterationsRemaining));
 
-        this._messages.push({
-          role: "system",
-          content: warningContent,
-        });
         debug(
           `[agent] iteration warning injected at ${toolIterationCount}/${currentMaxIterations}`,
         );
@@ -1111,11 +1108,6 @@ export class Agent {
             `[tool loop guard] caught loop (${loopReason}), forcing recovery attempt ${loopRecoveryAttempts}/3`,
           );
 
-          this._messages.push({
-            role: "user",
-            content: `CRITICAL SYSTEM INTERVENTION: You are stuck in a loop (${loopReason}). You are repeating the exact same failed tool calls or responses. STOP doing this. Read any tool error messages carefully. Fix your syntax, change your arguments, use a completely different tool, or ask the user for help. DO NOT repeat your previous action.`,
-          });
-
           for (const toolCall of toolCalls) {
             this._messages.push({
               role: "tool",
@@ -1123,6 +1115,11 @@ export class Agent {
               tool_call_id: toolCall.id,
             });
           }
+
+          this._messages.push({
+            role: "user",
+            content: `CRITICAL SYSTEM INTERVENTION: You are stuck in a loop (${loopReason}). You are repeating the exact same failed tool calls or responses. STOP doing this. Read any tool error messages carefully. Fix your syntax, change your arguments, use a completely different tool, or ask the user for help. DO NOT repeat your previous action.`,
+          });
 
           continue;
         }
@@ -1243,6 +1240,14 @@ export class Agent {
             "one or more tool calls returned errors. review each error message above, fix your arguments, and retry the failed calls now.",
         });
         debug("[agent] tool error detected - injecting fix prompt");
+      }
+
+      if (pendingIterationWarning) {
+        this._messages.push({
+          role: "system",
+          content: pendingIterationWarning,
+        });
+        pendingIterationWarning = null;
       }
     }
 

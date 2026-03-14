@@ -71,6 +71,40 @@ describe("tool parsing stability - multi-step scenarios", () => {
     });
   });
 
+  describe("provider protocol ordering", () => {
+    test("keeps assistant tool calls immediately followed by tool messages", () => {
+      const transcript = [
+        {
+          role: "assistant",
+          tool_calls: [
+            {
+              id: "web_fetch:5",
+              type: "function",
+              function: {
+                name: "web_fetch",
+                arguments: '{"url":"https://www.4claw.org/skill.md"}',
+              },
+            },
+          ],
+          content: "",
+        },
+        {
+          role: "tool",
+          tool_call_id: "web_fetch:5",
+          content: "SYSTEM ERROR: Blocked repeating tool call",
+        },
+        {
+          role: "user",
+          content: "CRITICAL SYSTEM INTERVENTION",
+        },
+      ];
+
+      const firstAfterAssistant = transcript[1];
+      expect(firstAfterAssistant?.role).toBe("tool");
+      expect((firstAfterAssistant as any)?.tool_call_id).toBe("web_fetch:5");
+    });
+  });
+
   describe("format confusion prevention", () => {
     test("does not confuse kimi-k2 with deepseek format", () => {
       // kimi has <|tool_call_begin|> while deepseek has specialized characters
