@@ -58,6 +58,33 @@ describe("executeTool - malformed args recovery", () => {
     expect(result).not.toContain("expected object, received string");
   });
 
+  it("coerces browser_scroll bare string args into direction object", async () => {
+    const result = await executeTool("browser_scroll", '"down"', 0);
+
+    expect(result).not.toContain("error: invalid arguments for browser_scroll");
+    expect(result).toContain("Scrolled down");
+  });
+
+  it("coerces browser_scroll quoted direction field for enum validation", async () => {
+    const result = await executeTool(
+      "browser_scroll",
+      '{"direction":"\\"down\\""}',
+      0,
+    );
+
+    expect(result).not.toContain("error: invalid arguments for browser_scroll");
+    expect(result).toContain("Scrolled down");
+  });
+
+  it("coerces browser_snapshot bare mode string into object args", async () => {
+    const result = await executeTool("browser_snapshot", '"interactive"', 0);
+
+    expect(result).not.toContain(
+      "error: invalid arguments for browser_snapshot",
+    );
+    expect(result).not.toContain("expected object, received string");
+  });
+
   it("recovers command from assistant text when args have garbage command", async () => {
     // garbage command with valid timeout/workdir
     const args = JSON.stringify({

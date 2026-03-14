@@ -255,6 +255,23 @@ function sanitizeArgs(
     // only process strings from here
     if (typeof val !== "string") continue;
 
+    const trimmedVal = val.trim();
+    const isWrappedInMatchingQuotes =
+      trimmedVal.length >= 2 &&
+      ((trimmedVal.startsWith('"') && trimmedVal.endsWith('"')) ||
+        (trimmedVal.startsWith("'") && trimmedVal.endsWith("'")));
+
+    // unwrap simple quoted values like "\"down\"" that break enum checks
+    if (isWrappedInMatchingQuotes) {
+      const inner = trimmedVal.slice(1, -1).trim();
+      if (inner) {
+        result[key] = inner;
+      } else {
+        keysToDelete.push(key);
+      }
+      continue;
+    }
+
     // empty or whitespace-only strings -> delete (makes optional fields undefined)
     if (val.trim() === "") {
       keysToDelete.push(key);
@@ -344,6 +361,75 @@ function sanitizeArgs(
   }
 
   return result;
+}
+
+function normalizeSimpleEnum(
+  raw: string,
+  allowed: readonly string[],
+): string | null {
+  const cleaned = raw
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .toLowerCase();
+  if (!cleaned) {
+    return null;
+  }
+
+  const match = allowed.find((item) => item === cleaned);
+  return match ?? null;
+}
+
+function coerceToolArgs(
+  toolName: string,
+  parsed: unknown,
+  rawArgs: string,
+): unknown {
+  // browser_scroll is frequently emitted as a bare string like "down"
+  if (toolName === "browser_scroll") {
+    const allowed = ["up", "down"] as const;
+    if (typeof parsed === "string") {
+      const direction = normalizeSimpleEnum(parsed, allowed);
+      if (direction) {
+        return { direction };
+      }
+    }
+
+    if (parsed && typeof parsed === "object") {
+      const obj = { ...(parsed as Record<string, unknown>) };
+      const rawDirection =
+        typeof obj.direction === "string" ? obj.direction : undefined;
+      if (rawDirection) {
+        const direction = normalizeSimpleEnum(rawDirection, allowed);
+        if (direction) {
+          obj.direction = direction;
+          return obj;
+        }
+      }
+    }
+
+    const directionFromRaw = normalizeSimpleEnum(rawArgs, allowed);
+    if (directionFromRaw) {
+      return { direction: directionFromRaw };
+    }
+  }
+
+  // browser_snapshot is often called with just "interactive" or "full"
+  if (toolName === "browser_snapshot") {
+    const allowed = ["full", "interactive"] as const;
+    if (typeof parsed === "string") {
+      const mode = normalizeSimpleEnum(parsed, allowed);
+      if (mode) {
+        return { mode };
+      }
+    }
+
+    const modeFromRaw = normalizeSimpleEnum(rawArgs, allowed);
+    if (modeFromRaw) {
+      return { mode: modeFromRaw };
+    }
+  }
+
+  return parsed;
 }
 
 function unwrapZodType(schema: z.ZodType): z.ZodType {
@@ -895,6 +981,8 @@ export async function executeTool(
     // attempt recovery from malformed/garbage args
     parsed = recoverMalformedArgs(name, args, assistantText, tool.schema);
   }
+
+  parsed = coerceToolArgs(name, parsed, args);
 
   // sanitize and coerce types before validation
   if (parsed && typeof parsed === "object") {
