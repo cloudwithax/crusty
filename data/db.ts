@@ -426,6 +426,22 @@ function initTables(): void {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS credentials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('app', 'skill')),
+      owner TEXT NOT NULL,
+      name TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      description TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_accessed_at INTEGER,
+      UNIQUE(user_id, scope, owner, name)
+    )
+  `);
+
   // learnings table for the learning machine (self-improving knowledge)
   db.exec(`
     CREATE TABLE IF NOT EXISTS learnings (
@@ -460,6 +476,12 @@ function initTables(): void {
   );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_credentials_owner ON credentials(user_id, scope, owner)`,
   );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_learnings_user ON learnings(user_id)`,
@@ -763,6 +785,22 @@ async function initTablesAsync(): Promise<void> {
     )
   `);
 
+  await pgAdapter.execAsync(`
+    CREATE TABLE IF NOT EXISTS credentials (
+      id SERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('app', 'skill')),
+      owner TEXT NOT NULL,
+      name TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      description TEXT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      last_accessed_at BIGINT,
+      UNIQUE(user_id, scope, owner, name)
+    )
+  `);
+
   // learnings table for the learning machine (self-improving knowledge)
   await pgAdapter.execAsync(`
     CREATE TABLE IF NOT EXISTS learnings (
@@ -801,6 +839,12 @@ async function initTablesAsync(): Promise<void> {
   );
   await pgAdapter.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, remind_at)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id)`,
+  );
+  await pgAdapter.execAsync(
+    `CREATE INDEX IF NOT EXISTS idx_credentials_owner ON credentials(user_id, scope, owner)`,
   );
   await pgAdapter.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_learnings_user ON learnings(user_id)`,

@@ -183,6 +183,9 @@ ACP_STDIO_AGENTS_JSON=[{"name":"goose","command":"goose","args":["acp","serve"]}
 ACP_STDIO_AGENTS_FILE=/absolute/path/to/acp-stdio-agents.json
 ACP_BUN_STDIO_PROXY=true
 ACP_STDIO_NODE_PATH=node
+
+# optional but required for encrypted credential storage tools
+CRUSTY_CREDENTIALS_MASTER_KEY=your-long-random-master-key
 ```
 
 see .env.example for all options.

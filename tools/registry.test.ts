@@ -1,5 +1,6 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { executeTool, ensureNonEmptyToolResult } from "./registry.ts";
+import { getAsyncDatabase, getDatabase } from "../data/db.ts";
 
 describe("executeTool - malformed args recovery", () => {
   it("recovers web_search from quoted key-value string", async () => {
@@ -195,5 +196,118 @@ describe("executeTool - malformed args recovery", () => {
     expect(result.trim().length).toBeGreaterThan(0);
     expect(result).toContain("[No output]");
     expect(result).toContain("heartbeat_read");
+  });
+});
+
+describe("executeTool - credentials store", () => {
+  const userId = 998877;
+  const originalMasterKey = process.env.CRUSTY_CREDENTIALS_MASTER_KEY;
+  beforeEach(() => {
+    if (originalMasterKey) {
+      process.env.CRUSTY_CREDENTIALS_MASTER_KEY = originalMasterKey;
+      return;
+    }
+
+    delete process.env.CRUSTY_CREDENTIALS_MASTER_KEY;
+  });
+
+  afterAll(() => {
+    if (originalMasterKey) {
+      process.env.CRUSTY_CREDENTIALS_MASTER_KEY = originalMasterKey;
+      return;
+    }
+
+    delete process.env.CRUSTY_CREDENTIALS_MASTER_KEY;
+  });
+
+  const owner = `test-skill-${Date.now()}`;
+  const name = "api_token";
+  const secret = "secret-token-value-123";
+
+  it("returns a clear error when credentials store key is not configured", async () => {
+    delete process.env.CRUSTY_CREDENTIALS_MASTER_KEY;
+
+    const result = await executeTool(
+      "save_credential",
+      JSON.stringify({ scope: "skill", owner, name, value: secret }),
+      userId,
+    );
+
+    expect(result).toContain("Store unavailable");
+    expect(result).toContain("CRUSTY_CREDENTIALS_MASTER_KEY");
+  });
+
+  it("supports save get list and delete credential flow", async () => {
+    process.env.CRUSTY_CREDENTIALS_MASTER_KEY =
+      "this-is-a-test-master-key-with-sufficient-length";
+
+    const saveResult = await executeTool(
+      "save_credential",
+      JSON.stringify({
+        scope: "skill",
+        owner,
+        name,
+        value: secret,
+        description: "token for integration tests",
+      }),
+      userId,
+    );
+
+    expect(saveResult).toContain("Saved skill/");
+
+    const asyncDb = getAsyncDatabase();
+    if (asyncDb) {
+      const row = await asyncDb.get<{ encrypted_value: string }>(
+        `SELECT encrypted_value FROM credentials WHERE user_id = $1 AND scope = $2 AND owner = $3 AND name = $4`,
+        userId,
+        "skill",
+        owner,
+        name,
+      );
+      expect(row?.encrypted_value).toBeDefined();
+      expect(row?.encrypted_value).not.toContain(secret);
+    } else {
+      const row = getDatabase()
+        .query<{
+          encrypted_value: string;
+        }>(`SELECT encrypted_value FROM credentials WHERE user_id = ? AND scope = ? AND owner = ? AND name = ?`)
+        .get(userId, "skill", owner, name);
+      expect(row?.encrypted_value).toBeDefined();
+      expect(row?.encrypted_value).not.toContain(secret);
+    }
+
+    const listResult = await executeTool(
+      "list_credentials",
+      JSON.stringify({ scope: "skill", owner }),
+      userId,
+    );
+
+    expect(listResult).toContain(`${owner}/${name}`);
+    expect(listResult).not.toContain(secret);
+
+    const getResult = await executeTool(
+      "get_credential",
+      JSON.stringify({ scope: "skill", owner, name }),
+      userId,
+    );
+
+    expect(getResult).toContain(`skill/${owner}/${name}`);
+    expect(getResult).toContain(secret);
+
+    const deleteResult = await executeTool(
+      "delete_credential",
+      JSON.stringify({ scope: "skill", owner, name }),
+      userId,
+    );
+
+    expect(deleteResult).toContain("Deleted");
+
+    const afterDelete = await executeTool(
+      "get_credential",
+      JSON.stringify({ scope: "skill", owner, name }),
+      userId,
+    );
+
+    expect(afterDelete).toContain("Not found");
   });
 });

@@ -14,6 +14,7 @@ import { learningTools } from "./learnings.ts";
 import { deepResearchTools } from "./deep-research.ts";
 import { messagingTools } from "./messaging.ts";
 import { acpTools } from "./acp.ts";
+import { credentialTools } from "./credentials.ts";
 import {
   getDynamicTools,
   getDynamicToolsVersion,
@@ -77,6 +78,7 @@ const staticToolRegistry: Record<string, ToolDefinition> = {
   ...memoryTools,
   ...heartbeatTools,
   ...learningTools,
+  ...credentialTools,
   ...deepResearchTools,
   ...messagingTools,
   ...acpTools,
