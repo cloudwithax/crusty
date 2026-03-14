@@ -597,8 +597,11 @@ async function processDebouncedInboundMessages(
   }
 
   const rawMediaUrls = collectInboundMediaUrls(messages);
-  const { modelUrls: mediaUrls, unsupportedUrls, convertedCount } =
-    await prepareInboundMediaUrls(rawMediaUrls);
+  const {
+    modelUrls: mediaUrls,
+    unsupportedUrls,
+    convertedCount,
+  } = await prepareInboundMediaUrls(rawMediaUrls);
   const combinedText = buildInboundBurstText(messages);
   const modelText =
     combinedText ||
