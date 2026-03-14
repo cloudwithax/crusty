@@ -415,6 +415,72 @@ export function ensureToolCallIds(toolCalls: ChatCompletionMessageToolCall[]): {
   return { toolCalls: normalized, repairedCount };
 }
 
+export function sanitizeToolCallHistoryMessages(
+  messages: ChatCompletionMessageParam[],
+): ChatCompletionMessageParam[] {
+  const sanitized: ChatCompletionMessageParam[] = [];
+  const pendingToolCallIds: string[] = [];
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const assistant = message as ChatCompletionMessageParam & {
+        tool_calls?: ChatCompletionMessageToolCall[];
+      };
+
+      if (assistant.tool_calls && assistant.tool_calls.length > 0) {
+        const normalized = ensureToolCallIds(assistant.tool_calls);
+        const updatedAssistant: ChatCompletionMessageParam = {
+          ...assistant,
+          tool_calls: normalized.toolCalls,
+          content: assistant.content ?? "",
+        } as ChatCompletionMessageParam;
+
+        sanitized.push(updatedAssistant);
+        pendingToolCallIds.push(...normalized.toolCalls.map((tc) => tc.id));
+        continue;
+      }
+
+      sanitized.push(message);
+      continue;
+    }
+
+    if (message.role === "tool") {
+      const toolMessage = message as ChatCompletionMessageParam & {
+        tool_call_id?: string;
+      };
+
+      const rawId =
+        typeof toolMessage.tool_call_id === "string"
+          ? toolMessage.tool_call_id.trim()
+          : "";
+
+      let resolvedId = rawId;
+      if (!resolvedId && pendingToolCallIds.length > 0) {
+        resolvedId = pendingToolCallIds[0]!;
+      }
+
+      if (!resolvedId) {
+        continue;
+      }
+
+      const pendingIndex = pendingToolCallIds.indexOf(resolvedId);
+      if (pendingIndex >= 0) {
+        pendingToolCallIds.splice(pendingIndex, 1);
+      }
+
+      sanitized.push({
+        ...toolMessage,
+        tool_call_id: resolvedId,
+      } as ChatCompletionMessageParam);
+      continue;
+    }
+
+    sanitized.push(message);
+  }
+
+  return sanitized;
+}
+
 export interface AgentCallbacks {
   onPlanReady?: (intent: string) => Promise<void>;
   onTyping?: () => Promise<void>;
@@ -766,7 +832,10 @@ export class Agent {
     }
 
     // combine: all system messages first, then everything else in original order
-    return [...systemMessages, ...otherMessages];
+    return sanitizeToolCallHistoryMessages([
+      ...systemMessages,
+      ...otherMessages,
+    ]);
   }
 
   private async generateFinalToolResponse(

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import type { ChatCompletionMessageToolCall } from "openai/resources/chat/completions";
-import { ensureToolCallIds } from "./agent.ts";
+import { ensureToolCallIds, sanitizeToolCallHistoryMessages } from "./agent.ts";
 
 describe("ensureToolCallIds", () => {
   it("repairs missing and blank tool call ids", () => {
@@ -66,5 +66,57 @@ describe("ensureToolCallIds", () => {
     expect(normalized.repairedCount).toBe(0);
     expect(normalized.toolCalls[0]?.id).toBe("call-a");
     expect(normalized.toolCalls[1]?.id).toBe("call-b");
+  });
+
+  it("repairs assistant and tool message ids in history", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "",
+            type: "function",
+            function: {
+              name: "web_fetch",
+              arguments: '{"url":"https://example.com"}',
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: " ",
+        content: "ok",
+      },
+    ] as any[];
+
+    const sanitized = sanitizeToolCallHistoryMessages(messages as any);
+
+    expect(sanitized).toHaveLength(2);
+    const assistant = sanitized[0] as any;
+    const tool = sanitized[1] as any;
+
+    expect(assistant.tool_calls[0].id).toMatch(/^tc_\d+_0$/);
+    expect(tool.tool_call_id).toBe(assistant.tool_calls[0].id);
+  });
+
+  it("drops orphan tool messages without any resolvable tool_call_id", () => {
+    const messages = [
+      {
+        role: "user",
+        content: "hello",
+      },
+      {
+        role: "tool",
+        tool_call_id: "",
+        content: "stale tool output",
+      },
+    ] as any[];
+
+    const sanitized = sanitizeToolCallHistoryMessages(messages as any);
+
+    expect(sanitized).toHaveLength(1);
+    expect((sanitized[0] as any).role).toBe("user");
   });
 });
