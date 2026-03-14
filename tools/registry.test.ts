@@ -53,8 +53,11 @@ describe("executeTool - malformed args recovery", () => {
   it('normalizes web_fetch string args like "url" into object-shaped args', async () => {
     const result = await executeTool("web_fetch", '"url"', 0);
 
-    expect(result).toContain("error: invalid arguments for web_fetch");
     expect(result).toContain("url");
+    expect(
+      result.includes("error: invalid arguments for web_fetch") ||
+        result.includes("URL must start with http:// or https://"),
+    ).toBe(true);
     expect(result).not.toContain("expected object, received string");
   });
 
@@ -83,6 +86,33 @@ describe("executeTool - malformed args recovery", () => {
       "error: invalid arguments for browser_snapshot",
     );
     expect(result).not.toContain("expected object, received string");
+  });
+
+  it("coerces browser_tabs bare enum string into singleton required field", async () => {
+    const result = await executeTool("browser_tabs", '"list"', 0);
+
+    expect(result).not.toContain("error: invalid arguments for browser_tabs");
+    expect(result).not.toContain("expected object, received string");
+  });
+
+  it("coerces browser_wait bare enum string into singleton required field", async () => {
+    const result = await executeTool("browser_wait", '"networkidle"', 0);
+
+    expect(result).not.toContain("error: invalid arguments for browser_wait");
+    expect(result).not.toContain("expected object, received string");
+  });
+
+  it("coerces request_more_iterations bare string into reason field", async () => {
+    const result = await executeTool(
+      "request_more_iterations",
+      '"need more iterations for final verification"',
+      0,
+    );
+
+    expect(result).not.toContain(
+      "error: invalid arguments for request_more_iterations",
+    );
+    expect(result).toContain("extension request processed");
   });
 
   it("recovers command from assistant text when args have garbage command", async () => {

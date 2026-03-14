@@ -173,6 +173,29 @@ export class SendBlueClient {
     return response.json() as Promise<TypingIndicatorResponse>;
   }
 
+  // mark a conversation as read so the sender sees a read receipt
+  async sendReadReceipt(toNumber: string): Promise<void> {
+    const body: Record<string, string> = {
+      number: toNumber,
+    };
+
+    if (this.config.fromNumber) {
+      body.from_number = this.config.fromNumber;
+    }
+
+    const response = await fetch(`${SENDBLUE_API_BASE}/mark-read`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      debug(`[sendblue] mark-read failed: ${response.status} ${text}`);
+      // non-critical, dont throw
+    }
+  }
+
   // list currently configured webhooks
   async listWebhooks(): Promise<WebhookListResponse> {
     const response = await fetch(`${SENDBLUE_API_BASE}/account/webhooks`, {

@@ -49,6 +49,7 @@ import {
   saveImessagePairingCodeAsync,
 } from "./pairing";
 import sharp from "sharp";
+import { stripMarkdown } from "../utils/formatting.ts";
 
 // environment configuration
 const SENDBLUE_API_KEY = process.env.SENDBLUE_API_KEY;
@@ -275,7 +276,7 @@ export async function sendMessage(
     return;
   }
 
-  const messageText = truncateMessage(text);
+  const messageText = truncateMessage(stripMarkdown(text));
 
   try {
     await getClient().sendMessage({
@@ -596,6 +597,14 @@ async function processDebouncedInboundMessages(
     return;
   }
 
+  const phone = anchorMessage.from_number;
+  const userId = phoneToUserId(phone);
+
+  // mark conversation as read so the sender sees a read receipt immediately
+  getClient()
+    .sendReadReceipt(phone)
+    .catch(() => {});
+
   const rawMediaUrls = collectInboundMediaUrls(messages);
   const {
     modelUrls: mediaUrls,
@@ -609,9 +618,6 @@ async function processDebouncedInboundMessages(
   if (!modelText) {
     return;
   }
-
-  const phone = anchorMessage.from_number;
-  const userId = phoneToUserId(phone);
 
   if (rawMediaUrls.length > 0 && mediaUrls.length === 0 && !combinedText) {
     await sendMessage(

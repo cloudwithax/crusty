@@ -103,60 +103,65 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
   const def = (zodType as any)._def;
   if (!def) return { type: "string" };
 
-  const typeName = def.typeName as string;
+  const typeName = (def.typeName ?? def.type) as string;
   const description = zodType.description;
 
   // unwrap wrapper types
-  if (typeName === "ZodOptional" || typeName === "ZodNullable") {
+  if (
+    typeName === "ZodOptional" ||
+    typeName === "ZodNullable" ||
+    typeName === "optional" ||
+    typeName === "nullable"
+  ) {
     const inner = zodTypeToOpenAI(def.innerType);
     return { ...inner, description: description || inner.description };
   }
 
-  if (typeName === "ZodDefault") {
+  if (typeName === "ZodDefault" || typeName === "default") {
     const inner = zodTypeToOpenAI(def.innerType);
     return { ...inner, description: description || inner.description };
   }
 
   // primitive types
-  if (typeName === "ZodString") {
+  if (typeName === "ZodString" || typeName === "string") {
     return { type: "string", description };
   }
 
-  if (typeName === "ZodNumber") {
+  if (typeName === "ZodNumber" || typeName === "number") {
     return { type: "number", description };
   }
 
-  if (typeName === "ZodBoolean") {
+  if (typeName === "ZodBoolean" || typeName === "boolean") {
     return { type: "boolean", description };
   }
 
   // enum
-  if (typeName === "ZodEnum") {
+  if (typeName === "ZodEnum" || typeName === "enum") {
     return { type: "string", enum: def.values, description };
   }
 
   // literal
-  if (typeName === "ZodLiteral") {
+  if (typeName === "ZodLiteral" || typeName === "literal") {
     const value = def.value;
     return { type: typeof value, enum: [value], description };
   }
 
   // array with item type
-  if (typeName === "ZodArray") {
+  if (typeName === "ZodArray" || typeName === "array") {
     const itemType = def.type ? zodTypeToOpenAI(def.type) : { type: "string" };
     return { type: "array", items: itemType, description };
   }
 
   // object with properties
-  if (typeName === "ZodObject") {
-    const shape = def.shape?.() || def.shape || {};
+  if (typeName === "ZodObject" || typeName === "object") {
+    const shape = typeof def.shape === "function" ? def.shape() : def.shape || {};
     const properties: Record<string, unknown> = {};
     const required: string[] = [];
 
     for (const [key, value] of Object.entries(shape)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fieldDef = (value as any)._def;
-      const fieldTypeName = fieldDef?.typeName as string;
+      const fieldTypeName = (fieldDef?.typeName ?? fieldDef?.type) as string;
 
       properties[key] = zodTypeToOpenAI(value as z.ZodType);
 
@@ -164,7 +169,10 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
       if (
         fieldTypeName !== "ZodOptional" &&
         fieldTypeName !== "ZodNullable" &&
-        fieldTypeName !== "ZodDefault"
+        fieldTypeName !== "ZodDefault" &&
+        fieldTypeName !== "optional" &&
+        fieldTypeName !== "nullable" &&
+        fieldTypeName !== "default"
       ) {
         required.push(key);
       }
@@ -179,7 +187,7 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
   }
 
   // union (first type as fallback)
-  if (typeName === "ZodUnion") {
+  if (typeName === "ZodUnion" || typeName === "union") {
     const options = def.options;
     if (options && options.length > 0) {
       return zodTypeToOpenAI(options[0]);
@@ -187,12 +195,17 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
   }
 
   // record/map
-  if (typeName === "ZodRecord") {
+  if (typeName === "ZodRecord" || typeName === "record") {
     return { type: "object", description };
   }
 
   // any/unknown
-  if (typeName === "ZodAny" || typeName === "ZodUnknown") {
+  if (
+    typeName === "ZodAny" ||
+    typeName === "ZodUnknown" ||
+    typeName === "any" ||
+    typeName === "unknown"
+  ) {
     return { type: "string", description };
   }
 
@@ -379,53 +392,167 @@ function normalizeSimpleEnum(
   return match ?? null;
 }
 
-function coerceToolArgs(
-  toolName: string,
-  parsed: unknown,
-  rawArgs: string,
-): unknown {
-  // browser_scroll is frequently emitted as a bare string like "down"
-  if (toolName === "browser_scroll") {
-    const allowed = ["up", "down"] as const;
-    if (typeof parsed === "string") {
-      const direction = normalizeSimpleEnum(parsed, allowed);
-      if (direction) {
-        return { direction };
-      }
-    }
+function getRequiredObjectKeys(schema: z.ZodType): string[] {
+  const shape = getObjectShape(schema);
+  if (!shape) {
+    return [];
+  }
 
-    if (parsed && typeof parsed === "object") {
-      const obj = { ...(parsed as Record<string, unknown>) };
-      const rawDirection =
-        typeof obj.direction === "string" ? obj.direction : undefined;
-      if (rawDirection) {
-        const direction = normalizeSimpleEnum(rawDirection, allowed);
-        if (direction) {
-          obj.direction = direction;
-          return obj;
-        }
-      }
-    }
-
-    const directionFromRaw = normalizeSimpleEnum(rawArgs, allowed);
-    if (directionFromRaw) {
-      return { direction: directionFromRaw };
+  const required: string[] = [];
+  for (const [key, value] of Object.entries(shape)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fieldDef = (value as any)?._def;
+    const typeName = (fieldDef?.typeName ?? fieldDef?.type) as
+      | string
+      | undefined;
+    if (
+      typeName !== "ZodOptional" &&
+      typeName !== "ZodNullable" &&
+      typeName !== "ZodDefault" &&
+      typeName !== "optional" &&
+      typeName !== "nullable" &&
+      typeName !== "default"
+    ) {
+      required.push(key);
     }
   }
 
-  // browser_snapshot is often called with just "interactive" or "full"
-  if (toolName === "browser_snapshot") {
-    const allowed = ["full", "interactive"] as const;
-    if (typeof parsed === "string") {
-      const mode = normalizeSimpleEnum(parsed, allowed);
-      if (mode) {
-        return { mode };
-      }
+  return required;
+}
+
+function coerceRawStringToObjectForSchema(
+  schema: z.ZodType,
+  rawValue: string,
+): Record<string, unknown> | null {
+  const shape = getObjectShape(schema);
+  if (!shape) {
+    return null;
+  }
+
+  const normalized = rawValue
+    .trim()
+    .replace(/\\"/g, '"')
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const requiredKeys = getRequiredObjectKeys(schema);
+  let targetKey: string | null = null;
+
+  // deterministic mapping for singleton-required schemas
+  if (requiredKeys.length === 1) {
+    targetKey = requiredKeys[0]!;
+  } else if (requiredKeys.length === 0 && Object.keys(shape).length === 1) {
+    targetKey = Object.keys(shape)[0]!;
+  }
+
+  if (!targetKey) {
+    return null;
+  }
+
+  const targetKeyLower = targetKey.toLowerCase();
+  if (targetKeyLower.includes("url")) {
+    const looksLikeUrl =
+      /^(?:https?:\/\/|\/\/)/i.test(normalized) ||
+      /^[a-z0-9][-a-z0-9]*\.[a-z]{2,}(?:\/[^"]*)?$/i.test(normalized);
+    if (!looksLikeUrl) {
+      return null;
+    }
+  }
+
+  const coerced = coerceStringForSchema(normalized, shape[targetKey]!);
+  return { [targetKey]: coerced };
+}
+
+function hasAllRequiredSchemaFields(
+  schema: z.ZodType,
+  value: Record<string, unknown>,
+): boolean {
+  const requiredKeys = getRequiredObjectKeys(schema);
+  if (requiredKeys.length === 0) {
+    return Object.keys(value).length > 0;
+  }
+
+  return requiredKeys.every((key) => {
+    const field = value[key];
+    if (field === undefined || field === null) {
+      return false;
+    }
+    if (typeof field === "string" && !field.trim()) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function coerceObjectValuesForSchema(
+  schema: z.ZodType,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const shape = getObjectShape(schema);
+  if (!shape) {
+    return value;
+  }
+
+  const result = { ...value };
+  for (const [key, fieldSchema] of Object.entries(shape)) {
+    const current = result[key];
+    if (typeof current !== "string") {
+      continue;
+    }
+    result[key] = coerceStringForSchema(current, fieldSchema);
+  }
+
+  return result;
+}
+
+function coerceToolArgs(
+  _toolName: string,
+  parsed: unknown,
+  rawArgs: string,
+  schema: z.ZodType,
+): unknown {
+  // bash_execute has dedicated recovery/validation and should not use generic singleton mapping
+  if (_toolName === "bash_execute") {
+    return parsed;
+  }
+
+  if (typeof parsed === "string") {
+    const fromParsed = coerceRawStringToObjectForSchema(schema, parsed);
+    if (fromParsed) {
+      return fromParsed;
+    }
+  }
+
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const coerced = coerceObjectValuesForSchema(
+      schema,
+      parsed as Record<string, unknown>,
+    );
+    if (hasAllRequiredSchemaFields(schema, coerced)) {
+      return coerced;
     }
 
-    const modeFromRaw = normalizeSimpleEnum(rawArgs, allowed);
-    if (modeFromRaw) {
-      return { mode: modeFromRaw };
+    const fromRaw = coerceRawStringToObjectForSchema(schema, rawArgs);
+    if (fromRaw) {
+      return { ...coerced, ...fromRaw };
+    }
+
+    return coerced;
+  }
+
+  const fromRaw = coerceRawStringToObjectForSchema(schema, rawArgs);
+  if (fromRaw) {
+    return fromRaw;
+  }
+
+  // fallback for legacy direction-only string payloads
+  if (typeof parsed === "string") {
+    const asDirection = normalizeSimpleEnum(parsed, ["up", "down"]);
+    if (asDirection) {
+      return { direction: asDirection };
     }
   }
 
@@ -437,11 +564,14 @@ function unwrapZodType(schema: z.ZodType): z.ZodType {
   let current: any = schema;
 
   while (current?._def) {
-    const typeName = current._def.typeName as string;
+    const typeName = (current._def.typeName ?? current._def.type) as string;
     if (
       typeName === "ZodOptional" ||
       typeName === "ZodNullable" ||
-      typeName === "ZodDefault"
+      typeName === "ZodDefault" ||
+      typeName === "optional" ||
+      typeName === "nullable" ||
+      typeName === "default"
     ) {
       current = current._def.innerType;
       continue;
@@ -456,11 +586,12 @@ function getObjectShape(schema: z.ZodType): Record<string, z.ZodType> | null {
   const unwrapped = unwrapZodType(schema);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const def = (unwrapped as any)?._def;
-  if (!def || def.typeName !== "ZodObject") {
+  const typeName = (def?.typeName ?? def?.type) as string | undefined;
+  if (!def || (typeName !== "ZodObject" && typeName !== "object")) {
     return null;
   }
 
-  const shape = def.shape?.() || def.shape || {};
+  const shape = typeof def.shape === "function" ? def.shape() : def.shape || {};
   return shape as Record<string, z.ZodType>;
 }
 
@@ -470,34 +601,67 @@ function coerceStringForSchema(rawValue: string, schema: z.ZodType): unknown {
     return "";
   }
 
+  const unquoted = trimmed.replace(/^['"`]+|['"`]+$/g, "").trim();
+  const scalar = unquoted || trimmed;
+
   const unwrapped = unwrapZodType(schema);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const typeName = (unwrapped as any)?._def?.typeName as string | undefined;
+  const typeName = ((unwrapped as any)?._def?.typeName ??
+    (unwrapped as any)?._def?.type) as string | undefined;
 
-  if (typeName === "ZodNumber") {
-    const numMatch = trimmed.match(/-?\d+(?:\.\d+)?/);
+  if (typeName === "ZodNumber" || typeName === "number") {
+    const numMatch = scalar.match(/-?\d+(?:\.\d+)?/);
     if (numMatch) {
       const parsed = Number(numMatch[0]);
       if (Number.isFinite(parsed)) {
         return parsed;
       }
     }
-    return trimmed;
+    return scalar;
   }
 
-  if (typeName === "ZodBoolean") {
-    const normalized = trimmed.toLowerCase();
+  if (typeName === "ZodEnum" || typeName === "enum") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const values = ((unwrapped as any)?._def?.values ?? []) as string[];
+    const exact = values.find((value) => value === scalar);
+    if (exact) {
+      return exact;
+    }
+
+    const normalized = scalar.toLowerCase();
+    const ci = values.find((value) => value.toLowerCase() === normalized);
+    if (ci) {
+      return ci;
+    }
+
+    return scalar;
+  }
+
+  if (typeName === "ZodLiteral" || typeName === "literal") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const literalValue = (unwrapped as any)?._def?.value;
+    if (typeof literalValue === "string") {
+      const normalized = scalar.toLowerCase();
+      if (literalValue.toLowerCase() === normalized) {
+        return literalValue;
+      }
+    }
+    return scalar;
+  }
+
+  if (typeName === "ZodBoolean" || typeName === "boolean") {
+    const normalized = scalar.toLowerCase();
     if (normalized === "true" || normalized === "yes" || normalized === "1") {
       return true;
     }
     if (normalized === "false" || normalized === "no" || normalized === "0") {
       return false;
     }
-    return trimmed;
+    return scalar;
   }
 
-  if (typeName === "ZodArray") {
-    return trimmed
+  if (typeName === "ZodArray" || typeName === "array") {
+    return scalar
       .split(/[\n,]/)
       .map((part) => part.trim())
       .filter(Boolean);
@@ -551,11 +715,17 @@ function recoverArgsFromSchema(
     return {};
   }
 
+  const singletonCoercion = coerceRawStringToObjectForSchema(schema, cleaned);
+  if (singletonCoercion) {
+    return singletonCoercion;
+  }
+
   for (const [key, fieldSchema] of Object.entries(shape)) {
     const unwrapped = unwrapZodType(fieldSchema);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const typeName = (unwrapped as any)?._def?.typeName as string | undefined;
-    if (typeName === "ZodString") {
+    const typeName = ((unwrapped as any)?._def?.typeName ??
+      (unwrapped as any)?._def?.type) as string | undefined;
+    if (typeName === "ZodString" || typeName === "string") {
       return { [key]: cleaned };
     }
   }
@@ -982,7 +1152,7 @@ export async function executeTool(
     parsed = recoverMalformedArgs(name, args, assistantText, tool.schema);
   }
 
-  parsed = coerceToolArgs(name, parsed, args);
+  parsed = coerceToolArgs(name, parsed, args, tool.schema);
 
   // sanitize and coerce types before validation
   if (parsed && typeof parsed === "object") {
