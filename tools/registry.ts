@@ -154,7 +154,8 @@ function zodTypeToOpenAI(zodType: z.ZodType): Record<string, unknown> {
 
   // object with properties
   if (typeName === "ZodObject" || typeName === "object") {
-    const shape = typeof def.shape === "function" ? def.shape() : def.shape || {};
+    const shape =
+      typeof def.shape === "function" ? def.shape() : def.shape || {};
     const properties: Record<string, unknown> = {};
     const required: string[] = [];
 
