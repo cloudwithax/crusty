@@ -36,8 +36,8 @@ describe("ensureToolCallIds", () => {
     expect(normalized.repairedCount).toBe(2);
     expect(normalized.toolCalls).toHaveLength(3);
 
-    expect(normalized.toolCalls[0]?.id).toMatch(/^tc_\d+_0$/);
-    expect(normalized.toolCalls[1]?.id).toMatch(/^tc_\d+_1$/);
+    expect(normalized.toolCalls[0]?.id).toMatch(/^call_\d+0$/);
+    expect(normalized.toolCalls[1]?.id).toMatch(/^call_\d+1$/);
     expect(normalized.toolCalls[2]?.id).toBe("existing-id-1");
   });
 
@@ -97,7 +97,7 @@ describe("ensureToolCallIds", () => {
     const assistant = sanitized[0] as any;
     const tool = sanitized[1] as any;
 
-    expect(assistant.tool_calls[0].id).toMatch(/^tc_\d+_0$/);
+    expect(assistant.tool_calls[0].id).toMatch(/^call_\d+0$/);
     expect(tool.tool_call_id).toBe(assistant.tool_calls[0].id);
   });
 

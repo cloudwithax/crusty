@@ -49,7 +49,7 @@ function makeToolCall(
   idx: number = 0,
 ): ChatCompletionMessageToolCall {
   return {
-    id: id ?? `tc_${Date.now()}_${idx}`,
+    id: id ?? `call_${Date.now()}${idx}`,
     type: "function",
     function: {
       name,

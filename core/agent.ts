@@ -408,7 +408,7 @@ export function ensureToolCallIds(toolCalls: ChatCompletionMessageToolCall[]): {
     repairedCount += 1;
     return {
       ...toolCall,
-      id: `tc_${now}_${idx}`,
+      id: `call_${now}${idx}`,
     };
   });
 
@@ -466,12 +466,11 @@ export function sanitizeToolCallHistoryMessages(
       const pendingIndex = pendingToolCallIds.indexOf(resolvedId);
       if (pendingIndex >= 0) {
         pendingToolCallIds.splice(pendingIndex, 1);
+        sanitized.push({
+          ...toolMessage,
+          tool_call_id: resolvedId,
+        } as ChatCompletionMessageParam);
       }
-
-      sanitized.push({
-        ...toolMessage,
-        tool_call_id: resolvedId,
-      } as ChatCompletionMessageParam);
       continue;
     }
 
