@@ -3,12 +3,12 @@
 
 import { debug } from "../utils/debug.ts";
 
-const SENDBLUE_API_BASE = "https://api.sendblue.co/api";
+const SENDBLUE_API_BASE = "https://api.sendblue.com/api";
 
 interface SendBlueConfig {
   apiKey: string;
   apiSecret: string;
-  fromNumber?: string;
+  fromNumber: string;
 }
 
 interface SendMessageParams {
@@ -102,11 +102,8 @@ export class SendBlueClient {
   async sendMessage(params: SendMessageParams): Promise<SendMessageResponse> {
     const body: Record<string, string> = {
       number: params.to,
+      from_number: this.config.fromNumber,
     };
-
-    if (this.config.fromNumber) {
-      body.from_number = this.config.fromNumber;
-    }
 
     if (params.content) {
       body.content = params.content;
@@ -146,11 +143,8 @@ export class SendBlueClient {
   ): Promise<TypingIndicatorResponse> {
     const body: Record<string, string> = {
       number: toNumber,
+      from_number: this.config.fromNumber,
     };
-
-    if (this.config.fromNumber) {
-      body.from_number = this.config.fromNumber;
-    }
 
     const response = await fetch(`${SENDBLUE_API_BASE}/send-typing-indicator`, {
       method: "POST",
@@ -177,11 +171,8 @@ export class SendBlueClient {
   async sendReadReceipt(toNumber: string): Promise<void> {
     const body: Record<string, string> = {
       number: toNumber,
+      from_number: this.config.fromNumber,
     };
-
-    if (this.config.fromNumber) {
-      body.from_number = this.config.fromNumber;
-    }
 
     const response = await fetch(`${SENDBLUE_API_BASE}/mark-read`, {
       method: "POST",

@@ -395,10 +395,10 @@ async function configureSendblue(env: Record<string, string>): Promise<void> {
   if (newSecret) env.SENDBLUE_API_SECRET = newSecret;
 
   console.log(
-    `\nCurrent From Number: ${env.SENDBLUE_FROM_NUMBER || "not set (sendblue will auto-assign)"}`,
+    `\nCurrent From Number: ${env.SENDBLUE_FROM_NUMBER || "not set (required)"}`,
   );
   const newFrom = await prompt(
-    "Enter From Number in E.164 format e.g. +15551234567 (or press enter to skip)",
+    "Enter From Number in E.164 format e.g. +15551234567",
   );
   if (newFrom) env.SENDBLUE_FROM_NUMBER = newFrom;
 

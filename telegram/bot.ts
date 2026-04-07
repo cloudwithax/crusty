@@ -72,6 +72,14 @@ interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
 }
 
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
 interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
@@ -81,6 +89,8 @@ interface TelegramMessage {
   text?: string;
   entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
+  photo?: TelegramPhotoSize[];
+  caption?: string;
 }
 
 interface TelegramCallbackQuery {
@@ -133,6 +143,11 @@ const telegramMessageDebouncer = new MessageDebouncer<TelegramMessage>({
     await processDebouncedTelegramMessages(items);
   },
 });
+
+// image handling constants
+const MAX_IMAGES_PER_MESSAGE = 8;
+const MAX_IMAGE_CONVERSION_SOURCE_BYTES = 15 * 1024 * 1024;
+const MAX_IMAGE_CONVERSION_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 // Get the paired user ID for heartbeat messages
 export function getPairedUserId(): number | null {
@@ -305,6 +320,168 @@ function findTelegramReplyContext(
   return undefined;
 }
 
+// get the largest photo size from a photo array
+function getLargestPhoto(photo: TelegramPhotoSize[]): TelegramPhotoSize {
+  return photo.reduce((largest, current) =>
+    current.file_size && largest.file_size
+      ? current.file_size > largest.file_size
+        ? current
+        : largest
+      : current.width > largest.width
+        ? current
+        : largest,
+  );
+}
+
+// download a file from telegram using its file_id
+async function downloadTelegramFile(fileId: string): Promise<Buffer | undefined> {
+  try {
+    // first get the file path
+    const fileInfo = await makeRequest<{ file_path?: string }>("getFile", {
+      file_id: fileId,
+    });
+
+    if (!fileInfo.file_path) {
+      return undefined;
+    }
+
+    // download the actual file
+    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
+    const response = await fetch(fileUrl);
+
+    if (!response.ok) {
+      return undefined;
+    }
+
+    const contentLength = response.headers.get("content-length");
+    if (contentLength) {
+      const size = Number.parseInt(contentLength, 10);
+      if (Number.isFinite(size) && size > MAX_IMAGE_CONVERSION_SOURCE_BYTES) {
+        return undefined;
+      }
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0 || buffer.length > MAX_IMAGE_CONVERSION_SOURCE_BYTES) {
+      return undefined;
+    }
+
+    return buffer;
+  } catch {
+    return undefined;
+  }
+}
+
+// convert image buffer to jpeg base64 data url using imagemagick
+async function convertImageToJpegDataUrl(imageBuffer: Buffer): Promise<string | undefined> {
+  try {
+    const tempInput = `/tmp/tg_img_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const tempOutput = `${tempInput}.jpg`;
+    await Bun.write(tempInput, imageBuffer);
+
+    try {
+      const proc = Bun.spawn([
+        "convert",
+        tempInput,
+        "-quality",
+        "85",
+        "-format",
+        "jpg",
+        tempOutput,
+      ]);
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0) {
+        return undefined;
+      }
+
+      const jpegBytes = await Bun.file(tempOutput).arrayBuffer();
+      const jpegBuffer = Buffer.from(jpegBytes);
+
+      if (
+        jpegBuffer.length === 0 ||
+        jpegBuffer.length > MAX_IMAGE_CONVERSION_OUTPUT_BYTES
+      ) {
+        return undefined;
+      }
+
+      return `data:image/jpeg;base64,${jpegBuffer.toString("base64")}`;
+    } finally {
+      try {
+        await Bun.file(tempInput).delete();
+      } catch {}
+      try {
+        await Bun.file(tempOutput).delete();
+      } catch {}
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+// collect and convert images from a batch of messages
+async function collectImagesFromMessages(
+  messages: TelegramMessage[],
+): Promise<{ imageDataUrls: string[]; droppedCount: number; caption?: string }> {
+  const imageDataUrls: string[] = [];
+  let caption: string | undefined;
+
+  // collect all photo arrays and find caption
+  for (const message of messages) {
+    if (message.caption && !caption) {
+      caption = message.caption;
+    }
+  }
+
+  // collect photo file_ids (up to max limit)
+  const photoFileIds: string[] = [];
+  for (const message of messages) {
+    if (message.photo && message.photo.length > 0) {
+      const largest = getLargestPhoto(message.photo);
+      photoFileIds.push(largest.file_id);
+      if (photoFileIds.length >= MAX_IMAGES_PER_MESSAGE) {
+        break;
+      }
+    }
+  }
+
+  const droppedCount = messages.reduce((count, m) => {
+    if (!m.photo) return count;
+    return count + (m.photo.length > 0 ? 1 : 0);
+  }, 0) - photoFileIds.length;
+
+  // download and convert each photo
+  for (const fileId of photoFileIds) {
+    const buffer = await downloadTelegramFile(fileId);
+    if (buffer) {
+      const dataUrl = await convertImageToJpegDataUrl(buffer);
+      if (dataUrl) {
+        imageDataUrls.push(dataUrl);
+      }
+    }
+  }
+
+  return { imageDataUrls, droppedCount, caption };
+}
+
+// build multimodal user content with images
+function buildMultimodalUserContent(
+  text: string,
+  imageDataUrls: string[],
+): Array<
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+> {
+  const messageText = text.trim() || "please analyze the attached image";
+  return [
+    { type: "text", text: messageText },
+    ...imageDataUrls.map((url) => ({
+      type: "image_url" as const,
+      image_url: { url },
+    })),
+  ];
+}
+
 async function processDebouncedTelegramMessages(
   messages: TelegramMessage[],
 ): Promise<void> {
@@ -314,8 +491,16 @@ async function processDebouncedTelegramMessages(
   }
 
   const combinedText = buildTelegramBurstText(messages);
-  if (!combinedText) {
+  const { imageDataUrls, droppedCount, caption } = await collectImagesFromMessages(messages);
+
+  // return early if no text and no images
+  if (!combinedText && imageDataUrls.length === 0) {
     return;
+  }
+
+  // log dropped images
+  if (droppedCount > 0) {
+    debug(`[telegram] dropped ${droppedCount} image(s) over limit of ${MAX_IMAGES_PER_MESSAGE}`);
   }
 
   const chatId = anchorMessage.chat.id;
@@ -323,7 +508,7 @@ async function processDebouncedTelegramMessages(
   const messageThreadId = anchorMessage.message_thread_id;
   const routingMessage: TelegramMessage = {
     ...anchorMessage,
-    text: combinedText,
+    text: combinedText || caption,
   };
 
   const existingController = processingUsers.get(userId);
@@ -377,8 +562,16 @@ async function processDebouncedTelegramMessages(
     abortSignal: abortController.signal,
   };
 
+  // build user message text - use combined text, or caption, or default
+  const userText = combinedText || caption || "";
+
+  // build multimodal content if we have images
+  const inputOptions = imageDataUrls.length > 0
+    ? { userContent: buildMultimodalUserContent(userText, imageDataUrls) }
+    : undefined;
+
   try {
-    const response = await agent.chat(combinedText, callbacks, replyContext);
+    const response = await agent.chat(userText, callbacks, replyContext, inputOptions);
     clearInterval(typingInterval);
     processingUsers.delete(userId);
 
@@ -1699,7 +1892,7 @@ async function handleSkillWizardInput(
 
 // Process incoming message
 async function processMessage(message: TelegramMessage): Promise<void> {
-  if (!message.text) return;
+  if (!message.text && !message.photo) return;
 
   const chatId = message.chat.id;
   const userId = message.from?.id || chatId;
@@ -1709,18 +1902,20 @@ async function processMessage(message: TelegramMessage): Promise<void> {
   // Check if system is paired (use async for postgres support)
   const systemPaired = await isSystemPairedAsync();
   if (!systemPaired) {
-    // Check if message is a valid pairing code
-    const validCode = await isValidPairingCodeAsync(text);
-    if (validCode) {
-      await markPairedAsync(userId);
-      await sendMessage(
-        chatId,
-        "*Successfully Paired!*\n\n" +
-          "Welcome to the tide pool! You can now start chatting with me.\n" +
-          "Type /start to see what this crab can do!",
-        { message_thread_id: messageThreadId },
-      );
-      return;
+    // pairing code can only be text
+    if (text) {
+      const validCode = await isValidPairingCodeAsync(text);
+      if (validCode) {
+        await markPairedAsync(userId);
+        await sendMessage(
+          chatId,
+          "*Successfully Paired!*\n\n" +
+            "Welcome to the tide pool! You can now start chatting with me.\n" +
+            "Type /start to see what this crab can do!",
+          { message_thread_id: messageThreadId },
+        );
+        return;
+      }
     }
 
     // Not paired and message is not a valid code
@@ -1747,18 +1942,18 @@ async function processMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  // check if user is awaiting soul input
-  if (await handleSoulInput(userId, chatId, messageThreadId, text)) {
+  // check if user is awaiting soul input (text only)
+  if (text && (await handleSoulInput(userId, chatId, messageThreadId, text))) {
     return;
   }
 
-  // check if user has active skill wizard
-  if (await handleSkillWizardInput(userId, chatId, messageThreadId, text)) {
+  // check if user has active skill wizard (text only)
+  if (text && (await handleSkillWizardInput(userId, chatId, messageThreadId, text))) {
     return;
   }
 
   // User is paired - process commands and messages
-  if (text.startsWith("/")) {
+  if (text?.startsWith("/")) {
     telegramMessageDebouncer.clear(String(userId));
     interruptQueue.delete(userId);
     processingUsers.get(userId)?.abort();

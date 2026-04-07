@@ -48,7 +48,6 @@ import {
   generateImessagePairingCode,
   saveImessagePairingCodeAsync,
 } from "./pairing";
-import sharp from "sharp";
 import { stripMarkdown } from "../utils/formatting.ts";
 
 // environment configuration
@@ -121,6 +120,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 
 const MAX_IMAGE_CONVERSION_SOURCE_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_CONVERSION_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGES_PER_MESSAGE = 8;
 
 const imessageMessageDebouncer = new MessageDebouncer<InboundMessage>({
   onFlush: async ({ items }) => {
@@ -453,55 +453,113 @@ async function convertMediaUrlToJpegDataUrl(
       return undefined;
     }
 
-    const jpegBytes = await sharp(sourceBytes).jpeg({ quality: 85 }).toBuffer();
-    if (
-      jpegBytes.length === 0 ||
-      jpegBytes.length > MAX_IMAGE_CONVERSION_OUTPUT_BYTES
-    ) {
-      return undefined;
-    }
+    // write source to temp file
+    const tempInput = `/tmp/imessage_img_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const tempOutput = `${tempInput}.jpg`;
+    await Bun.write(tempInput, sourceBytes);
 
-    return `data:image/jpeg;base64,${jpegBytes.toString("base64")}`;
+    try {
+      // use imagemagick convert to jpeg with quality 85
+      const proc = Bun.spawn([
+        "convert",
+        tempInput,
+        "-quality",
+        "85",
+        "-format",
+        "jpg",
+        tempOutput,
+      ]);
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0) {
+        return undefined;
+      }
+
+      const jpegBytes = await Bun.file(tempOutput).arrayBuffer();
+      const jpegBuffer = Buffer.from(jpegBytes);
+
+      if (
+        jpegBuffer.length === 0 ||
+        jpegBuffer.length > MAX_IMAGE_CONVERSION_OUTPUT_BYTES
+      ) {
+        return undefined;
+      }
+
+      return `data:image/jpeg;base64,${jpegBuffer.toString("base64")}`;
+    } finally {
+      // cleanup temp files
+      try {
+        await Bun.file(tempInput).delete();
+      } catch {}
+      try {
+        await Bun.file(tempOutput).delete();
+      } catch {}
+    }
   } catch {
     return undefined;
   }
+}
+
+async function convertImageToJpegDataUrl(url: string): Promise<string | undefined> {
+  // if already a supported format by extension, still convert to ensure valid jpeg
+  const extension = getUrlExtension(url);
+  const isSupportedExtension = extension && SUPPORTED_IMAGE_EXTENSIONS.has(extension);
+
+  if (isSupportedExtension) {
+    const converted = await convertMediaUrlToJpegDataUrl(url);
+    if (converted) {
+      return converted;
+    }
+    // fallback to original url if conversion fails but extension is supported
+    return url;
+  }
+
+  const mimeType = await getMediaMimeType(url);
+  if (mimeType && SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+    const converted = await convertMediaUrlToJpegDataUrl(url);
+    if (converted) {
+      return converted;
+    }
+    // fallback to original url if conversion fails but mime type is supported
+    return url;
+  }
+
+  if (!mimeType || mimeType.startsWith("image/")) {
+    return await convertMediaUrlToJpegDataUrl(url);
+  }
+
+  return undefined;
 }
 
 async function prepareInboundMediaUrls(mediaUrls: string[]): Promise<{
   modelUrls: string[];
   unsupportedUrls: string[];
   convertedCount: number;
+  droppedCount: number;
 }> {
   const modelUrls: string[] = [];
   const unsupportedUrls: string[] = [];
   let convertedCount = 0;
+  let droppedCount = 0;
 
-  for (const url of mediaUrls) {
-    const extension = getUrlExtension(url);
-    if (extension && SUPPORTED_IMAGE_EXTENSIONS.has(extension)) {
-      modelUrls.push(url);
-      continue;
-    }
+  // limit to max images per message
+  const urlsToProcess = mediaUrls.slice(0, MAX_IMAGES_PER_MESSAGE);
+  droppedCount = mediaUrls.length - urlsToProcess.length;
 
-    const mimeType = await getMediaMimeType(url);
-    if (mimeType && SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
-      modelUrls.push(url);
-      continue;
-    }
-
-    if (!mimeType || mimeType.startsWith("image/")) {
-      const converted = await convertMediaUrlToJpegDataUrl(url);
-      if (converted) {
-        modelUrls.push(converted);
+  for (const url of urlsToProcess) {
+    const converted = await convertImageToJpegDataUrl(url);
+    if (converted) {
+      // check if this was a conversion (starts with data:) or passthrough
+      if (converted.startsWith("data:image/jpeg;base64,")) {
         convertedCount++;
-        continue;
       }
+      modelUrls.push(converted);
+    } else {
+      unsupportedUrls.push(url);
     }
-
-    unsupportedUrls.push(url);
   }
 
-  return { modelUrls, unsupportedUrls, convertedCount };
+  return { modelUrls, unsupportedUrls, convertedCount, droppedCount };
 }
 
 function buildMultimodalUserContent(
@@ -610,6 +668,7 @@ async function processDebouncedInboundMessages(
     modelUrls: mediaUrls,
     unsupportedUrls,
     convertedCount,
+    droppedCount,
   } = await prepareInboundMediaUrls(rawMediaUrls);
   const combinedText = buildInboundBurstText(messages);
   const modelText =
@@ -625,6 +684,12 @@ async function processDebouncedInboundMessages(
       "I can only analyze image attachments in PNG, JPEG, WebP, or GIF format. Please resend your image in one of those formats.",
     );
     return;
+  }
+
+  if (droppedCount > 0) {
+    debug(
+      `[imessage] dropped ${droppedCount} image(s) due to ${MAX_IMAGES_PER_MESSAGE} image limit`,
+    );
   }
 
   if (unsupportedUrls.length > 0) {
@@ -1331,6 +1396,12 @@ export async function startImessageBot(): Promise<void> {
       "[imessage] SENDBLUE_API_KEY or SENDBLUE_API_SECRET not set, skipping",
     );
     return;
+  }
+
+  if (!SENDBLUE_FROM_NUMBER) {
+    throw new Error(
+      "[imessage] SENDBLUE_FROM_NUMBER is required. please set it in your environment.",
+    );
   }
 
   if (!SENDBLUE_WEBHOOK_SECRET) {
